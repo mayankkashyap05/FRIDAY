@@ -23,7 +23,7 @@ def prepare_for_speech(text: str) -> str:
     value = re.sub(r"(?m)^\s{0,3}#{1,6}\s*", "", value)
     value = re.sub(r"(?m)^\s*[-*+]\s+", "", value)
     value = value.replace("**", "").replace("__", "").replace("~~", "")
-    value = re.sub(r"\bJ\.A\.R\.V\.I\.S\b", "Friday", value, flags=re.IGNORECASE)
+    value = re.sub(r"\bF\.R\.I\.D\.A\.Y\.?(?=\b|\s|$)", "Friday", value, flags=re.IGNORECASE)
     value = "".join(
         character for character in value
         if not unicodedata.category(character).startswith(("So", "Sk"))
@@ -43,13 +43,19 @@ class SentenceBuffer:
     """
 
     BOUNDARY = re.compile(r"(?<=[.!?])[\"')\]]*\s")
-    # Long enough to skip "Sure." and "Yes." openers, short enough that a real
-    # short sentence still gets spoken on its own.
-    MIN_LENGTH = 15
+    COMPLETE_SHORT = re.compile(r"^\s*(?:[A-Za-z][A-Za-z0-9'\s,:-]*[.!?]|-?\d+(?:\.\d+)?[.!?])[\"')\]]*\s*$")
+    FILLER_OPENERS = frozenset({"sure.", "okay.", "ok.", "alright.", "certainly.", "of course."})
+    # Allow short complete answers ("Done.", "Yes.", "No.", "12.", "Playing.", "Opened.")
+    # to speak immediately while holding back single-word filler lead-ins like "Sure. ".
+    MIN_LENGTH = 2
 
     def __init__(self, min_length: int = MIN_LENGTH):
         self.min_length = min_length
         self._pending = ""
+
+    def _should_hold(self, candidate: str) -> bool:
+        lowered = candidate.strip().lower()
+        return len(lowered) < self.min_length or lowered in self.FILLER_OPENERS
 
     def push(self, chunk: str) -> list[str]:
         """Add streamed text and return whatever is now safe to speak."""
@@ -58,10 +64,20 @@ class SentenceBuffer:
         while True:
             match = self.BOUNDARY.search(self._pending)
             if not match:
+                stripped = self._pending.strip()
+                if (
+                    stripped
+                    and not self._should_hold(stripped)
+                    and stripped.count('"') % 2 == 0
+                    and len(stripped) <= 32
+                    and self.COMPLETE_SHORT.match(stripped)
+                ):
+                    released.append(stripped)
+                    self._pending = ""
                 break
             candidate = self._pending[: match.end()].strip()
-            if len(candidate) < self.min_length:
-                # Too short to stand alone: let it join the next sentence.
+            if self._should_hold(candidate):
+                # Filler lead-in or fragment too short to stand alone: join next sentence.
                 following = self.BOUNDARY.search(self._pending, match.end())
                 if not following:
                     break
@@ -81,11 +97,11 @@ class SentenceBuffer:
 DEFAULT_EDGE_VOICE = "en-GB-RyanNeural"
 
 EDGE_VOICES = {
-    "en-GB-RyanNeural": "British male — closest to the F.R.I.D.A.Y character",
+    "en-GB-RyanNeural": "British male — clear and calm",
     "en-GB-ThomasNeural": "British male, softer and slower",
     "en-US-GuyNeural": "American male, warm and conversational",
     "en-US-ChristopherNeural": "American male, deeper and calmer",
-    "en-GB-SoniaNeural": "British female",
+    "en-GB-SoniaNeural": "British female, clear and natural",
     "en-US-JennyNeural": "American female, conversational",
 }
 
@@ -153,7 +169,7 @@ class EdgeSpeech:
 DEFAULT_PIPER_VOICE = "en_GB-alan-medium"
 
 PIPER_VOICES = {
-    "en_GB-alan-medium": "British male — closest to the F.R.I.D.A.Y character",
+    "en_GB-alan-medium": "British male — clear and natural",
     "en_GB-alan-low": "British male, fastest",
     "en_GB-northern_english_male-medium": "Northern English male",
     "en_US-ryan-medium": "American male",
@@ -272,7 +288,8 @@ class _SpeechActivity:
 class SpeechEngine:
     """Thread-safe queued text-to-speech, preferring a natural neural voice."""
 
-    MALE_HINTS = ("david", "mark", "guy", "male")
+    VOICE_HINTS = ("natural", "aria", "jenny", "guy", "ryan", "david", "zira", "mark")
+    MALE_HINTS = VOICE_HINTS
     MAX_EDGE_FAILURES = 3
 
     def __init__(

@@ -1,7 +1,7 @@
 """The reactive voice core.
 
 A single widget carries most of the interface's personality, so it has to read
-at a glance: whether F.R.I.D.A.Y is listening, whether it heard you, and
+at a glance: whether Friday is listening, whether it heard you, and
 whether it is thinking or replying. Live microphone level drives the geometry,
 so speaking visibly moves it rather than playing a canned animation.
 """
@@ -97,29 +97,24 @@ class VoiceOrb(tk.Canvas):
         self._draw_core(centre_x, centre_y, radius * 0.34, primary, secondary, energy)
 
     def _draw_halo(self, cx: float, cy: float, radius: float, colour: str, energy: float) -> None:
-        """Concentric fading circles stand in for a real glow."""
-        layers = 5
+        """Soft ambient glow layers without concentric reactor ring clutter."""
+        layers = 2
         for index in range(layers, 0, -1):
             fraction = index / layers
-            ring_radius = radius * (0.62 + fraction * 0.38) * (1 + energy * 0.06)
-            shade = blend(self.background, colour, 0.10 * (1 - fraction) + energy * 0.08)
+            ring_radius = radius * (0.68 + fraction * 0.28) * (1 + energy * 0.05)
+            shade = blend(self.background, colour, 0.08 * (1 - fraction) + energy * 0.06)
             self.create_oval(cx - ring_radius, cy - ring_radius, cx + ring_radius, cy + ring_radius,
-                             outline=shade, width=1)
+                             fill=shade, outline="")
 
     def _draw_orbits(self, cx: float, cy: float, radius: float,
                      primary: str, secondary: str, energy: float) -> None:
-        """Two counter-rotating arcs give a sense of active machinery."""
-        for index, (colour, direction, span) in enumerate(
-            ((primary, 1, 110), (secondary, -1, 70))
-        ):
-            ring_radius = radius * (0.86 - index * 0.12)
-            start = math.degrees(self._phase * direction * (0.6 + index * 0.35)) % 360
-            self.create_arc(
-                cx - ring_radius, cy - ring_radius, cx + ring_radius, cy + ring_radius,
-                start=start, extent=span, style="arc",
-                outline=blend(self.background, colour, 0.55 + energy * 0.45),
-                width=2,
-            )
+        """A single calm breathing ring instead of counter-rotating mechanical arcs."""
+        ring_radius = radius * (0.82 + math.sin(self._phase * 0.8) * 0.02)
+        self.create_oval(
+            cx - ring_radius, cy - ring_radius, cx + ring_radius, cy + ring_radius,
+            outline=blend(self.background, primary, 0.28 + energy * 0.25),
+            width=1,
+        )
 
     def _draw_reactive_ring(self, cx: float, cy: float, radius: float,
                             primary: str, secondary: str, energy: float) -> None:

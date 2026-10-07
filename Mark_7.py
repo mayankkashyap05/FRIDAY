@@ -1,4 +1,4 @@
-"""F.R.I.D.A.Y desktop entry point."""
+"""Friday desktop entry point."""
 
 import ctypes
 import os
@@ -13,7 +13,7 @@ def main():
 
         sys.exit(selftest())
 
-    mutex = ctypes.windll.kernel32.CreateMutexW(None, False, "FRIDAY_MARK_7_SINGLE_INSTANCE")
+    mutex = ctypes.windll.kernel32.CreateMutexW(None, False, "FRIDAY_SINGLE_INSTANCE")
     if ctypes.windll.kernel32.GetLastError() == 183:  # ERROR_ALREADY_EXISTS
         # Exiting in silence looks identical to a crash: someone double-clicks
         # the shortcut and nothing happens. Show the instance already running.
@@ -32,13 +32,14 @@ def _raise_existing_window() -> None:
 
     def visit(handle, _extra):
         length = user32.GetWindowTextLengthW(handle)
-        # A normal close minimizes F.R.I.D.A.Y to the tray with withdraw(),
-        # which makes its Tk window invisible.  We still need to find that
+        # A normal close minimizes Friday to the tray with withdraw(),
+        # which makes its Tk window invisible. We still need to find that
         # hidden window so a second launch can restore it.
         if length:
             buffer = ctypes.create_unicode_buffer(length + 1)
             user32.GetWindowTextW(handle, buffer, length + 1)
-            if "F.R.I.D.A.Y" in buffer.value:
+            title_lower = buffer.value.lower()
+            if "friday" in title_lower or "f.r.i.d.a.y" in title_lower:
                 found.append(handle)
         return True
 

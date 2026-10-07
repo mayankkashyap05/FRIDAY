@@ -1,6 +1,6 @@
-# Mark 7 architecture
+# Friday architecture
 
-Mark 7 adds the following bounded subsystems:
+Friday includes the following bounded subsystems:
 
 - `storage.py`: idempotent SQLite migrations, typed preferences, and permissions.
 - `plugins.py`: manifest validation, enable/disable state, action declarations, and failure isolation.
@@ -16,7 +16,7 @@ No plugin receives a general shell capability. Plugin manifests declare actions 
 
 The desktop runtime is intentionally split into small layers:
 
-- `Mark_7.py` is the entry point. A second launch raises the running window rather than exiting silently, and `FRIDAY_SELFTEST=1` runs the frozen-build import check instead of starting. `Mark_6.py` remains as a compatibility launcher.
+- `friday.py` / `Mark_7.py` is the entry point. A second launch raises the running window rather than exiting silently, and `FRIDAY_SELFTEST=1` runs the frozen-build import check instead of starting. `Mark_6.py` remains as a compatibility launcher.
 - `friday_os/app.py` owns the Tk desktop UI, tray icon, worker queues, speech output, and confirmations.
 - `friday_os/router.py` maps common natural language to typed commands without model involvement. It strips the spoken wake name and politeness first, and exposes `needs_live_information` so the controller can send time-sensitive questions to live sources instead of stale model weights.
 - `friday_os/web_research.py` grounds answers using documented public APIs only (SerpAPI when a key is present, otherwise the DuckDuckGo Instant Answer and Wikipedia REST APIs). A failing provider degrades the answer rather than breaking it.

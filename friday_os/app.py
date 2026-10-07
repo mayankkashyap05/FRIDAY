@@ -1,4 +1,4 @@
-"""Unified keyboard and voice desktop interface for F.R.I.D.A.Y Mark 6."""
+"""Unified keyboard and voice desktop interface for Friday."""
 
 from __future__ import annotations
 
@@ -151,7 +151,7 @@ class FridayApp:
         if self.settings_repo.get("hands_free_enabled", True):
             self.root.after(900, self.hands_free.start)
         self.proactive.start()
-        self.add_message("F.R.I.D.A.Y", "Systems online. Type a message or press the microphone button.")
+        self.add_message("Friday", "Ready.")
         self._report_previous_crash()
         if not self.settings_repo.get("first_run_complete", False):
             self.root.after(250, lambda: SetupWizard(
@@ -161,7 +161,13 @@ class FridayApp:
         threading.Thread(target=self._warm_model, daemon=True, name="friday-warmup").start()
 
     def _configure_window(self) -> None:
-        self.root.title("F.R.I.D.A.Y")
+        self.root.title("Friday")
+        icon_path = self.settings.project_root / "GUI_images" / "friday.ico"
+        if icon_path.is_file():
+            try:
+                self.root.iconbitmap(str(icon_path))
+            except Exception:
+                pass
         # Fit the screen first. Preferring a large window over the available
         # space produced a window taller than the display on 1280x800 laptops,
         # which quietly cut off the input bar.
@@ -183,9 +189,11 @@ class FridayApp:
         body.pack(fill="both", expand=True)
         body.grid_rowconfigure(0, weight=1)
         body.grid_columnconfigure(1, weight=1)
+        self._body = body
         self._build_left_rail(body)
         self._build_center(body)
         self._build_right_rail(body)
+        self.apply_layout_mode()
         self._update_clock()
         self._animate()
 
@@ -202,9 +210,9 @@ class FridayApp:
         mark.create_oval(10, 10, 24, 24, fill=Palette.ACCENT, outline="")
         words = tk.Frame(brand, bg=Palette.VOID)
         words.pack(side="left", fill="y")
-        tk.Label(words, text="F.R.I.D.A.Y", fg=Palette.TEXT, bg=Palette.VOID,
+        tk.Label(words, text="Friday", fg=Palette.TEXT, bg=Palette.VOID,
                  font=Type.BRAND).pack(anchor="w")
-        tk.Label(words, text="MARK 7  ·  LOCAL FIRST", fg=Palette.TEXT_FAINT, bg=Palette.VOID,
+        tk.Label(words, text="PERSONAL ASSISTANT  ·  LOCAL-FIRST", fg=Palette.TEXT_FAINT, bg=Palette.VOID,
                  font=Type.MONO_SMALL).pack(anchor="w")
 
         self.clock = tk.Label(top, fg=Palette.TEXT_MUTED, bg=Palette.VOID, font=Type.MONO)
@@ -213,6 +221,15 @@ class FridayApp:
             Button(top, label, command, style="quiet", height=32, width=104).pack(
                 side="right", padx=Space.XS
             )
+        self.layout_button = Button(
+            top,
+            "DETAILS" if self.settings_repo.get("minimal_ui", True) else "MINIMAL",
+            self.toggle_minimal_mode,
+            style="quiet",
+            height=32,
+            width=96,
+        )
+        self.layout_button.pack(side="right", padx=Space.XS)
         self.status_chip = StatusChip(top)
         self.status_chip.pack(side="right", padx=(0, Space.MD))
 
@@ -220,6 +237,7 @@ class FridayApp:
         rail = tk.Frame(body, bg=Palette.BASE, width=252)
         rail.grid(row=0, column=0, sticky="nsew", padx=(0, Space.MD))
         rail.grid_propagate(False)
+        self.left_rail = rail
 
         voice = Card(rail, glow=Palette.ACCENT, padding=Space.MD)
         voice.pack(fill="x")
@@ -239,7 +257,7 @@ class FridayApp:
         self.voice_toggle.pack(fill="x", pady=(Space.XS, 0))
 
         system = Card(rail, padding=Space.MD)
-        system.pack(fill="x", pady=(Space.MD, 0))
+        self.system_card = system
         tk.Label(system.body, text="SYSTEM", bg=Palette.SURFACE, fg=Palette.TEXT_FAINT,
                  font=Type.MONO_SMALL).pack(anchor="w", pady=(0, Space.SM))
         self.metrics = {}
@@ -324,6 +342,7 @@ class FridayApp:
         rail = tk.Frame(body, bg=Palette.BASE, width=258)
         rail.grid(row=0, column=2, sticky="nsew", padx=(Space.MD, 0))
         rail.grid_propagate(False)
+        self.right_rail = rail
 
         capability = Card(rail, padding=Space.MD)
         capability.pack(fill="x")
@@ -354,13 +373,33 @@ class FridayApp:
         for keys, meaning in (("Hey Friday", "wake by voice"),
                               ("Ctrl+Alt+Space", "summon and listen"),
                               ("Esc", "stop speaking"),
-                              ("Ctrl+Alt+J", "emergency stop")):
+                              ("Ctrl+Alt+S", "emergency stop")):
             row = tk.Frame(shortcuts.body, bg=Palette.SURFACE)
             row.pack(fill="x", pady=2)
             tk.Label(row, text=keys, bg=Palette.SURFACE, fg=Palette.ACCENT,
                      font=Type.MONO_SMALL).pack(side="left")
             tk.Label(row, text=meaning, bg=Palette.SURFACE, fg=Palette.TEXT_FAINT,
                      font=Type.CAPTION).pack(side="right")
+
+    def toggle_minimal_mode(self) -> None:
+        minimal = not bool(self.settings_repo.get("minimal_ui", True))
+        self.settings_repo.set("minimal_ui", minimal)
+        self.apply_layout_mode()
+
+    def apply_layout_mode(self) -> None:
+        minimal = bool(self.settings_repo.get("minimal_ui", True))
+        if hasattr(self, "layout_button"):
+            self.layout_button.set_text("DETAILS" if minimal else "MINIMAL")
+        if hasattr(self, "system_card"):
+            if minimal:
+                self.system_card.pack_forget()
+            else:
+                self.system_card.pack(fill="x", pady=(Space.MD, 0))
+        if hasattr(self, "right_rail"):
+            if minimal:
+                self.right_rail.grid_remove()
+            else:
+                self.right_rail.grid(row=0, column=2, sticky="nsew", padx=(Space.MD, 0))
 
     @staticmethod
     def _capability(parent, title: str, subtitle: str, colour: str) -> None:
@@ -615,7 +654,7 @@ class FridayApp:
         if not self._streaming:
             self._match_voice_to_language()
             self._streaming = True
-            self.begin_message("F.R.I.D.A.Y")
+            self.begin_message("Friday")
             self.set_state("speaking")
         self._write(chunk, "body")
         if self._speaks():
@@ -638,13 +677,13 @@ class FridayApp:
         if response.earcon:
             self.earcons.play(response.earcon)
         if response.shows:
-            self.add_message("F.R.I.D.A.Y", text, details)
+            self.add_message("Friday", text, details)
         if response.speaks:
             self._match_voice_to_language()
             self.speech_engine.say(text)
         if response.delivery is Delivery.EARCON:
             # Still record it, so the transcript remains a complete history.
-            self.add_message("F.R.I.D.A.Y", text, details)
+            self.add_message("Friday", text, details)
         self.set_state("idle")
 
     def _voice_state(self, state: str) -> None:
@@ -662,6 +701,7 @@ class FridayApp:
         SettingsWindow(
             self.root, self.settings_repo, self.permissions_repo, self.audit,
             self.settings.project_root, self.plugins, self.controller.store,
+            health=self.health, on_saved=self.apply_layout_mode,
         )
 
     def open_workflows(self) -> None:
@@ -672,7 +712,7 @@ class FridayApp:
         complete = threading.Event()
         def ask() -> None:
             summary = "\n".join(f"{key}: {value}" for key, value in command.arguments.items())
-            answer.append(messagebox.askyesno("Confirm F.R.I.D.A.Y action", f"Allow {command.action}?\n\n{summary}"))
+            answer.append(messagebox.askyesno("Confirm Friday action", f"Allow {command.action}?\n\n{summary}"))
             complete.set()
         self.root.after(0, ask)
         complete.wait()
@@ -681,7 +721,7 @@ class FridayApp:
     def _show_error(self, message: str) -> None:
         self.log.error(message)
         self.earcons.play("error")
-        self.add_message("F.R.I.D.A.Y", message)
+        self.add_message("Friday", message)
         self.set_state("error")
 
     def _start_tray(self) -> None:
@@ -690,13 +730,15 @@ class FridayApp:
         try:
             import pystray
             from PIL import Image
-            image_path = self.settings.project_root / "GUI_images" / "Hacker.png"
-            image = Image.open(image_path).convert("RGBA")
+            icon_path = self.settings.project_root / "GUI_images" / "friday.ico"
+            if not icon_path.is_file():
+                icon_path = self.settings.project_root / "GUI_images" / "Hacker.png"
+            image = Image.open(icon_path).convert("RGBA")
             menu = pystray.Menu(
-                pystray.MenuItem("Open F.R.I.D.A.Y", lambda: self.root.after(0, self.show_window), default=True),
+                pystray.MenuItem("Open Friday", lambda: self.root.after(0, self.show_window), default=True),
                 pystray.MenuItem("Exit", lambda: self.root.after(0, self.exit_app)),
             )
-            self.tray_icon = pystray.Icon("friday", image, "F.R.I.D.A.Y", menu)
+            self.tray_icon = pystray.Icon("friday", image, "Friday", menu)
             threading.Thread(target=self.tray_icon.run, daemon=True, name="friday-tray").start()
         except Exception:
             self.tray_icon = None
@@ -705,7 +747,7 @@ class FridayApp:
         try:
             from pynput.keyboard import GlobalHotKeys
             self.emergency_hotkey = GlobalHotKeys({
-                "<ctrl>+<alt>+j": lambda: self.root.after(0, self.emergency_stop),
+                "<ctrl>+<alt>+s": lambda: self.root.after(0, self.emergency_stop),
                 # Summon: bring the window forward and start listening, which
                 # is the fastest route in when the microphone is paused.
                 "<ctrl>+<alt>+space": lambda: self.root.after(0, self.summon),
@@ -726,7 +768,7 @@ class FridayApp:
             self.wake_word.start()
 
     def summon(self) -> None:
-        """Bring F.R.I.D.A.Y forward and listen, from anywhere."""
+        """Bring Friday forward and listen, from anywhere."""
         self.log.info("Summoned by hotkey")
         self.show_window()
         self.earcons.play("wake")
@@ -741,7 +783,7 @@ class FridayApp:
             except queue.Empty:
                 break
         self.security_session.lock()
-        self.add_message("F.R.I.D.A.Y", "Emergency stop activated. Pending work was cleared and sensitive actions are locked.")
+        self.add_message("Friday", "Stopped. Pending work was cleared and sensitive actions are locked.")
         self.set_state("stopped")
 
     def _report_previous_crash(self) -> None:
@@ -751,7 +793,7 @@ class FridayApp:
         note = self.recovery.report(build_registry())
         if note:
             self.log.warning(note)
-            self.add_message("F.R.I.D.A.Y", note)
+            self.add_message("Friday", note)
 
     def _warm_model(self) -> None:
         """Load the local model during startup so the first question is not slow."""
@@ -770,7 +812,7 @@ class FridayApp:
             update = UpdateChecker().check(__version__)
             if update:
                 self.proactive.notify(
-                    "F.R.I.D.A.Y update available", f"Version {update['version']} is available on GitHub.",
+                    "Friday update available", f"Version {update['version']} is available on GitHub.",
                     "normal", f"update:{update['version']}",
                 )
         except Exception:

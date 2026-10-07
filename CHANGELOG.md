@@ -1,6 +1,6 @@
 # Changelog
 
-Notable changes to F.R.I.D.A.Y. Measurements are from the development machine:
+Notable changes to Friday. Measurements are from the development machine:
 Windows 11, CPU only, no GPU, 16 GB RAM.
 
 ## Unreleased

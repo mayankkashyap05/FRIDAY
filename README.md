@@ -1,4 +1,4 @@
-# F.R.I.D.A.Y
+# Friday
 
 [![tests](https://github.com/mayankkashyap05/FRIDAY/actions/workflows/tests.yml/badge.svg)](https://github.com/mayankkashyap05/FRIDAY/actions/workflows/tests.yml)
 [![release](https://github.com/mayankkashyap05/FRIDAY/actions/workflows/release.yml/badge.svg)](https://github.com/mayankkashyap05/FRIDAY/actions/workflows/release.yml)
@@ -7,7 +7,7 @@
 [![platform: Windows 11](https://img.shields.io/badge/platform-Windows%2011-0078d4.svg)](#requirements)
 [![local-first](https://img.shields.io/badge/local--first-no%20API%20key%20required-4c1.svg)](#what-runs-where)
 
-**A voice-first operating layer for Windows that runs on your own machine.**
+**A private, natural, concise voice-first personal assistant for Windows that runs on your own machine.**
 
 Say *"Hey Friday, what's the weather today"* and it answers out loud in about
 four seconds. Say *"Friday, open Notepad"* and it opens, with a chime instead of
@@ -153,9 +153,9 @@ typed and permission-gated, and that nothing fails silently.
 
 MIT. See [LICENSE](LICENSE).
 
-F.R.I.D.A.Y began as a fork of
+Friday began as a fork of
 [ColeHacker381/F.R.I.D.A.Y](https://github.com/ColeHacker381/F.R.I.D.A.Y). The
-Mark 5 runtime it came from is still in the repository, and its original
-documentation is preserved in [docs/LEGACY.md](docs/LEGACY.md).
+legacy Mark 5 runtime it came from is still in the repository for reference, and
+its original documentation is preserved in [docs/LEGACY.md](docs/LEGACY.md).
 
 Email SMS functionality is provided by AlfredoSequeida's `etext` (c) 2021.

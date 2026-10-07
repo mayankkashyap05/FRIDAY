@@ -27,6 +27,10 @@ from .web_research import WebResearch
 APP_ALIASES = {
     "calculator": "calc.exe",
     "calc": "calc.exe",
+    "chrome": "chrome.exe",
+    "google chrome": "chrome.exe",
+    "edge": "msedge.exe",
+    "microsoft edge": "msedge.exe",
     "command prompt": "cmd.exe",
     "file explorer": "explorer.exe",
     "explorer": "explorer.exe",
@@ -38,6 +42,43 @@ APP_ALIASES = {
     "task manager": "taskmgr.exe",
     "terminal": "wt.exe",
 }
+
+DISPLAY_APP_NAMES = {
+    "google chrome": "Chrome",
+    "chrome": "Chrome",
+    "microsoft edge": "Edge",
+    "edge": "Edge",
+    "notepad": "Notepad",
+    "spotify": "Spotify",
+    "calculator": "Calculator",
+    "calc": "Calculator",
+    "terminal": "Terminal",
+    "file explorer": "File Explorer",
+    "explorer": "File Explorer",
+    "task manager": "Task Manager",
+    "command prompt": "Command Prompt",
+    "powershell": "PowerShell",
+    "paint": "Paint",
+    "settings": "Settings",
+}
+
+
+def format_action_error(action: str, error: Exception | str, arguments: dict | None = None) -> str:
+    """Convert raw technical exceptions into clean user-facing explanations."""
+    raw = str(error).strip()
+    lower = raw.lower()
+    args = arguments or {}
+    if isinstance(error, FileNotFoundError) or "winerror 2" in lower or "cannot find the file" in lower or "no such file" in lower:
+        if action == "open_app":
+            name = str(args.get("name", "")).strip()
+            display = DISPLAY_APP_NAMES.get(name.lower(), name.title()) if name else ""
+            return f"Couldn't open {display}." if display else "Couldn't find that app."
+        if action in {"open_folder", "delete_path"}:
+            return "Couldn't find that file or folder."
+        return "Couldn't find the requested item."
+    if isinstance(error, PermissionError) or "winerror 5" in lower or "access is denied" in lower or "permission denied" in lower:
+        return "Permission denied for that action."
+    return f"{action} failed: {raw}"
 
 PROCESS_ALIASES = {
     "calculator": "CalculatorApp.exe",
@@ -73,6 +114,7 @@ class WindowsActions:
         self.music = SpotifyControl(self.data_dir / 'spotify-token.json')
         self._handlers: dict[str, Callable[[dict], ActionResult]] = {
             "noop": lambda _: ActionResult(True, "Nothing to do."),
+            "clarify": lambda args: ActionResult(True, str(args.get("question", "Could you clarify?"))),
             "open_folder": self.open_folder,
             "open_app": self.open_app,
             "web_search": self.web_search,
@@ -136,7 +178,7 @@ class WindowsActions:
             result = handler(command.arguments)
         except Exception as exc:
             failure("action", exc, command.action)
-            result = ActionResult(False, f"{command.action} failed: {exc}")
+            result = ActionResult(False, format_action_error(command.action, exc, command.arguments))
         if risky and self.recovery is not None:
             self.recovery.clear_in_flight()
         result = self._verify(command, result)
@@ -226,16 +268,28 @@ class WindowsActions:
         return ActionResult(True, f"Opened {folder.name or folder}.")
 
     def open_app(self, args: dict) -> ActionResult:
-        name = str(args["name"]).strip().lower()
+        raw_name = str(args["name"]).strip()
+        name = raw_name.lower()
+        display = DISPLAY_APP_NAMES.get(name, raw_name)
         target = APP_ALIASES.get(name)
         if target:
-            os.startfile(target)
-            return ActionResult(True, f"Opened {name}.")
+            try:
+                os.startfile(target)
+            except OSError as exc:
+                failure("open_app", exc, name)
+                return ActionResult(False, format_action_error("open_app", exc, args))
+            return ActionResult(True, f"Opened {display}.")
         shortcut = self._find_start_menu_shortcut(name)
         if shortcut:
-            os.startfile(str(shortcut))
-            return ActionResult(True, f"Opened {shortcut.stem}.")
-        return ActionResult(False, f"I could not find an installed app named {name}.")
+            stem = shortcut.stem
+            short_display = DISPLAY_APP_NAMES.get(stem.lower(), stem)
+            try:
+                os.startfile(str(shortcut))
+            except OSError as exc:
+                failure("open_app", exc, stem)
+                return ActionResult(False, format_action_error("open_app", exc, {"name": short_display}))
+            return ActionResult(True, f"Opened {short_display}.")
+        return ActionResult(False, f"Couldn't find an installed app named {raw_name}.")
 
     @staticmethod
     def _find_start_menu_shortcut(name: str) -> Path | None:
@@ -392,7 +446,7 @@ class WindowsActions:
         if message:
             return ActionResult(succeeded, message)
         os.startfile(f"spotify:search:{quote(query)}")
-        return ActionResult(True, f"Opened Spotify results for {query}.")
+        return ActionResult(True, f"Playing {query}.")
 
     def now_playing(self, _args: dict) -> ActionResult:
         succeeded, message = self.music.now_playing()
@@ -416,7 +470,8 @@ class WindowsActions:
             return ActionResult(False, f"Unknown media operation: {operation}")
         ctypes.windll.user32.keybd_event(virtual_key, 0, 0, 0)
         ctypes.windll.user32.keybd_event(virtual_key, 0, 2, 0)
-        return ActionResult(True, f"Media {operation} command sent.")
+        labels = {"play": "Playing.", "pause": "Paused.", "next": "Skipped.", "previous": "Previous track."}
+        return ActionResult(True, labels.get(operation, f"{operation.capitalize()}."))
 
     @staticmethod
     def _volume_endpoint():
@@ -469,7 +524,7 @@ class WindowsActions:
             return ActionResult(False, "Deletion is limited to items inside your user folder.")
         send2trash(str(path))
         self.last_deleted = path
-        return ActionResult(True, f"Moved {path.name} to the Recycle Bin. Say undo that to put it back.")
+        return ActionResult(True, f"Deleted {path.name}.", {"path": str(path)})
 
     # "Restore" as Windows spells it in a few common locales.
     _RESTORE_VERBS = {"restore", "undelete", "wiederherstellen", "restaurer", "restaurar", "ripristina"}
@@ -594,7 +649,7 @@ class WindowsActions:
     @staticmethod
     def notification(args: dict) -> ActionResult:
         message = str(args["message"])
-        ctypes.windll.user32.MessageBoxW(0, message, "F.R.I.D.A.Y", 0x40)
+        ctypes.windll.user32.MessageBoxW(0, message, "Friday", 0x40)
         return ActionResult(True, "Notification displayed.")
 
     def work_mode(self, _args: dict) -> ActionResult:

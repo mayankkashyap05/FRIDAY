@@ -1,6 +1,6 @@
 #requires -Version 5.1
 <#
-    Prepares a machine to run F.R.I.D.A.Y hands-free.
+    Prepares a machine to run Friday hands-free.
 
     Installs dependencies, fetches the local language, embedding, wake word,
     and voice models, then hands over to the in-app wizard for the choices
@@ -69,5 +69,5 @@ Write-Step "Verifying the installation"
 & $Python Diagnose-Friday.py
 
 Write-Host "`nSetup complete." -ForegroundColor Green
-Write-Host "Start F.R.I.D.A.Y with:  .\Start-Friday.ps1"
+Write-Host "Start Friday with:  .\Start-Friday.ps1"
 Write-Host "The first launch walks you through the microphone, voice, wake word, and startup."

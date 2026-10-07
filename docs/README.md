@@ -1,12 +1,12 @@
-# F.R.I.D.A.Y Mark 7 documentation
+# Friday documentation
 
-This handbook describes the Mark 7 desktop assistant as implemented in this repository. It distinguishes current behavior from optional integrations and legacy Mark 5 code.
+This handbook describes the Friday desktop assistant as implemented in this repository. It distinguishes current behavior from optional integrations and legacy Mark 5 code.
 
 ## Audience map
 
 | If you want to... | Read |
 |---|---|
-| Install and launch F.R.I.D.A.Y | [Getting started](GETTING_STARTED.md) |
+| Install and launch Friday | [Getting started](GETTING_STARTED.md) |
 | Learn the desktop interface and everyday commands | [User guide](USER_GUIDE.md) |
 | Configure models, voice, storage, startup, and permissions | [Configuration reference](CONFIGURATION.md) |
 | Build automations | [Workflow guide](WORKFLOWS.md) |
@@ -28,8 +28,8 @@ This handbook describes the Mark 7 desktop assistant as implemented in this repo
 
 - Current runtime version: `7.0.0`
 - Supported development platform: Windows 11, x64, Python 3.11
-- Primary entry point: `Mark_7.py`
-- Compatibility entry point: `Mark_6.py` (kept for older shortcuts; it launches Mark 7)
+- Primary entry point: `friday.py` / `Mark_7.py`
+- Compatibility entry point: `Mark_6.py` (kept for older shortcuts; it launches Friday)
 - Legacy reference implementation: `Mark_5.py`
 - Local conversational model: Ollama `llama3.2:1b-instruct-q2_K` by default; the model manager
   recommends a larger one when the machine can hold it
@@ -38,7 +38,7 @@ This handbook describes the Mark 7 desktop assistant as implemented in this repo
 - Speech output: Piper offline, Edge online, or Windows SAPI, falling back in that order
 - Wake word: openWakeWord's pretrained "hey friday", local and keyless
 
-Mark 7 is a desktop assistant running on Windows. It is not a replacement kernel or a standalone operating system. "OS" in the project name refers to the integrated assistant experience.
+Friday is a desktop assistant running on Windows. It is not a replacement kernel or a standalone operating system.
 
 ## Core design principles
 
