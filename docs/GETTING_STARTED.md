@@ -63,7 +63,7 @@ On first launch, choose whether to enable:
 - proactive reminders and health alerts;
 - Privacy Mode.
 
-The wizard also displays the emergency stop shortcut: `Ctrl+Alt+J`.
+The wizard also displays the emergency stop shortcut: `Ctrl+Alt+S`.
 
 ## Automatic startup
 
@@ -73,7 +73,7 @@ Enable startup for the current Windows account:
 .\Install-Startup.ps1
 ```
 
-This creates the scheduled task `F.R.I.D.A.Y` for historical compatibility. The task launches the current `Start-Friday.ps1`, which starts Mark 7. It uses:
+This creates the scheduled task `Friday`. The task launches the current `Start-Friday.ps1`, which starts Friday. It uses:
 
 - an at-logon trigger for the current user;
 - an interactive, limited-privilege principal;

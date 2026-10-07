@@ -1,7 +1,7 @@
 # Packaging and distribution
 
 The target is an end user who downloads one file, runs it, and is talking to
-F.R.I.D.A.Y a few minutes later. They should never see Python, pip, a terminal,
+Friday a few minutes later. They should never see Python, pip, a terminal,
 or a clone URL.
 
 ```

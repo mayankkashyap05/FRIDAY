@@ -49,6 +49,8 @@ Runtime settings live in the `settings` table as JSON values.
 | `startup_enabled` | `false` | UI record of startup preference |
 | `privacy_mode` | `false` | Block screenshots and cloud screen analysis |
 | `conversation_memory` | `true` | Store and reuse recent conversation |
+| `conversation_memory_limit` | `10` | Active LLM prompt context window (messages) |
+| `minimal_ui` | `true` | Clean Minimal Interaction Mode layout on the main window |
 | `ollama_model` | `llama3.2:1b-instruct-q2_K` | Local conversational model |
 | `whisper_model` | `base` | Lazy speech-recognition model |
 | `hands_free_enabled` | `true` | Begin continuous voice capture shortly after startup |

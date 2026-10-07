@@ -77,7 +77,7 @@ Index a temporary folder containing a unique sentence, search for it, and verify
 
 - Deny an action and verify no backend call.
 - Ask and cancel.
-- Press `Ctrl+Alt+J` during a workflow delay.
+- Press `Ctrl+Alt+S` during a workflow delay.
 - Verify audit integrity.
 - Test Windows Hello only on an enrolled machine.
 

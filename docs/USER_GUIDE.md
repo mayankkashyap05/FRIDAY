@@ -2,13 +2,14 @@
 
 ## Main window
 
-The Mark 7 command center uses most of the available desktop while preserving normal window controls. The left Voice Core shows listening state and speech configuration, the center contains the animated Live Voice stage, conversation stream, and command composer, and the right Capability Matrix summarizes active subsystems and session status. The centered rings expand while hands-free listening is active.
+The Friday desktop window defaults to a clean Minimal Interaction Mode focused on the Friday voice orb, current interaction status, conversation transcript, and input bar. Detailed system telemetry and subsystem health checks live under **Settings > Diagnostics** (or can be toggled from the header with **DETAILS**).
 
 The desktop window contains:
 
-- **F.R.I.D.A.Y** title and current status;
+- **Friday** title and current status;
 - **WORKFLOWS** button;
 - **SETTINGS** button;
+- **DETAILS / MINIMAL** layout toggle;
 - scrollable conversation transcript;
 - keyboard input field;
 - **MIC** push-to-talk button;
@@ -20,11 +21,11 @@ Status values include ready, listening, working, no speech, error, and stopped. 
 
 ## System tray
 
-When tray behavior is enabled, closing the window hides it instead of exiting. The tray menu can reopen or fully exit F.R.I.D.A.Y. If the tray icon cannot initialize, closing exits normally.
+When tray behavior is enabled, closing the window hides it instead of exiting. The tray menu can reopen or fully exit Friday. If the tray icon cannot initialize, closing exits normally.
 
 ## Emergency stop
 
-Press `Ctrl+Alt+J` to:
+Press `Ctrl+Alt+S` to:
 
 1. cancel the currently running workflow;
 2. clear queued user requests;

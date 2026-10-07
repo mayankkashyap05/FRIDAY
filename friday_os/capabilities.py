@@ -234,6 +234,8 @@ CORE: tuple[Capability, ...] = (
     Capability("upgrade_package", "Upgrade software with winget", Risk.HIGH, ("packages.install",),
                local_only=False, needs_network=True, parameters=("package_id",)),
 
+    Capability("clarify", "Ask for missing command parameters", Risk.LOW,
+               parameters=("question", "intent")),
     Capability("noop", "Do nothing", Risk.LOW),
 )
 

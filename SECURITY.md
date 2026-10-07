@@ -81,4 +81,4 @@ interrupted action is only offered for retry when it is read-only and low risk.
 - Keep `.env` out of version control — it is already in `.gitignore`.
 - Only install plugins you have read. Plugins declare permissions, but a plugin
   is code running in the assistant's process.
-- `Ctrl+Alt+J` clears pending work and locks sensitive actions immediately.
+- `Ctrl+Alt+S` clears pending work and locks sensitive actions immediately.

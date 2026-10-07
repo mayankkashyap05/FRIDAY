@@ -20,7 +20,7 @@ All lines should report `PASS`. The script deliberately prints no credentials or
 
 ## Backup
 
-Use **Settings > Data > Back up local F.R.I.D.A.Y data** or call `create_backup` programmatically.
+Use **Settings > Data > Back up local Friday data** or call `create_backup` programmatically.
 
 Backups are timestamped ZIP files and include local databases, plugin data, notes, screenshots, and indexes. They exclude SQLite WAL/SHM files and never include Windows Credential Manager secrets or `.env` outside the data directory.
 

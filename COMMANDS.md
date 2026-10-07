@@ -1,6 +1,6 @@
-# F.R.I.D.A.Y command guide
+# Friday command guide
 
-## Mark 7 knowledge and productivity
+## Knowledge and productivity
 
 - `Remember submit the application Friday`
 - `List notes`
@@ -58,7 +58,7 @@ Applications with known Windows aliases open directly. Other applications are di
 
 - Hands-free listening is enabled by default. Use **PAUSE LISTENING** or **ENABLE LISTENING** in the Voice Core panel to change it for the current session.
 - The microphone button performs one push-to-talk capture even when hands-free mode is paused.
-- Recognition pauses while F.R.I.D.A.Y speaks so that its own voice is less likely to be transcribed.
+- Recognition pauses while Friday speaks so that its own voice is less likely to be transcribed.
 - Spoken turns allow longer sentences and brief thinking pauses. Friday uses a shorter, more conversational response style for voice than for typed answers.
 - Emoji, Markdown markers, code formatting, and raw URLs remain visible in the conversation but are removed from speech output.
 - Configure the Whisper model, preferred Windows voice, and speech speed under **Settings → General**.
@@ -86,7 +86,7 @@ FRIDAY_WORK_APPS=terminal,spotify
 
 Then say `Start work mode` to open them together.
 
-Mark 7 also provides the **WORKFLOWS** editor for multi-step routines. Workflows support action steps, delays, setting conditions, voice phrases, daily times, cancellation, and failure policies. Each sensitive step retains its normal permission check.
+Friday also provides the **WORKFLOWS** editor for multi-step routines. Workflows support action steps, delays, setting conditions, voice phrases, daily times, cancellation, and failure policies. Each sensitive step retains its normal permission check.
 
 ## Conversation
 

@@ -61,7 +61,7 @@ The security session tracks activity with a monotonic clock. It can require veri
 
 ## Emergency stop
 
-`Ctrl+Alt+J` cancels workflow waits, clears pending input work, and locks the security session. It does not terminate unrelated Windows applications or reverse completed network requests.
+`Ctrl+Alt+S` cancels workflow waits, clears pending input work, and locks the security session. It does not terminate unrelated Windows applications or reverse completed network requests.
 
 ## Credential storage
 

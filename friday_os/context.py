@@ -102,8 +102,9 @@ class WindowsObserver:
     IGNORED_TITLES = {"Program Manager", "Windows Input Experience", "Settings"}
 
     def __init__(self):
-        self._user32 = ctypes.windll.user32
-        self._kernel32 = ctypes.windll.kernel32
+        windll = getattr(ctypes, "windll", None)
+        self._user32 = getattr(windll, "user32", None)
+        self._kernel32 = getattr(windll, "kernel32", None)
 
     def _process_name(self, handle: int) -> tuple[str, int]:
         pid = wintypes.DWORD()
@@ -294,7 +295,11 @@ class ContextEngine:
     def is_own_window(window: WindowInfo) -> bool:
         title = (window.title or "").lower()
         process = (window.process or "").lower()
-        return "F.R.I.D.A.Y" in title or process in {"python.exe", "pythonw.exe", "friday-mark-7.exe"}
+        return (
+            "friday" in title
+            or "f.r.i.d.a.y" in title
+            or process in {"python.exe", "pythonw.exe", "friday.exe", "friday-mark-7.exe"}
+        )
 
     def resolve_folder(self) -> Path | None:
         """The folder a request like "open the folder this file is in" means."""

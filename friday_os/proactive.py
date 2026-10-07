@@ -13,7 +13,7 @@ class WindowsNotifier:
     def send(self, title: str, message: str) -> None:
         try:
             from winotify import Notification
-            Notification(app_id="F.R.I.D.A.Y", title=title, msg=message, duration="short").show()
+            Notification(app_id="Friday", title=title, msg=message, duration="short").show()
         except Exception:
             import ctypes
             ctypes.windll.user32.MessageBoxW(0, message, title, 0x40)

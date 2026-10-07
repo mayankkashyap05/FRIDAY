@@ -1,4 +1,5 @@
 import io
+import types
 import unittest
 from unittest.mock import patch
 
@@ -9,8 +10,19 @@ class SelfTestTests(unittest.TestCase):
     """The build gate. It has to fail loudly when the bundle is incomplete."""
 
     def test_a_complete_environment_passes(self):
+        real = __builtins__["__import__"] if isinstance(__builtins__, dict) else __builtins__.__import__
+
+        def allow_platform_optional(name, *args, **kwargs):
+            try:
+                return real(name, *args, **kwargs)
+            except Exception:
+                if name in {"pyaudio", "win32com.client", "pywinauto", "winotify", "winrt.windows.media.ocr", "pystray"}:
+                    return types.ModuleType(name)
+                raise
+
         stream = io.StringIO()
-        self.assertEqual(run(stream), 0)
+        with patch("builtins.__import__", side_effect=allow_platform_optional):
+            self.assertEqual(run(stream), 0)
         self.assertIn("All", stream.getvalue())
 
     def test_a_missing_dependency_fails_the_build(self):

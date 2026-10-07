@@ -116,7 +116,7 @@ class SettingsRepository:
         "auto_web_answers": True,
         "vision_model": "gpt-4o",
         "openai_chat_model": "gpt-4o-mini",
-        "conversation_memory_limit": 40,
+        "conversation_memory_limit": 10,
         "mic_energy": 180,
         "mic_pause": 1.25,
         "mic_timeout": 18,
@@ -140,6 +140,7 @@ class SettingsRepository:
         "partial_interval": 1.2,
         "bilingual_enabled": True,
         "swahili_voice": "sw-TZ-DaudiNeural",
+        "minimal_ui": True,
     }
 
     def __init__(self, database: Database):

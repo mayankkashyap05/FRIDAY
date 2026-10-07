@@ -57,7 +57,7 @@ class SetupWizard(tk.Toplevel):
         self.settings = settings_repo
         self.project_root = project_root
         self.speech_engine = speech_engine
-        self.title("Set up F.R.I.D.A.Y")
+        self.title("Set up Friday")
         self.configure(bg=Palette.BASE)
         self.geometry("720x620")
         self.resizable(False, False)
@@ -180,8 +180,8 @@ class SetupWizard(tk.Toplevel):
     def _step_welcome(self, parent) -> None:
         self.step_subtitle.configure(text="A few minutes, once")
         self._heading(
-            parent, "Let's get you talking to it",
-            "This sets up the parts that make F.R.I.D.A.Y work hands-free: hearing you "
+            parent, "Let's get you talking to Friday",
+            "This sets up the parts that make Friday work hands-free: hearing you "
             "clearly, speaking back in a natural voice, and answering when you say "
             "“Hey Friday”. Everything here is free and nothing needs an account.",
         )
@@ -190,7 +190,7 @@ class SetupWizard(tk.Toplevel):
         for title, detail in (
             ("Runs on your machine", "The language model, speech recognition, and voice all work locally."),
             ("Asks before acting", "Typing into apps, closing them, or deleting files needs your confirmation."),
-            ("Stops instantly", "Escape interrupts speech. Ctrl+Alt+J clears pending work."),
+            ("Stops instantly", "Escape interrupts speech. Ctrl+Alt+S clears pending work."),
         ):
             row = tk.Frame(card.body, bg=Palette.SURFACE)
             row.pack(fill="x", pady=Space.SM)
@@ -216,7 +216,7 @@ class SetupWizard(tk.Toplevel):
         self.calibrate_note = tk.Label(
             card.body,
             text="Calibrating measures the noise in your room and sets the level at which "
-                 "F.R.I.D.A.Y decides you are speaking.",
+                 "Friday decides you are speaking.",
             bg=Palette.SURFACE, fg=Palette.TEXT_FAINT, font=Type.CAPTION,
             wraplength=560, justify="left",
         )
@@ -307,7 +307,7 @@ class SetupWizard(tk.Toplevel):
         engine = self.speech_engine
 
         def work() -> None:
-            message = "Good afternoon. I am Friday, and I am ready when you are."
+            message = "Hello. I'm Friday, and I'm ready when you are."
             try:
                 if engine is not None:
                     engine.say(message)
@@ -324,7 +324,7 @@ class SetupWizard(tk.Toplevel):
         self.step_subtitle.configure(text="Answering without touching anything")
         self._heading(
             parent, "“Hey Friday”",
-            "With this on, F.R.I.D.A.Y listens for its name in the background and wakes up "
+            "With this on, Friday listens for its name in the background and wakes up "
             "when it hears you. The wake word runs entirely on your machine and needs no account.",
         )
         card = Card(parent, padding=Space.LG, glow=Palette.ACCENT)
@@ -343,12 +343,12 @@ class SetupWizard(tk.Toplevel):
         self.step_subtitle.configure(text="Always there when you sign in")
         self._heading(
             parent, "Start automatically",
-            "For “Hey Friday” to work whenever you are at your desk, F.R.I.D.A.Y needs to be "
+            "For “Hey Friday” to work whenever you are at your desk, Friday needs to be "
             "running. Starting it at sign-in is the simplest way to do that.",
         )
         card = Card(parent, padding=Space.LG)
         card.pack(fill="x")
-        self._check(card.body, "Start F.R.I.D.A.Y when I sign in", self.autostart,
+        self._check(card.body, "Start Friday when I sign in", self.autostart,
                     "Runs in your session with limited privileges, restarts if it crashes, "
                     "and sits in the system tray until you need it.")
         self.startup_status = tk.Label(card.body, text="", bg=Palette.SURFACE,

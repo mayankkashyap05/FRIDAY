@@ -15,7 +15,7 @@ class WindowsHelloVerifier:
         except Exception:
             return False
 
-    def verify(self, message: str = "Approve this F.R.I.D.A.Y action") -> bool:
+    def verify(self, message: str = "Approve this Friday action") -> bool:
         try:
             from winrt.windows.security.credentials.ui import UserConsentVerifier, UserConsentVerificationResult
             result = asyncio.run(UserConsentVerifier.request_verification_async(message))

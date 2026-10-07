@@ -23,7 +23,7 @@ ACTIONS = tuple(
 
 
 class SettingsWindow(tk.Toplevel):
-    def __init__(self, parent, settings: SettingsRepository, permissions: PermissionRepository, audit: AuditLog, project_root, plugins=None, conversation_store=None):
+    def __init__(self, parent, settings: SettingsRepository, permissions: PermissionRepository, audit: AuditLog, project_root, plugins=None, conversation_store=None, health=None, on_saved=None):
         super().__init__(parent)
         self.settings_repo = settings
         self.permissions_repo = permissions
@@ -31,7 +31,9 @@ class SettingsWindow(tk.Toplevel):
         self.project_root = project_root
         self.plugins = plugins
         self.conversation_store = conversation_store
-        self.title("F.R.I.D.A.Y Settings")
+        self.health = health
+        self.on_saved = on_saved
+        self.title("Friday Settings")
         self.geometry("820x780")
         self.minsize(650, 500)
         self.transient(parent)
@@ -40,6 +42,7 @@ class SettingsWindow(tk.Toplevel):
         self._build_general()
         self._build_permissions()
         self._build_plugins()
+        self._build_diagnostics()
         self._build_audit()
         self._build_data_tools()
         ttk.Button(self, text="Save", command=self.save).pack(pady=(0, 12))
@@ -61,7 +64,9 @@ class SettingsWindow(tk.Toplevel):
         self.mic_extended = tk.BooleanVar(value=values.get("mic_extended_listening", True))
         self.barge_in = tk.BooleanVar(value=values.get("voice_barge_in", False))
         self.earcons = tk.BooleanVar(value=values.get("earcons_enabled", True))
+        self.minimal_ui = tk.BooleanVar(value=values.get("minimal_ui", True))
         for text, variable in (
+            ("Minimal main window layout (hide system telemetry rails)", self.minimal_ui),
             ("Speak responses", self.speak), ("Minimize to system tray", self.tray),
             ("Start at Windows sign-in", self.startup), ("Store conversation memory", self.memory),
             ("Privacy mode (blocks capture and cloud features)", self.privacy),
@@ -142,8 +147,8 @@ class SettingsWindow(tk.Toplevel):
         self.wake_sensitivity = ttk.Spinbox(frame, from_=0.1, to=1.0, increment=0.05)
         self.wake_sensitivity.set(values.get("wake_word_sensitivity", 0.55)); self.wake_sensitivity.pack(fill="x")
         ttk.Label(frame, text="Conversation memory window (messages)").pack(anchor="w", pady=(12, 2))
-        self.memory_limit = ttk.Spinbox(frame, from_=10, to=80)
-        self.memory_limit.set(values.get("conversation_memory_limit", 40)); self.memory_limit.pack(fill="x")
+        self.memory_limit = ttk.Spinbox(frame, from_=4, to=80)
+        self.memory_limit.set(values.get("conversation_memory_limit", 10)); self.memory_limit.pack(fill="x")
         ttk.Label(frame, text="Work mode apps (comma separated)").pack(anchor="w", pady=(12, 2))
         self.work_apps = ttk.Entry(frame)
         self.work_apps.insert(0, ", ".join(values["work_apps"]))
@@ -216,6 +221,43 @@ class SettingsWindow(tk.Toplevel):
             ttk.Label(row, text=status).pack(side="right")
             self.plugin_vars[item["id"]] = variable
 
+    def _build_diagnostics(self):
+        frame = ttk.Frame(self.tabs, padding=18)
+        self.tabs.add(frame, text="Diagnostics")
+        values = self.settings_repo.all()
+        summary = (
+            f"Language model: {values.get('ollama_model', 'llama3.2:1b-instruct-q2_K')}\n"
+            f"Speech engine: {str(values.get('tts_engine', 'edge')).upper()}\n"
+            f"Recognition: {str(values.get('whisper_model', 'base')).upper()}\n"
+            f"Privacy mode: {'Private mode' if values.get('privacy_mode', False) else 'Standard'}\n"
+            f"Shortcuts: Hey Friday (wake)  |  Ctrl+Alt+Space (summon)  |  Esc (stop speech)  |  Ctrl+Alt+S (emergency stop)"
+        )
+        ttk.Label(frame, text=summary, justify="left").pack(anchor="w", pady=(0, 12))
+        ttk.Button(frame, text="Run system diagnostics", command=self._refresh_diagnostics).pack(anchor="w", pady=(0, 8))
+        self.diagnostics_output = scrolledtext.ScrolledText(frame, wrap="word", state="normal", font=("Consolas", 9), height=18)
+        self.diagnostics_output.pack(fill="both", expand=True)
+        self._refresh_diagnostics()
+
+    def _refresh_diagnostics(self):
+        if not hasattr(self, "diagnostics_output"):
+            return
+        self.diagnostics_output.configure(state="normal")
+        self.diagnostics_output.delete("1.0", "end")
+        if self.health is not None:
+            try:
+                report = self.health.report()
+                self.diagnostics_output.insert("end", f"{report.summary()}\n\n")
+                for line in report.details():
+                    self.diagnostics_output.insert("end", f"• {line}\n")
+            except Exception as exc:
+                self.diagnostics_output.insert("end", f"Diagnostics error: {exc}\n")
+        else:
+            from .diagnostics import run_diagnostics
+            for item in run_diagnostics(self.project_root):
+                label = "PASS" if item.success else "FAIL"
+                self.diagnostics_output.insert("end", f"[{label}] {item.name}: {item.detail}\n")
+        self.diagnostics_output.configure(state="disabled")
+
     def _build_data_tools(self):
         frame = ttk.Frame(self.tabs, padding=18)
         self.tabs.add(frame, text="Data")
@@ -223,12 +265,13 @@ class SettingsWindow(tk.Toplevel):
         ttk.Button(frame, text="Export settings", command=self._export_settings).pack(anchor="w", pady=4)
         ttk.Button(frame, text="Import settings", command=self._import_settings).pack(anchor="w", pady=4)
         ttk.Separator(frame).pack(fill="x", pady=16)
-        ttk.Button(frame, text="Back up local F.R.I.D.A.Y data", command=self._backup).pack(anchor="w", pady=4)
+        ttk.Button(frame, text="Back up local Friday data", command=self._backup).pack(anchor="w", pady=4)
         ttk.Button(frame, text="Restore local data backup", command=self._restore).pack(anchor="w", pady=4)
 
     def save(self):
         before_startup = bool(self.settings_repo.get("startup_enabled"))
         values = {
+            "minimal_ui": self.minimal_ui.get(),
             "speak_responses": self.speak.get(), "minimize_to_tray": self.tray.get(),
             "startup_enabled": self.startup.get(), "conversation_memory": self.memory.get(),
             "privacy_mode": self.privacy.get(), "ollama_model": self.model.get().strip() or "llama3.2:1b-instruct-q2_K",
@@ -277,6 +320,11 @@ class SettingsWindow(tk.Toplevel):
             if completed.returncode:
                 messagebox.showerror("Startup setting", completed.stderr.strip() or "Could not update startup task.", parent=self)
                 return
+        if callable(self.on_saved):
+            try:
+                self.on_saved()
+            except Exception:
+                pass
         messagebox.showinfo("Settings", "Settings saved. Model and microphone changes apply after restart.", parent=self)
         self.destroy()
 

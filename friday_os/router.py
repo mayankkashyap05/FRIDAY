@@ -12,7 +12,7 @@ from .facts import calculate, convert
 WAKE_NAME = re.compile(
     r"""^\s*
     (?:(?:hey|hi|hello|ok|okay|yo)\s+)?      # optional greeting
-    (?:j\.?\s?a\.?\s?r\.?\s?v\.?\s?i\.?\s?s|friday|jervis|javis|fridays)
+    (?:f\.?\s?r\.?\s?i\.?\s?d\.?\s?a\.?\s?y\.?|friday|fridays)
     \s*[,:.!?-]*\s*                            # trailing punctuation after the name
     """,
     re.IGNORECASE | re.VERBOSE,
@@ -93,6 +93,13 @@ class CommandRouter:
         if re.search(r"^(?:what|which|list|show|any)\b.*\breminders?\b|^my reminders$", normalized):
             return Command("list_reminders", raw_text=raw)
 
+        if re.fullmatch(r"(?:remind me|set (?:a )?(?:reminder|timer)|wake me)", normalized):
+            return Command(
+                "clarify",
+                {"question": "What should I remind you about, and when?", "intent": "add_reminder"},
+                raw_text=raw,
+            )
+
         if re.match(r"(?:remind me|set (?:a )?(?:reminder|timer)|wake me)\b", normalized):
             return Command("add_reminder", {"text": raw}, raw_text=raw)
 
@@ -138,6 +145,65 @@ class CommandRouter:
 
         if re.fullmatch(r"(?:do (?:that|it) again|again|repeat that|same again|one more time)", normalized):
             return Command("repeat_last", raw_text=raw)
+
+        # Intent clarification for incomplete commands missing required targets.
+        if re.fullmatch(
+            r"(?:delete|remove)(?:\s+(?:the|a|an|this|that|my))?(?:\s+(?:file|folder|item|document|it|that|this))?",
+            normalized,
+        ):
+            return Command(
+                "clarify",
+                {"question": "Which file do you want to delete?", "intent": "delete_path"},
+                raw_text=raw,
+            )
+
+        if re.fullmatch(
+            r"(?:(?:send|write|compose)\s+(?:an?\s+|the\s+)?(?:email|mail|message)(?:\s+to\s+(?:someone|somebody))?"
+            r"|email(?:\s+(?:someone|somebody))?)",
+            normalized,
+        ):
+            return Command(
+                "clarify",
+                {"question": "Who should I send it to?", "intent": "send_email"},
+                raw_text=raw,
+            )
+
+        if re.fullmatch(
+            r"(?:open|launch|start)(?:\s+(?:it|that|this|(?:the|an?)\s+(?:app|application|program)))?",
+            normalized,
+        ):
+            return Command(
+                "clarify",
+                {"question": "Which app?", "intent": "open_app"},
+                raw_text=raw,
+            )
+
+        if re.fullmatch(
+            r"(?:close|quit|terminate)(?:\s+(?:the|an?)\s+(?:app|application|program))?",
+            normalized,
+        ):
+            return Command(
+                "clarify",
+                {"question": "Which app do you want to close?", "intent": "close_app"},
+                raw_text=raw,
+            )
+
+        if re.fullmatch(
+            r"(?:find|search for|locate)(?:\s+(?:the|a|an|my))?(?:\s+(?:file|files|document|folder|it|that))?",
+            normalized,
+        ):
+            return Command(
+                "clarify",
+                {"question": "Which file are you looking for?", "intent": "find_files"},
+                raw_text=raw,
+            )
+
+        if re.fullmatch(r"(?:type|enter)(?:\s+(?:something|text|it|that))?", normalized):
+            return Command(
+                "clarify",
+                {"question": "What would you like me to type?", "intent": "type_text"},
+                raw_text=raw,
+            )
 
         match = re.fullmatch(r"(?:what|how) about\s+(.+)", normalized)
         if match:

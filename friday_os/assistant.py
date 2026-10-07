@@ -19,19 +19,31 @@ from .settings import Settings
 
 
 SYSTEM_PROMPT = (
-    "You are F.R.I.D.A.Y, a warm, perceptive Windows desktop assistant. Talk like a trusted, "
-    "intelligent companion: natural, relaxed, direct, and never stiff or ceremonial. Use contractions "
-    "and everyday wording. Match the user's tone without pretending to have feelings or experiences. "
-    "The application handles local computer actions separately. Never claim an action occurred "
-    "unless the system reports it. Protect the user's privacy and explain uncertainty plainly. "
-    "Avoid repetitive greetings, excessive formality, emoji, and canned phrases such as 'Certainly' "
-    "or 'How may I assist you today?'"
+    "You are Friday, a private, local-first personal assistant on the user's computer. "
+    "Be concise, natural, calm, practical, and factual. "
+    "Focus directly on the user's request and remain user-driven and privacy-conscious.\n\n"
+    "Strict rules:\n"
+    "- Never roleplay or reference Jarvis, Iron Man, Marvel, Tony Stark, or fictional AI personas.\n"
+    "- Never use military, tactical, or sci-fi language such as 'protocol', 'stasis', "
+    "'commander', 'systems online', or 'at your service'.\n"
+    "- Never use butler language or honorifics such as 'sir', 'madam', 'right away, sir', "
+    "or 'certainly, sir'.\n"
+    "- Never use theatrical narration such as 'Initializing...', 'Accessing systems...', "
+    "or 'Executing command...'.\n"
+    "- Never claim that a local computer action occurred unless the execution layer "
+    "actually ran and confirmed it.\n"
+    "- Avoid repetitive greetings, excessive formality, emoji, and filler openings such as "
+    "'Certainly!', 'Of course!', 'Great question', or 'How may I assist you today?'. Lead with the answer."
 )
 
 VOICE_RESPONSE_PROMPT = (
-    "This is a live spoken conversation. Infer the user's intended request from natural speech, "
-    "including harmless filler words or self-corrections. Reply in one to three conversational sentences "
-    "unless they ask for detail. Use plain spoken language with no Markdown, emoji, headings, lists, or raw URLs."
+    "This is a live spoken conversation, and your reply will be read aloud. "
+    "Use the fewest words that fully answer the user. "
+    "Prefer a short phrase or a single sentence for simple requests. "
+    "Do not repeat the user's question, and avoid conversational filler or sign-offs. "
+    "Give complete information only when the request genuinely requires detail. "
+    "Infer the user's intended request from natural speech, including harmless filler words or self-corrections. "
+    "Use plain spoken language with no Markdown, emoji, headings, lists, code blocks, or raw URLs."
 )
 
 
@@ -156,8 +168,8 @@ class AssistantController:
 
     def _memory_limit(self) -> int:
         if not self.settings_repo:
-            return 40
-        return max(10, min(80, int(self.settings_repo.get("conversation_memory_limit", 40))))
+            return 10
+        return max(4, min(80, int(self.settings_repo.get("conversation_memory_limit", 10))))
 
     def _conversation_context(self, limit: int = 8) -> str:
         """Recent dialogue, so screen analysis knows what the user was discussing."""
@@ -256,6 +268,9 @@ class AssistantController:
             return AssistantReply(result.message)
         command = self.plugins.route(text) if self.plugins else None
         command = command or self.router.route(text)
+        if command.action == "clarify":
+            self.last_action = "clarify"
+            return AssistantReply(str(command.arguments.get("question", "Could you clarify?")))
         resolved = self._resolve_follow_up(command)
         if isinstance(resolved, AssistantReply):
             return resolved

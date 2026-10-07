@@ -98,10 +98,10 @@ class LiveTranscriber:
     def listen(self, on_partial: Callable[[str], None] | None = None,
                on_level: Callable[[float], None] | None = None) -> str:
         """Capture one phrase and return it. Emits partials while speaking."""
-        import pyaudio
-
         audio = stream = None
         try:
+            import pyaudio
+
             audio = pyaudio.PyAudio()
             stream = audio.open(
                 rate=SAMPLE_RATE, channels=1, format=pyaudio.paInt16, input=True,
