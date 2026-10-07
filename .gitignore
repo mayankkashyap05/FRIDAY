@@ -13,3 +13,8 @@ build/
 models/
 installer-output/
 *.spec.bak
+
+codebase.py
+codebase.yaml
+CODE.md
+
