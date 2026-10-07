@@ -149,13 +149,7 @@ development setup, how to run the tests, and the conventions the codebase
 follows — the important ones being that machine-affecting capabilities stay
 typed and permission-gated, and that nothing fails silently.
 
-## Licence and credits
+## Licence
 
 MIT. See [LICENSE](LICENSE).
 
-Friday began as a fork of
-[ColeHacker381/F.R.I.D.A.Y](https://github.com/ColeHacker381/F.R.I.D.A.Y). The
-legacy Mark 5 runtime it came from is still in the repository for reference, and
-its original documentation is preserved in [docs/LEGACY.md](docs/LEGACY.md).
-
-Email SMS functionality is provided by AlfredoSequeida's `etext` (c) 2021.
