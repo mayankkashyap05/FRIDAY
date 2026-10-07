@@ -1,0 +1,15 @@
+.venv/
+.env
+__pycache__/
+*.py[cod]
+caches and calls/client.json
+caches and calls/token.json
+.cache/
+data/
+*.db-shm
+*.db-wal
+dist/
+build/
+models/
+installer-output/
+*.spec.bak
