@@ -1,7 +1,7 @@
 # F.R.I.D.A.Y
 
-[![tests](https://github.com/PHENOMVALENCE/FRIDAY-OS/actions/workflows/tests.yml/badge.svg)](https://github.com/PHENOMVALENCE/FRIDAY-OS/actions/workflows/tests.yml)
-[![release](https://github.com/PHENOMVALENCE/FRIDAY-OS/actions/workflows/release.yml/badge.svg)](https://github.com/PHENOMVALENCE/FRIDAY-OS/actions/workflows/release.yml)
+[![tests](https://github.com/mayankkashyap05/FRIDAY/actions/workflows/tests.yml/badge.svg)](https://github.com/mayankkashyap05/FRIDAY/actions/workflows/tests.yml)
+[![release](https://github.com/mayankkashyap05/FRIDAY/actions/workflows/release.yml/badge.svg)](https://github.com/mayankkashyap05/FRIDAY/actions/workflows/release.yml)
 [![license: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Python 3.11](https://img.shields.io/badge/python-3.11-blue.svg)](https://www.python.org/downloads/release/python-3119/)
 [![platform: Windows 11](https://img.shields.io/badge/platform-Windows%2011-0078d4.svg)](#requirements)
@@ -15,7 +15,7 @@ a sentence. It reads your screen, finds your files, controls your windows, sets
 reminders, and answers questions from live sources — with the language model,
 the speech recognition, and the voice all running locally.
 
-It works in English and Kiswahili.
+It works in English.
 
 ---
 
@@ -41,7 +41,7 @@ over anything that would leave the machine.
 ## Installing
 
 **For users** — download the installer from
-[Releases](https://github.com/PHENOMVALENCE/FRIDAY-OS/releases), run it, and the
+[Releases](https://github.com/mayankkashyap05/FRIDAY/releases), run it, and the
 first launch walks through microphone, voice, wake word, and startup. See
 [Getting started](docs/GETTING_STARTED.md).
 

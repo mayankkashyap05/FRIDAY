@@ -11,7 +11,7 @@ dependency set is pinned against 3.11, and several packages have no wheels
 elsewhere.
 
 ```powershell
-git clone https://github.com/PHENOMVALENCE/FRIDAY-OS.git
+git clone https://github.com/mayankkashyap05/FRIDAY.git
 cd FRIDAY-OS
 .\Setup-Friday.ps1        # virtualenv, dependencies, models, diagnostics
 .\Start-Friday.ps1
@@ -147,7 +147,7 @@ dependencies inside functions to keep startup fast. See
 ## Reporting something
 
 Bugs and feature ideas go in
-[Issues](https://github.com/PHENOMVALENCE/FRIDAY-OS/issues). For a bug, the
+[Issues](https://github.com/mayankkashyap05/FRIDAY/issues). For a bug, the
 output of `run diagnostics` and the tail of `%LOCALAPPDATA%\FRIDAY\logs\friday.log`
 usually identify it immediately.
 

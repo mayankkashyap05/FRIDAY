@@ -5,7 +5,7 @@
 Please do not open a public issue for a security problem.
 
 Report it through
-[GitHub's private vulnerability reporting](https://github.com/PHENOMVALENCE/FRIDAY-OS/security/advisories/new),
+[GitHub's private vulnerability reporting](https://github.com/mayankkashyap05/FRIDAY/security/advisories/new),
 which keeps the report private until a fix exists.
 
 Useful things to include: what an attacker can do, how to reproduce it, the
