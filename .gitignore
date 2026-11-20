@@ -1,0 +1,53 @@
+# Python
+__pycache__/
+*.py[cod]
+*.so
+.venv/
+venv/
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.python-version
+
+# Logs
+*.log
+logs/
+
+# Personal / user data — never share this project with these files
+memory/*.json
+models/hey_jarvis*
+models/hey_friday*
+models/training/
+
+# Local runtime state
+data/
+documents/
+out/
+build/
+dist/
+
+# Secrets — never commit API keys
+config/*.json
+!config/*.example.json
+config/telegram_offset.txt
+
+# IDE
+.idea/
+.vscode/
+*.swp
+
+# OS
+Thumbs.db
+.DS_Store
+
+# Generated wake word assets (re-trained locally)
+models/hey_friday_v0.1.onnx
+models/hey_friday_v0.1.onnx.data
+
+# Reference clone for study (openjarvis)
+openjarvis_example/
+
+codebase.py
+codebase.yaml
+CODE.md
