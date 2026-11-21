@@ -36,6 +36,9 @@ Item {
     readonly property real orbSize: Math.round(128 * Theme.uiScale)
     width: orb.orbSize
     height: orb.orbSize
+    // Dormant = 0% desktop footprint: orb is invisible until summoned.
+    scale: 0
+    opacity: 0
 
     readonly property bool listening: orb.assistantState === "LISTENING"
     readonly property bool thinking: orb.assistantState === "THINKING"

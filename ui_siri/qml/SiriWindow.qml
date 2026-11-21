@@ -33,7 +33,8 @@ Item {
     property bool invoked: false
 
     // Live microphone level (0..1) fed from the audio pipeline by the bridge.
-    property real micAmplitude: 0
+    // Bound to bridge.micAmplitude so live mic energy drives the orb ribbons.
+    readonly property real micAmplitude: root.bridge ? root.bridge.micAmplitude : 0
     property bool micActive: false
     property bool attention: false
 
@@ -100,6 +101,21 @@ Item {
             muted: root.bridge ? root.bridge.muted : false
             amplitude: root.micAmplitude
             attention: root.attention
+
+            // Click the orb to enter Type-to-Siri; click again to leave it.
+            MouseArea {
+                id: orbTouch
+                anchors.fill: parent
+                hoverEnabled: true
+                cursorShape: Qt.PointingHandCursor
+                onClicked: {
+                    if (!root.typing && (!root.bridge || !root.bridge.setupVisible)) {
+                        root.typing = true
+                    } else {
+                        root.typing = false
+                    }
+                }
+            }
         }
 
         SnippetStack {
@@ -149,18 +165,4 @@ Item {
 
     property bool typing: false
 
-    // Click the orb to enter Type-to-Siri; click again to leave it.
-    MouseArea {
-        id: orbTouch
-        anchors.fill: orb
-        hoverEnabled: true
-        cursorShape: Qt.PointingHandCursor
-        onClicked: {
-            if (!root.typing && (!root.bridge || !root.bridge.setupVisible)) {
-                root.typing = true
-            } else {
-                root.typing = false
-            }
-        }
-    }
 }
