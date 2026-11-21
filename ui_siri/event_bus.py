@@ -52,15 +52,31 @@ class UiState(str, Enum):
         if isinstance(value, UiState):
             return value
         text = str(value or "").strip().upper().replace("-", "_")
+        # Legacy / external spellings that must reach a real state. Anything
+        # missing here silently degrades to LISTENING (the fallthrough below),
+        # which is how "ACTING" ended up rendering as LISTENING.
         aliases = {
             "ONLINE": cls.LISTENING,
             "IDLE": cls.LISTENING,
+            "READY": cls.LISTENING,
+            # A tool call is running: that is PROCESSING, not idling.
+            "ACTING": cls.PROCESSING,
+            "ACTING_ON": cls.PROCESSING,
+            "TOOL": cls.PROCESSING,
+            "TOOL_CALL": cls.PROCESSING,
+            "EXECUTING": cls.PROCESSING,
+            "WORKING": cls.PROCESSING,
             "TEXT_ONLY": cls.MUTED,
             "TEXTONLY": cls.MUTED,
             "INITIALISING": cls.BOOTING,
             "INITIALIZING": cls.BOOTING,
             "CONNECTING": cls.BOOTING,
+            "DORMANT": cls.BOOTING,
+            "SLEEPING": cls.BOOTING,
+            "ASLEEP": cls.BOOTING,
             "ERROR": cls.MUTED,
+            "FAILED": cls.MUTED,
+            "OFFLINE": cls.MUTED,
         }
         if text in aliases:
             return aliases[text]

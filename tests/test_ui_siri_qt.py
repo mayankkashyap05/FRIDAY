@@ -518,3 +518,87 @@ def test_windows_verifier_script_is_wellformed():
             # Only allowed inside a function (i.e. indented).
             assert line.startswith((" ", "\t")), \
                 f"verifier imports Qt at module scope: {stripped}"
+
+
+# ── Bug 1: every .qml loaded into a QQuickView must be resolvable ──────────
+
+QML_LOADED_AS_WINDOWS = ("OverlayWindow.qml", "AnchorWindow.qml", "InspectorWindow.qml")
+
+
+def test_qmldir_declares_every_root_qml_type():
+    """On Windows, loadFromModule failed with:
+
+        Module "ui_siri.qml" contains no type named "OverlayWindow"
+
+    because qmldir exported only Theme. Every component in qml/ is now listed,
+    so both setSource() and loadFromModule() resolve. This test would have
+    caught the original omission, and keeps qmldir in sync as files are added.
+    """
+    qml_dir = QML_DIR
+    qmldir = (qml_dir / "qmldir").read_text(encoding="utf-8")
+    declared = set(re.findall(r"^(?:singleton\s+)?(\w+)\s+[\d.]+\s+(\S+\.qml)$",
+                              qmldir, re.M))
+    declared_names = {name for name, _ in declared}
+
+    files = {p.stem for p in qml_dir.glob("*.qml")}
+    missing = sorted(files - declared_names)
+    assert not missing, (
+        f"these QML types exist but qmldir does not export them: {missing}. "
+        f"loadFromModule() would fail with 'contains no type named ...'")
+
+    # Every declared file must actually exist.
+    for name, filename in declared:
+        assert (qml_dir / filename).is_file(), f"qmldir lists missing {filename}"
+
+    # The windows are the ones instantiated from Python.
+    for win in QML_LOADED_AS_WINDOWS:
+        assert Path(win).stem in declared_names, f"{win} is not exported by qmldir"
+
+
+def test_qmldir_declares_the_theme_singleton():
+    qmldir = (QML_DIR / "qmldir").read_text(encoding="utf-8")
+    assert re.search(r"^singleton\s+Theme\s+[\d.]+\s+Theme\.qml$", qmldir, re.M), \
+        "Theme must be a singleton export or every file's Theme.* fails"
+
+
+def test_cards_subdirectory_has_a_qmldir():
+    """The cards/ module mirrors the directory so card types resolve whether a
+    window is loaded directly or through the module."""
+    cards = QML_DIR / "cards"
+    qmldir = cards / "qmldir"
+    assert qmldir.is_file(), "cards/qmldir is missing"
+    declared = set(re.findall(r"^(\w+)\s+[\d.]+\s+(\S+\.qml)$",
+                              qmldir.read_text(encoding="utf-8"), re.M))
+    files = {p.stem for p in cards.glob("*.qml")}
+    assert not (files - {n for n, _ in declared})
+
+
+def test_window_roots_are_items_not_windows():
+    """A QQuickView hosts an Item; a `Window { }` root inside a QQuickView
+    creates a second native window and the view shows nothing."""
+    for win in QML_LOADED_AS_WINDOWS:
+        text = (QML_DIR / win).read_text(encoding="utf-8")
+        # first non-comment, non-import, non-pragma line that opens a block
+        root = None
+        for line in text.splitlines():
+            stripped = line.strip()
+            if not stripped or stripped.startswith(("//", "/*", "*", "pragma ", "import ")):
+                continue
+            match = re.match(r"^([A-Z]\w*)\s*\{", stripped)
+            if match:
+                root = match.group(1)
+                break
+        assert root is not None, f"{win}: no root element found"
+        assert root == "Item", f"{win} root is {root}, expected Item"
+
+
+def test_controller_loads_windows_by_file_url_not_module():
+    """setSource(file URL) is the path proven to boot on Windows; loadFromModule
+    needs the type exported from the module and failed there."""
+    source = (REPO / "ui_siri" / "controller.py").read_text(encoding="utf-8")
+    assert "QUrl.fromLocalFile" in source
+    assert "loadFromModule" not in source.replace(
+        "# setSource takes a direct file URL", "").replace(
+        "NOT loadFromModule", "").replace("loadFromModule() would", "")
+    # initial properties must precede the source, or required props are unset
+    assert source.index("setInitialProperties") < source.index("self.setSource(")

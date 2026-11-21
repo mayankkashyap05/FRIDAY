@@ -124,7 +124,19 @@ def environment_report() -> None:
             check(f"Win32 {label} available", bool(value),
                   "" if value else caps.reasons.get(label, "unavailable"))
         if caps.reasons:
-            print(f"\n  degraded capabilities: {caps.reasons}")
+            print(f"\n  capability notes: {caps.reasons}")
+
+        # On a Windows 11 22H2+ host every one of these must be available.
+        # Anything False here is a capability-probe bug, not a machine limit.
+        if caps.windows and caps.build >= 22621:
+            for name in ("capture_exclusion", "layered_windows", "backdrop",
+                         "rounded_corners", "dnd"):
+                ok = bool(getattr(caps, name))
+                check(f"capability {name} available on build {caps.build}", ok,
+                      "" if ok else caps.reasons.get(name, "no reason recorded"))
+        elif caps.windows:
+            skip("Windows 11 22H2+ capability assertions",
+                 f"build {caps.build} < 22621")
     except Exception:
         check("win32_native importable", False, traceback.format_exc(limit=2))
 
@@ -266,18 +278,26 @@ def check_models(controller) -> None:
     from ui_siri.event_bus import classify_legacy
 
     bridge = controller.bridge
-    total = 0
+    inserted = replaced = activities = 0
     for i in range(40):
         event = classify_legacy(f"[Code] verify row {i}")
-        card = from_log_event(event) if event is not None else None
+        if event is None:
+            continue
+        # from_log_event() returns (card_or_None, activities) -- NOT a card.
+        card, acts = from_log_event(event)
+        activities += len(acts)
         if card is not None:
-            bridge.cards.add(card)
-            total += 1
+            bridge.cards.add(card)      # exercises insert + same-title replace
+            inserted += 1
         bridge.ingest(f"[SYS] verify line {i}")
         if i % 4 == 0:
             QCoreApplication.processEvents()
 
-    check("model inserts survived", total > 0, f"{total} cards inserted")
+    check("model inserts survived", inserted > 0, f"{inserted} cards inserted")
+    check("activities updated", activities > 0, f"{activities} activity updates")
+    check("card update-in-place path exercised",
+          bridge.cards.count() <= min(inserted, 8),
+          f"{inserted} inserted, {bridge.cards.count()} live (cap 8)")
     check("cards capped at 8", bridge.cards.count() <= 8,
           f"count={bridge.cards.count()}")
     check("transcript capped at 400", bridge.transcript.count() <= 400,
@@ -309,10 +329,22 @@ def check_capture_exclusion(controller) -> None:
         return
 
     w32 = __import__("ui_siri.win32_native", fromlist=["win32_native"])
-    hwnd = int(anchor.winId())
-    applied = w32.exclude_from_capture(hwnd, True)
-    check("SetWindowDisplayAffinity accepted", applied,
-          "" if applied else w32.CAPS.reasons.get("capture", "rejected"))
+
+    # Apply to BOTH real HWNDs -- the overlay is the full-screen one, and it is
+    # the window that would otherwise appear in a screen share.
+    for label, win in (("anchor", anchor), ("overlay", overlay)):
+        if win is None:
+            continue
+        hwnd = int(win.winId())
+        applied = w32.exclude_from_capture(hwnd, True)
+        detail = ""
+        if not applied:
+            # The exact Win32 error is the only way to tell "wrong build" from
+            # "wrong window style" from "already excluded".
+            detail = w32.explain_last_error()
+            if not detail:
+                detail = w32.CAPS.reasons.get("capture", "rejected (no detail)")
+        check(f"SetWindowDisplayAffinity on {label} HWND 0x{hwnd:x}", applied, detail)
 
     # Make the overlay unmissable, then screenshot and look for it.
     anchor.show()
@@ -341,13 +373,30 @@ def check_capture_exclusion(controller) -> None:
         samples.append(image.getpixel((x, y)))
 
     check("screenshot captured", len(samples) == 3, f"samples={samples}")
+
+    # Compare what Qt renders in the pill's footprint with what the *screen*
+    # capture sees there. If exclusion is working these must differ: the desktop
+    # shows through in the capture while Qt still renders the pill.
     if not grabbed.isNull():
-        print(f"  note: Qt's own grab is {grabbed.width()}x{grabbed.height()}; "
-              f"screen samples under the pill: {samples}")
-        print("  (an excluded overlay shows the desktop behind it, so these "
-              "samples legitimately differ from the pill's own colours)")
-    check("capture exclusion applied without error", True,
-          "visual confirmation requires a human eye on the screenshot")
+        qt_pixels = []
+        for fx, fy in ((0.5, 0.12), (0.5, 0.5), (0.5, 0.88)):
+            gx = min(int(grabbed.width() * fx), grabbed.width() - 1)
+            gy = min(int(grabbed.height() * fy), grabbed.height() - 1)
+            c = grabbed.pixelColor(gx, gy)
+            qt_pixels.append((c.red(), c.green(), c.blue()))
+
+        def _close(a, b, tol=12):
+            return all(abs(x - y) <= tol for x, y in zip(a, b))
+
+        matching = sum(1 for a, b in zip(samples, qt_pixels) if _close(a, b))
+        print(f"  Qt renders under the pill : {qt_pixels}")
+        print(f"  screen capture sees       : {samples}")
+        check("overlay absent from the screenshot",
+              matching < len(samples),
+              f"{matching}/{len(samples)} sample points match Qt's own render "
+              f"({'exclusion appears NOT to work' if matching == len(samples) else 'exclusion working'})")
+    else:
+        skip("overlay absent from the screenshot", "grabWindow() returned null")
 
     # Leave the desktop as we found it.
     w32.exclude_from_capture(hwnd, True)
