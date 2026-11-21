@@ -17,13 +17,13 @@ BaseGlassCard {
     readonly property var p: payload !== undefined && payload !== null ? payload : ({})
 
     customBody: true
-    contentBodyHeight: body.implicitHeight
+    contentBodyHeight: bodyContent.implicitHeight
 
     readonly property int eventCount: p.events !== undefined && p.events.length
                                       ? Math.min(4, p.events.length) : 0
 
     Column {
-        id: body
+        id: bodyContent
         x: card.contentLeft
         y: card.contentTop
         width: card.contentWidth
@@ -36,7 +36,7 @@ BaseGlassCard {
                 required property int index
                 readonly property var ev: card.p.events[index]
                 readonly property bool next: index === 0
-                width: body.width
+                width: bodyContent.width
                 height: Math.round(17 * Theme.uiScale)
 
                 // "Next up" marker: a small filled dot, not a rail.

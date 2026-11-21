@@ -36,26 +36,26 @@ SIRI = {
     "name": "siri",
     # surfaces (dark frosted glass)
     "bg": "#000000",
-    "panel": "#0C141C",
-    "hdr": "#090E13",
-    "input": "#0F1720",
+    "panel": "#0A0E14",
+    "hdr": "#060A0F",
+    "input": "#0E141C",
     # accents
-    "pri": "#22D3EE",   # cyan / aqua
-    "mid": "#3B82F6",   # sapphire / cobalt
-    "dim": "#1E293B",
-    "dimmer": "#070B10",
-    "acc": "#E879F9",   # magenta / rose
-    "acc2": "#A855F7",  # iridescent violet
-    "text": "#F8FAFC",  # near-white
+    "pri": "#06F7FF",   # luminous electric aqua / cyan — primary ribbon
+    "mid": "#1E5FFF",   # deep sapphire / cobalt — ribbon mid
+    "dim": "#1A2430",
+    "dimmer": "#05080C",
+    "acc": "#FF2D9F",   # radiant magenta / rose — attention
+    "acc2": "#B030FF",  # iridescent violet / amethyst — reasoning
+    "text": "#FFFFFF",  # pure additive white for labels
     "green": "#34D399",
     "red": "#FB7185",
     "mutcol": "#F43F5E",
-    "inp_border": "#334155",
-    # iridescent ribbon hues (cyan → blue → magenta → violet → white-hot)
-    "irid_a": "#22D3EE",
-    "irid_b": "#3B82F6",
-    "irid_c": "#E879F9",
-    "irid_d": "#A855F7",
+    "inp_border": "#2A3644",
+    # iridescent ribbon hues (cyan → sapphire → magenta → violet → white-hot)
+    "irid_a": "#06F7FF",
+    "irid_b": "#1E5FFF",
+    "irid_c": "#FF2D9F",
+    "irid_d": "#B030FF",
     "irid_e": "#FFFFFF",
 }
 

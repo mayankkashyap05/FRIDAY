@@ -61,11 +61,6 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-legacy-ui = [
-    # Only needed if FRIDAY_LEGACY_UI=1 is used to run the original Tk window.
-    # `pip install pyside6` does not provide Tk; the official CPython Windows
-    # installer does, and tkinter cannot be installed from PyPI.
-]
 vision = [
     "mediapipe>=0.10.0",
     "ultralytics>=8.0.0",

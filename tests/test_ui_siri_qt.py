@@ -99,7 +99,22 @@ def test_theme_qml_is_a_pragma_singleton():
 def _qmllint_binary() -> str | None:
     import PySide6
 
-    candidate = Path(PySide6.__file__).parent / "qmllint"
+    # PySide6 may be a namespace package (no ``__file__``) in builds that
+    # ship Essentials without addons, so resolve the directory from
+    # ``__path__`` first and fall back to ``__file__`` for classic packages.
+    pkg_dir = None
+    try:
+        pkg_dir = Path(next(iter(PySide6.__path__))) if PySide6.__path__ else None
+    except Exception:
+        pkg_dir = None
+    if pkg_dir is None:
+        try:
+            pkg_dir = Path(PySide6.__file__).parent  # type: ignore[arg-type]
+        except Exception:
+            pkg_dir = None
+    if pkg_dir is None:
+        return None
+    candidate = pkg_dir / "qmllint"
     return str(candidate) if candidate.exists() else None
 
 

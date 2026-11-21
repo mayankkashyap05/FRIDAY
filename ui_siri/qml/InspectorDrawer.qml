@@ -14,7 +14,7 @@ import QtQuick.Controls
     Tabs
     ----
     camera    Picture-in-picture privacy-blurred camera feed
-    arcade    Vision Arcade (10 games) with live HUD
+    arcade    Vision Arcade (10 games) with live readouts
     wake      Wake-word wizard (engine status, phrase, threshold)
     history   Transcript history with channel filters
     settings  Persona, theme, motion/transparency, diagnostics
@@ -341,33 +341,60 @@ Rectangle {
                         }
                     }
 
-                    // HUD
+                    // Live readouts: quiet glass chips, tabular digits
                     Row {
                         anchors.top: parent.top
                         anchors.left: parent.left
-                        anchors.margins: 12
-                        spacing: 14
-                        Text {
-                            text: drawer.props && drawer.props.arcadeGame
-                                  ? drawer.props.arcadeGame.toUpperCase() : ""
-                            color: Theme.acc2
-                            font.pixelSize: Theme.fontS
-                            font.bold: true
-                            font.letterSpacing: 1.2
+                        anchors.margins: 10
+                        spacing: 6
+                        Rectangle {
+                            width: arcadeGameLabel.width + 18
+                            height: Math.round(22 * Theme.uiScale)
+                            radius: height / 2
+                            color: Theme.withAlpha(Theme.panel, 0.72)
+                            Text {
+                                id: arcadeGameLabel
+                                anchors.centerIn: parent
+                                text: drawer.props && drawer.props.arcadeGame
+                                      ? drawer.props.arcadeGame.replace(/_/g, " ") : ""
+                                color: Theme.withAlpha(Theme.text, 0.9)
+                                font.pixelSize: Theme.fontXS
+                                font.bold: true
+                                font.family: Theme.fontDisplay
+                                font.capitalization: Font.Capitalize
+                            }
                         }
-                        Text {
-                            text: qsTr("SCORE %1").arg(drawer.props
+                        Rectangle {
+                            width: scoreLabel.width + 16
+                            height: Math.round(22 * Theme.uiScale)
+                            radius: height / 2
+                            color: Theme.withAlpha(Theme.panel, 0.72)
+                            Text {
+                                id: scoreLabel
+                                anchors.centerIn: parent
+                                text: qsTr("Score %1").arg(drawer.props
                                   && drawer.props.arcadeScore !== undefined
                                   ? drawer.props.arcadeScore : 0)
-                            color: Theme.withAlpha(Theme.text, 0.9)
-                            font.pixelSize: Theme.fontXS
+                                color: Theme.withAlpha(Theme.text, 0.9)
+                                font.pixelSize: Theme.fontXS
+                                font.family: Theme.fontNumeric
+                            }
                         }
-                        Text {
-                            text: qsTr("LIVES %1").arg(drawer.props
+                        Rectangle {
+                            width: livesLabel.width + 16
+                            height: Math.round(22 * Theme.uiScale)
+                            radius: height / 2
+                            color: Theme.withAlpha(Theme.panel, 0.72)
+                            Text {
+                                id: livesLabel
+                                anchors.centerIn: parent
+                                text: qsTr("Lives %1").arg(drawer.props
                                   && drawer.props.arcadeLives !== undefined
                                   ? drawer.props.arcadeLives : 0)
-                            color: Theme.withAlpha(Theme.text, 0.9)
-                            font.pixelSize: Theme.fontXS
+                                color: Theme.withAlpha(Theme.text, 0.9)
+                                font.pixelSize: Theme.fontXS
+                                font.family: Theme.fontNumeric
+                            }
                         }
                     }
 
@@ -662,47 +689,55 @@ Rectangle {
                     width: parent.width
                     spacing: 14
 
-                    // theme
+                    // design — Apple Siri is the sole visual identity
                     Column {
                         width: parent.width
                         spacing: 6
                         Text {
-                            text: qsTr("THEME")
+                            text: qsTr("DESIGN")
                             color: Theme.withAlpha(Theme.mid, 1)
                             font.pixelSize: Theme.fontXS
                             font.bold: true
                             font.letterSpacing: 1
                         }
-                        Flow {
+                        Rectangle {
                             width: parent.width
-                            spacing: 6
-                            Repeater {
-                                model: ["cyber", "ocean", "aurora", "sunset"]
-                                delegate: Rectangle {
-                                    id: themeSwatch
-                                    required property string modelData
-                                    width: Math.max(78, swatch.width + 18)
-                                    height: 28
-                                    radius: height / 2
-                                    readonly property bool current:
-                                        drawer.props && drawer.props.theme === themeSwatch.modelData
-                                    color: current ? Theme.withAlpha(Theme.pri, 0.22)
-                                                   : "transparent"
-                                    border.width: 1
-                                    border.color: Theme.withAlpha(Theme.mid, 0.5)
-                                    Text {
-                                        id: swatch
-                                        anchors.centerIn: parent
-                                        text: themeSwatch.modelData.toUpperCase()
-                                        color: themeSwatch.current ? Theme.pri
-                                               : Theme.withAlpha(Theme.text, 0.7)
-                                        font.pixelSize: Theme.fontXS - 1
-                                        font.bold: themeSwatch.current
+                            height: Math.round(48 * Theme.uiScale)
+                            radius: Theme.radiusChip
+                            color: Theme.withAlpha(Theme.panel, Theme.surfaceAlpha)
+                            border.width: 1
+                            border.color: Theme.glassBorder
+                            Row {
+                                anchors.left: parent.left
+                                anchors.leftMargin: Theme.pad
+                                anchors.verticalCenter: parent.verticalCenter
+                                spacing: Math.round(10 * Theme.uiScale)
+                                Rectangle {
+                                    width: Math.round(20 * Theme.uiScale)
+                                    height: width
+                                    radius: width / 2
+                                    border.width: Math.round(1.5 * Theme.uiScale)
+                                    border.color: Theme.withAlpha(Theme.pri, 0.55)
+                                    gradient: Gradient {
+                                        GradientStop { position: 0.0; color: Theme.pri }
+                                        GradientStop { position: 0.5; color: Theme.acc2 }
+                                        GradientStop { position: 1.0; color: Theme.acc }
                                     }
-                                    MouseArea {
-                                        anchors.fill: parent
-                                        cursorShape: Qt.PointingHandCursor
-                                        onClicked: drawer.command("theme " + themeSwatch.modelData)
+                                }
+                                Column {
+                                    spacing: 1
+                                    Text {
+                                        text: qsTr("Apple Siri")
+                                        color: Theme.textOnGlass
+                                        font.pixelSize: Theme.fontS
+                                        font.bold: true
+                                        font.family: Theme.fontDisplay
+                                    }
+                                    Text {
+                                        text: qsTr("The sole visual identity of FRIDAY")
+                                        color: Theme.withAlpha(Theme.textOnGlass, 0.55)
+                                        font.pixelSize: Theme.fontXS
+                                        font.family: Theme.fontText
                                     }
                                 }
                             }

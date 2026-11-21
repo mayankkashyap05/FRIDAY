@@ -2963,7 +2963,7 @@ class FridayLive:
 
 
 def _tk_exception_handler(exc_type, exc_value, tb):
-    """Suppress the noisy 'Exception in Tkinter callback' block when the user
+    """Suppress the noisy 'Exception in callback' block when the user
     presses Ctrl+C mid-draw; real errors still print normally."""
     if isinstance(exc_value, KeyboardInterrupt):
         return
@@ -2980,7 +2980,7 @@ def main():
         # The tray icon owns a Win32 message loop, so it must be created from
         # the thread that owns the UI's event loop (the main thread), never from
         # this worker. We hand it back through `root.after`, which is
-        # thread-safe in both the Tk and Qt implementations.
+        # thread-safe in the Siri implementation.
         ui.wait_for_api_key()
         friday = FridayLive(ui)
         try:
@@ -3022,7 +3022,7 @@ def _graceful_shutdown(ui) -> None:
             controller.shutdown()
         except Exception as exc:
             print(f"[FRIDAY] ⚠️ controller shutdown: {exc}")
-    else:  # pragma: no cover - Tk fallback
+    else:  # pragma: no cover - controller-less fallback
         try:
             from actions.system_tray import stop as _tray_stop
             _tray_stop()

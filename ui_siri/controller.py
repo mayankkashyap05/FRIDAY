@@ -224,7 +224,7 @@ class UiController(QObject):
         self,
         app: QGuiApplication | None = None,
         *,
-        theme_name: str = "cyber",
+        theme_name: str = "siri",
         audio: AudioUX | None = None,
         enable_overlay: bool = True,
         enable_capture_exclusion: bool = True,
@@ -256,7 +256,7 @@ class UiController(QObject):
         self._scale = self._design_scale(self._dpi)
         self._system_dark = self.system_dark
 
-        self._theme_name = theme_name if theme_name in THEMES else "cyber"
+        self._theme_name = theme_name if theme_name in THEMES else DEFAULT_THEME
         self.theme = build_theme(self._theme_name, light=not self.system_dark,
                                  reduced_motion=self.reduced_motion,
                                  transparency=self.transparency,

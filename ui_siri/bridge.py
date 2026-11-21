@@ -784,13 +784,15 @@ class UiBridge(QObject):
         self.toastRequested.emit(self._toast["text"], severity)
 
     def cycleTheme(self, name: str = "") -> None:
-        from .controller import THEME_NAMES, build_theme
+        from .controller import DEFAULT_THEME, THEME_NAMES, build_theme
 
+        # Apple Siri is the sole theme of the product: cycling returns to the
+        # same palette by design. The named-variant path stays for API parity.
         if name and name in THEME_NAMES:
             target = name
         else:
             try:
-                idx = THEME_NAMES.index(self._theme.get("name", "cyber"))
+                idx = THEME_NAMES.index(self._theme.get("name") or DEFAULT_THEME)
             except ValueError:
                 idx = -1
             target = THEME_NAMES[(idx + 1) % len(THEME_NAMES)]
