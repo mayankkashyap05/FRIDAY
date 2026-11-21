@@ -15,7 +15,7 @@ the migration, and — just as importantly — what could not be.
 
 ```
 python -m pytest tests/ -q
-241 passed, 12 skipped, 11 failed
+267 passed, 13 skipped, 11 failed
 ```
 
 All 11 failures are pre-existing and confined to modules with **no UI
@@ -33,9 +33,9 @@ The UI-relevant suites are fully green:
 ```
 tests/test_ui_siri_core.py       51 passed
 tests/test_ui_contract.py        55 passed, 1 skipped   (Tk absent)
-tests/test_ui_siri_qt.py         20 passed, 11 skipped  (QtGui absent)
+tests/test_ui_siri_qt.py         24 passed, 12 skipped  (QtGui absent)
 tests/test_ui_thread_safety.py   12 passed
-tests/test_windows_bringup.py    14 passed  (Windows first-run regressions)
+tests/test_windows_bringup.py    17 passed  (Windows first-run regressions)
 tests/test_p0_security.py        20 passed
 ```
 
@@ -254,6 +254,47 @@ passes. It prints the OS build, Python/PySide6/Qt versions and
 `win32_native.probe()`, then walks the six lifecycle states, churns
 `QAbstractListModel` rows, checks capture exclusion with a real `mss` screenshot,
 and opens/closes the inspector.
+
+---
+
+## Windows 11 verifier round 2 (build 26300 / PySide6 6.11.3)
+
+Qt booted cleanly on the real machine (`overlay HWND 0x220384`, `anchor HWND
+0x75b50196`, scene graph 456x240) and the verifier found four more bugs.
+
+| # | Symptom | Root cause | Fix |
+| --- | --- | --- | --- |
+| 1 | `Module "ui_siri.qml" contains no type named "OverlayWindow"` | `qmldir` exported only `Theme` and `PerimeterGlow`, but `loadFromModule()` resolves types *through* the module. | Went back to `setInitialProperties()` + `setSource(QUrl.fromLocalFile(...))`, which needs no type export, **and** completed `qmldir` for all 11 top-level types plus a `cards/qmldir` for the 10 card types — so both mechanisms work. |
+| 2 | `capture_exclusion`, `layered_windows`, `backdrop`, `rounded_corners`, `dnd` all `False`, no `reasons` recorded | `probe()` reused the *action* helpers (`exclude_from_capture`, `get_ex_style`, `apply_dwm_polish`, `do_not_disturb`). All four need a live HWND or current notification state, so with no window yet they returned `False` and wrote nothing. Capabilities were being inferred from actions instead of from export presence + build number. | New `probe_capabilities()` is a pure query: it checks the export table and the OS build (`windows_build()` via `sys.getwindowsversion()` with an `RtlGetVersion` fallback) and gates each capability on its own threshold (19041 / 22000 / 22621). `Capabilities.build` is now a real field. |
+| 3 | `ACTING` rendered as `LISTENING` | `UiState.coerce()` had no `ACTING` alias, so it fell through to the `LISTENING` default. | Added `ACTING`/`ACTING_ON`/`EXECUTING`/`TOOL_CALL`/`WORKING` → `PROCESSING`, plus `DORMANT`/`SLEEPING` → `BOOTING` and `FAILED`/`OFFLINE` → `MUTED`. Also fixed `TEXT-ONLY`, which was unreachable because `-` is folded to `_` before comparison. |
+| 4 | `'tuple' object has no attribute 'to_qml'` | The verifier did `card = from_log_event(event)`; that function returns `(card, activities)`. | Unpacked correctly. Audited every other caller: `bridge.ingest()` uses `to_cards()` and was already right, so this was verifier-only. |
+
+### Two latent bugs the new tests caught
+
+- **`Capabilities.windows` was latched at import.** A dataclass default is
+  evaluated once at class creation, so `windows: bool = IS_WINDOWS` froze the
+  platform. Now `field(default_factory=...)`.
+- **The library flags were also import-time.** `probe_capabilities()` now
+  derives `user32`/`dwmapi`/`shcore`/`shell32` from what is actually bound.
+
+### Silent degradation is now impossible
+
+Every capability that evaluates `False` records a reason, including on
+non-Windows hosts and when a single export is missing (the message names the
+function, e.g. `SHQueryUserNotificationState is missing from shell32`).
+Rejections from Win32 carry the real error code via `describe_error()` /
+`explain_last_error()`, so `87 ERROR_INVALID_PARAMETER` can be told apart from
+`5 ERROR_ACCESS_DENIED`.
+
+### Verifier additions
+
+- Asserts all five capabilities are `True` on build >= 22621, and skips (with
+  the build number) below that.
+- Applies `WDA_EXCLUDEFROMCAPTURE` to **both** the anchor and overlay HWNDs,
+  reporting the exact Win32 error on rejection.
+- Compares the screenshot against `grabWindow()` sample-for-sample and fails if
+  the overlay appears in the capture.
+- Exercises card insert / replace-in-place / clear on `QAbstractListModel`.
 
 ---
 

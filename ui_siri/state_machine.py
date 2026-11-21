@@ -269,16 +269,22 @@ class AssistantStateMachine:
                 self._speaking_audio = True
                 self._muted = False
             return self.transition(UiState.SPEAKING, reason, force=True)
-        if upper in ("THINKING", "PROCESSING"):
+        # ACTING/EXECUTING/TOOL_CALL are the tool-execution spellings; they map
+        # through UiState.coerce, which resolves them to PROCESSING.
+        if upper in ("THINKING", "PROCESSING", "ACTING", "ACTING_ON",
+                     "EXECUTING", "TOOL", "TOOL_CALL", "WORKING"):
             with self._lock:
                 self._speaking_audio = False
             return self.transition(UiState.coerce(upper), reason, force=True)
-        if upper in ("LISTENING", "ONLINE", "IDLE", ""):
+        if upper in ("LISTENING", "ONLINE", "IDLE", "READY", ""):
             with self._lock:
                 self._speaking_audio = False
             if self._muted:
                 return self.transition(UiState.MUTED, reason, force=True)
             return self.transition(UiState.LISTENING, reason, force=True)
+        # `upper` has already had "-" folded to "_", so the legacy spelling
+        # "TEXT-ONLY" arrives here as "TEXT_ONLY". Including the hyphenated form
+        # is harmless belt-and-braces for direct callers.
         if upper in ("TEXT-ONLY", "TEXT_ONLY", "TEXTONLY"):
             return self.set_silent_mode(True, reason)
         return self.transition(UiState.coerce(raw), reason, force=True)

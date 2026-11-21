@@ -102,7 +102,11 @@ def warned() -> tuple[str, ...]:
 class Capabilities:
     """What this machine/process can actually do. Read once at startup."""
 
-    windows: bool = IS_WINDOWS
+    # Resolved at *instantiation*, not import: a dataclass default is frozen at
+    # class-creation time, so `windows: bool = IS_WINDOWS` would latch whatever
+    # the platform was when the module loaded and silently ignore any later
+    # change (and made the capability table untestable).
+    windows: bool = field(default_factory=lambda: IS_WINDOWS)
     user32: bool = False
     dwmapi: bool = False
     shcore: bool = False
@@ -116,6 +120,7 @@ class Capabilities:
     transparency: bool = True
     animations: bool = True
     dnd: bool = False
+    build: int = 0
     reasons: dict = field(default_factory=dict)
 
     def to_dict(self) -> dict:
@@ -157,6 +162,38 @@ if IS_WINDOWS:  # pragma: no cover - Windows-only
 else:  # pragma: no cover - non-Windows
     user32 = dwmapi = shcore = shell32 = None
     CAPS.reasons["platform"] = f"not windows ({sys.platform})"
+
+
+#: Common Win32 error codes for the failures this module actually sees.
+_WIN32_ERRORS = {
+    0: "ERROR_SUCCESS",
+    5: "ERROR_ACCESS_DENIED",
+    6: "ERROR_INVALID_HANDLE",
+    8: "ERROR_NOT_ENOUGH_MEMORY",
+    57: "ERROR_INVALID_PARAMETER",
+    87: "ERROR_INVALID_PARAMETER",
+    1156: "ERROR_IO_DEVICE",
+    127: "ERROR_PROCEDURE_NOT_FOUND",
+}
+
+
+def describe_error(code: int) -> str:
+    """Human-readable Win32 error, e.g. ``87 ERROR_INVALID_PARAMETER``."""
+    if not code:
+        return "no error set"
+    name = _WIN32_ERRORS.get(code, "unknown")
+    return f"{code} {name}"
+
+
+def explain_last_error() -> str:
+    """Describe the current thread's last Win32 error (``""`` if unset)."""
+    if not IS_WINDOWS:
+        return ""
+    try:
+        code = ctypes.get_last_error()
+    except Exception:
+        return ""
+    return describe_error(code) if code else ""
 
 
 def _hwnd(window: Any) -> int:
@@ -355,13 +392,20 @@ def exclude_from_capture(window: Any, enabled: bool = True) -> bool:
         if ok:
             CAPS.capture_exclusion = enabled
             return True
+        # Keep the real error: "rejected" alone cannot distinguish a pre-2004
+        # build (ERROR_INVALID_PARAMETER) from an unsupported window style
+        # (ERROR_ACCESS_DENIED on some layered/tool windows).
+        first_error = ctypes.get_last_error()
         if enabled:
             ok = bool(user32.SetWindowDisplayAffinity(hwnd, WDA_MONITOR))
             if ok:
                 CAPS.capture_exclusion = True
-                CAPS.reasons["capture"] = "pre-2004 build: WDA_MONITOR fallback"
+                CAPS.reasons["capture"] = (
+                    f"WDA_EXCLUDEFROMCAPTURE rejected ({describe_error(first_error)}); "
+                    f"fell back to WDA_MONITOR")
                 return True
-        CAPS.reasons["capture"] = "SetWindowDisplayAffinity rejected"
+        CAPS.reasons["capture"] = (
+            f"SetWindowDisplayAffinity rejected ({describe_error(first_error)})")
         return False
     except Exception as exc:
         _warn_once("capture", f"capture exclusion unavailable: {exc}")
@@ -621,22 +665,180 @@ def monitor_for_point(monitors: list[Monitor], x: int, y: int) -> Monitor:
 
 # ── Startup probe ────────────────────────────────────────────────────────────
 
+# ── OS build ─────────────────────────────────────────────────────────────────
+
+class OSVERSIONINFOEXW(ctypes.Structure):
+    """RTL_OSVERSIONINFOEXW: the truthful version record (RtlGetVersion)."""
+
+    _fields_ = [
+        ("dwOSVersionInfoSize", ctypes.c_ulong),
+        ("dwMajorVersion", ctypes.c_ulong),
+        ("dwMinorVersion", ctypes.c_ulong),
+        ("dwBuildNumber", ctypes.c_ulong),
+        ("dwPlatformId", ctypes.c_ulong),
+        ("szCSDVersion", ctypes.c_wchar * 128),
+        ("wServicePackMajor", ctypes.c_ushort),
+        ("wServicePackMinor", ctypes.c_ushort),
+        ("wSuiteMask", ctypes.c_ushort),
+        ("wProductType", ctypes.c_ubyte),
+        ("wReserved", ctypes.c_ubyte),
+    ]
+
+
+# Feature gates below are build-number based, so read the real build once.
+# (Windows 10 20H1 = 19041, Windows 11 21H2 = 22000, 22H2 = 22621.)
+
+def windows_build() -> int:
+    """Best-effort Windows build number (0 when unavailable)."""
+    if not IS_WINDOWS:
+        return 0
+    try:
+        return int(sys.getwindowsversion().build)
+    except Exception:
+        pass
+    # Fall back to RtlGetVersion: GetVersionEx lies unless the process is
+    # manifested, and RtlGetVersion reports the true build.
+    try:
+        ntdll = ctypes.WinDLL("ntdll")
+        version = OSVERSIONINFOEXW()
+        version.dwOSVersionInfoSize = ctypes.sizeof(version)
+        if ntdll.RtlGetVersion(ctypes.byref(version)) == 0:
+            return int(version.dwBuildNumber)
+    except Exception:
+        pass
+    return 0
+
+
+
+def _has(lib: Any, *names: str) -> bool:
+    """True when ``lib`` exports every one of ``names``."""
+    if lib is None:
+        return False
+    return all(getattr(lib, name, None) is not None for name in names)
+
+
+class _Unset:
+    """Sentinel: a reason must be recorded for every capability that is False."""
+
+    def __repr__(self) -> str:  # pragma: no cover - debugging aid
+        return "<unset>"
+
+
+_UNSET = _Unset()
+
+
+def _reason(key: str, why: str) -> None:
+    CAPS.reasons[key] = why
+
+
+def _require(key: str, ok: bool, why: str) -> bool:
+    """Set-and-explain for one capability. Every False gets a reason."""
+    if not ok:
+        _reason(key, why)
+    return ok
+
+
+def probe_capabilities() -> Capabilities:
+    """Determine what this machine can actually do. **No window required.**
+
+    This is a pure capability query -- it only asks whether the relevant export
+    exists and whether the OS build is new enough. The earlier version reused
+    the *action* helpers (``exclude_from_capture``, ``get_ex_style``,
+    ``apply_dwm_polish``, ``do_not_disturb``), which all need a live HWND or
+    current notification state. With no window yet they returned False and
+    wrote nothing into ``reasons``, so a fully-capable Windows 11 box reported
+    five capabilities as unavailable. Capabilities are now derived from
+    presence + build, and *every* False records why.
+    """
+    build = CAPS.build = windows_build()
+
+    # ── libraries ───────────────────────────────────────────────────────────
+    # Derived from what is actually bound right now, not from the flags set at
+    # import time: those latch the platform the module was first loaded on and
+    # would silently disagree with reality.
+    for key in ("user32", "dwmapi", "shcore", "shell32"):
+        loaded = globals().get(key) is not None
+        setattr(CAPS, key, loaded)
+        _require(key, loaded, "library failed to load")
+
+    if not IS_WINDOWS:
+        # Still explain every capability: silent degradation is the bug we are
+        # fixing, and "no reason recorded" is exactly what made it invisible.
+        _reason("platform", f"not windows ({sys.platform})")
+        for key in ("layered_windows", "capture_exclusion", "backdrop",
+                    "rounded_corners", "dnd"):
+            _reason(key, f"not windows ({sys.platform})")
+        return CAPS
+
+    # ── layered / click-through windows ─────────────────────────────────────
+    # GetWindowLongPtrW/SetWindowLongPtrW on x64, the Long forms on x86. Either
+    # pair is sufficient; WS_EX_LAYERED itself has existed since Windows 2000.
+    layered = (_has(user32, "SetWindowLongPtrW", "GetWindowLongPtrW")
+               or _has(user32, "SetWindowLongW", "GetWindowLongW"))
+    CAPS.layered_windows = _require(
+        "layered_windows", layered,
+        "user32 exports neither Get/SetWindowLongPtrW nor Get/SetWindowLongW")
+
+    # ── capture exclusion ───────────────────────────────────────────────────
+    # WDA_EXCLUDEFROMCAPTURE requires Windows 10 2004 (build 19041).
+    has_affinity = _has(user32, "SetWindowDisplayAffinity")
+    if not has_affinity:
+        CAPS.capture_exclusion = _require(
+            "capture_exclusion", False,
+            "SetWindowDisplayAffinity is missing from user32")
+    elif build and build < 19041:
+        CAPS.capture_exclusion = _require(
+            "capture_exclusion", False,
+            f"build {build} < 19041; WDA_EXCLUDEFROMCAPTURE unavailable "
+            f"(WDA_MONITOR fallback only)")
+    else:
+        CAPS.capture_exclusion = True
+
+    # ── rounded corners (Windows 11 22000) ──────────────────────────────────
+    has_dwm = _has(dwmapi, "DwmSetWindowAttribute")
+    if not has_dwm:
+        CAPS.rounded_corners = _require(
+            "rounded_corners", False, "DwmSetWindowAttribute is missing from dwmapi")
+    elif build and build < 22000:
+        CAPS.rounded_corners = _require(
+            "rounded_corners", False,
+            f"build {build} < 22000; DWMWA_WINDOW_CORNER_PREFERENCE unavailable")
+    else:
+        CAPS.rounded_corners = True
+
+    # ── Mica/acrylic backdrop (Windows 11 22621) ────────────────────────────
+    if not has_dwm:
+        CAPS.backdrop = _require(
+            "backdrop", False, "DwmSetWindowAttribute is missing from dwmapi")
+    elif build and build < 22621:
+        CAPS.backdrop = _require(
+            "backdrop", False,
+            f"build {build} < 22621; DWMWA_SYSTEMBACKDROP_TYPE unavailable")
+    else:
+        CAPS.backdrop = True
+
+    # ── Do Not Disturb query ────────────────────────────────────────────────
+    # This capability means "we can *ask*"; the live answer is do_not_disturb().
+    CAPS.dnd = _require(
+        "dnd", _has(shell32, "SHQueryUserNotificationState"),
+        "SHQueryUserNotificationState is missing from shell32")
+
+    # ── theme/appearance reads (read-only probes, safe to run now) ──────────
+    CAPS.dark_mode = system_dark_mode()
+    CAPS.transparency = transparency_enabled()
+    CAPS.animations = animations_enabled()
+
+    monitors = enumerate_monitors()
+    _reason("monitors", f"{len(monitors)} display(s)")
+    return CAPS
+
+
 def probe(warn: bool = True) -> Capabilities:
     """Populate and return :data:`CAPS`. Must run before QApplication."""
-    if not IS_WINDOWS:
-        CAPS.reasons.setdefault("platform", f"not windows ({sys.platform})")
-        if warn:
-            _warn_once("nonwin", "Windows native features disabled (non-Windows host)")
-        return CAPS
-    enable_per_monitor_dpi()
-    # Probe, don't apply: these only read state.
-    system_dark_mode()
-    transparency_enabled()
-    animations_enabled()
-    do_not_disturb()
-    monitors = enumerate_monitors()
-    CAPS.reasons.setdefault("monitors", f"{len(monitors)} display(s)")
-    return CAPS
+    caps = probe_capabilities()
+    if warn and not caps.windows:
+        _warn_once("nonwin", "Windows native features disabled (non-Windows host)")
+    return caps
 
 
 def summary() -> str:
@@ -666,4 +868,8 @@ __all__ = [
     "enumerate_monitors",
     "monitor_for_point",
     "get_ex_style",
+    "probe_capabilities",
+    "windows_build",
+    "describe_error",
+    "explain_last_error",
 ]

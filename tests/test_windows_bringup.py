@@ -200,3 +200,51 @@ def test_make_ui_logs_a_full_traceback_before_falling_back(monkeypatch, capsys):
     combined = out.out + out.err
     assert "Traceback (most recent call last)" in combined
     assert "simulated QML failure" in combined
+
+
+# ── Bug 4: the verifier mis-unpacked card_mapper's return value ────────────
+
+def test_card_mapper_return_arity_is_documented():
+    """from_log_event -> (card, activities); to_cards -> (card, activities, event).
+
+    The Windows verifier treated from_log_event()'s result as a card and died
+    with "'tuple' object has no attribute 'to_qml'". This pins the arity so a
+    future caller cannot make the same mistake silently.
+    """
+    import inspect
+
+    sys.path.insert(0, str(REPO))
+    from ui_siri import card_mapper
+
+    assert len(inspect.signature(card_mapper.from_log_event).parameters) >= 1
+    # Behavioural check: the shapes are what the docstrings promise.
+    from ui_siri.event_bus import classify_legacy
+
+    event = classify_legacy("[Code] verify row 0")
+    result = card_mapper.from_log_event(event)
+    assert isinstance(result, tuple) and len(result) == 2, result
+    card, activities = result
+    assert card is None or hasattr(card, "to_qml"), "first element must be a Card"
+    assert isinstance(activities, list)
+
+    triple = card_mapper.to_cards("[Code] verify row 0")
+    assert isinstance(triple, tuple) and len(triple) == 3, triple
+
+
+def test_verifier_unpacks_from_log_event_correctly():
+    """Guards the exact line that crashed on Windows."""
+    source = (REPO / "scripts" / "verify_windows_ui.py").read_text(encoding="utf-8")
+    assert "card, acts = from_log_event(event)" in source, \
+        "the verifier must unpack (card, activities) from from_log_event()"
+    assert "card = from_log_event(" not in source, \
+        "assigning the tuple to `card` is the bug that crashed check_models()"
+
+
+def test_verifier_asserts_windows11_capabilities():
+    source = (REPO / "scripts" / "verify_windows_ui.py").read_text(encoding="utf-8")
+    for name in ("capture_exclusion", "layered_windows", "backdrop",
+                 "rounded_corners", "dnd"):
+        assert name in source, f"verifier never asserts {name}"
+    assert "22621" in source, "capability assertions must gate on the Win11 22H2 build"
+    assert "explain_last_error" in source, \
+        "a rejected SetWindowDisplayAffinity must report the Win32 error code"

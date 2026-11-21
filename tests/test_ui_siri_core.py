@@ -351,3 +351,216 @@ def test_ducker_reports_unavailable_off_windows():
     if not win32_native.IS_WINDOWS:
         assert status["available"] is False
         assert status["reason"]
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Windows capability probe (Bug 2: all five reported False on Win11 26300)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _fake_windows(monkeypatch, build=26300, *, user32_exports=None,
+                  dwmapi_exports=None, shell32_exports=None):
+    """Simulate a Windows host with a given build and DLL export table.
+
+    ``probe_capabilities()`` is a pure capability query, so this needs no HWND
+    and no real Windows: we swap the loaded libraries for fakes that answer
+    ``getattr`` the way the real export tables would.
+    """
+    from ui_siri import win32_native as w32
+
+    defaults = {
+        "user32": ("GetWindowLongPtrW", "SetWindowLongPtrW", "GetWindowLongW",
+                   "SetWindowLongW", "SetWindowDisplayAffinity",
+                   "SetWindowPos", "SystemParametersInfoW",
+                   "SetProcessDpiAwarenessContext", "GetMonitorInfoW",
+                   "EnumDisplayMonitors"),
+        "dwmapi": ("DwmSetWindowAttribute",),
+        "shell32": ("SHQueryUserNotificationState",),
+    }
+    tables = {
+        "user32": user32_exports if user32_exports is not None else defaults["user32"],
+        "dwmapi": dwmapi_exports if dwmapi_exports is not None else defaults["dwmapi"],
+        "shell32": shell32_exports if shell32_exports is not None else defaults["shell32"],
+    }
+
+    class FakeDll:
+        """Only the named exports exist; everything else is absent."""
+
+        def __init__(self, names):
+            self._names = set(names)
+
+        def __getattr__(self, item):
+            if item in self._names:
+                return lambda *a, **k: 0
+            raise AttributeError(item)
+
+    monkeypatch.setattr(w32, "IS_WINDOWS", True, raising=False)
+    for lib in ("user32", "dwmapi", "shell32", "shcore"):
+        names = tables.get(lib, ())
+        monkeypatch.setattr(w32, lib, FakeDll(names), raising=False)
+    monkeypatch.setattr(w32, "windows_build", lambda: build, raising=False)
+    # Side-effect-free appearance probes: probe() calls these.
+    monkeypatch.setattr(w32, "system_dark_mode", lambda: True, raising=False)
+    monkeypatch.setattr(w32, "transparency_enabled", lambda: True, raising=False)
+    monkeypatch.setattr(w32, "animations_enabled", lambda: True, raising=False)
+    monkeypatch.setattr(w32, "enumerate_monitors", lambda: [], raising=False)
+    # Fresh capability record for each test.
+    monkeypatch.setattr(w32, "CAPS", w32.Capabilities(), raising=False)
+    return w32
+
+
+WIN11_26300 = 26300
+
+
+def test_probe_enables_all_capabilities_on_windows_11_26300(monkeypatch):
+    """The reported bug: every capability False on a fully capable machine."""
+    w32 = _fake_windows(monkeypatch, WIN11_26300)
+    caps = w32.probe_capabilities()
+
+    assert caps.windows is True
+    assert caps.build == WIN11_26300
+    assert caps.user32 and caps.dwmapi and caps.shcore and caps.shell32
+    for name in ("capture_exclusion", "layered_windows", "backdrop",
+                 "rounded_corners", "dnd"):
+        assert getattr(caps, name) is True, (
+            f"{name} should be available on build {WIN11_26300}; "
+            f"reasons={caps.reasons}")
+
+
+def test_probe_23621_boundaries(monkeypatch):
+    """Each capability gates on its own build number."""
+    cases = [
+        # build, capture, layered, rounded(22000), backdrop(22621)
+        (19041, True,  True,  False, False),   # Win10 2004
+        (21999, True,  True,  False, False),   # just below Win11
+        (22000, True,  True,  True,  False),   # Win11 21H2
+        (22621, True,  True,  True,  True),    # Win11 22H2
+    ]
+    for build, cap, lay, rounded, backdrop in cases:
+        w32 = _fake_windows(monkeypatch, build)
+        caps = w32.probe_capabilities()
+        assert caps.capture_exclusion is cap, (build, "capture", caps.reasons)
+        assert caps.layered_windows is lay, (build, "layered", caps.reasons)
+        assert caps.rounded_corners is rounded, (build, "rounded", caps.reasons)
+        assert caps.backdrop is backdrop, (build, "backdrop", caps.reasons)
+
+
+def test_probe_19040_records_why_capture_exclusion_is_off(monkeypatch):
+    w32 = _fake_windows(monkeypatch, 19040)
+    caps = w32.probe_capabilities()
+    assert caps.capture_exclusion is False
+    assert "19041" in caps.reasons["capture_exclusion"]
+
+
+def test_every_false_capability_records_a_reason(monkeypatch):
+    """Silent degradation must be impossible: a False always says why."""
+    # A host with nothing available at all.
+    w32 = _fake_windows(monkeypatch, 26300, user32_exports=(),
+                        dwmapi_exports=(), shell32_exports=())
+    caps = w32.probe_capabilities()
+    for name in ("capture_exclusion", "layered_windows", "backdrop",
+                 "rounded_corners", "dnd"):
+        assert getattr(caps, name) is False
+        assert caps.reasons.get(name), f"{name} is False with no reason recorded"
+
+
+def test_probe_missing_export_is_named(monkeypatch):
+    w32 = _fake_windows(monkeypatch, 26300,
+                        shell32_exports=())          # no SHQueryUserNotificationState
+    caps = w32.probe_capabilities()
+    assert caps.dnd is False
+    assert "SHQueryUserNotificationState" in caps.reasons["dnd"]
+
+
+def test_probe_non_windows_explains_everything(monkeypatch):
+    from ui_siri import win32_native as w32
+
+    monkeypatch.setattr(w32, "IS_WINDOWS", False, raising=False)
+    monkeypatch.setattr(w32, "CAPS", w32.Capabilities(windows=False), raising=False)
+    monkeypatch.setattr(w32, "windows_build", lambda: 0, raising=False)
+    caps = w32.probe_capabilities()
+    assert caps.reasons.get("platform")
+    for name in ("capture_exclusion", "layered_windows", "backdrop",
+                 "rounded_corners", "dnd"):
+        assert caps.reasons.get(name), f"{name} has no reason off-Windows"
+
+
+def test_windows_build_reports_a_number():
+    from ui_siri import win32_native as w32
+
+    build = w32.windows_build()
+    assert isinstance(build, int) and build >= 0
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Bug 3: ACTING must render as PROCESSING (not fall back to LISTENING)
+# ─────────────────────────────────────────────────────────────────────────────
+
+@pytest.mark.parametrize("legacy,expected", [
+    ("LISTENING", "LISTENING"),
+    ("THINKING", "THINKING"),
+    ("ACTING", "PROCESSING"),      # the reported failure
+    ("ACTING_ON", "PROCESSING"),
+    ("EXECUTING", "PROCESSING"),
+    ("TOOL_CALL", "PROCESSING"),
+    ("SPEAKING", "SPEAKING"),
+    ("ERROR", "MUTED"),
+    ("FAILED", "MUTED"),
+    ("DORMANT", "BOOTING"),
+])
+def test_legacy_state_strings_resolve(legacy, expected):
+    """Unknown spellings degrade to LISTENING, which is how ACTING was lost."""
+    from ui_siri.event_bus import UiState
+
+    assert UiState.coerce(legacy).value == expected
+
+
+def test_full_lifecycle_on_the_bridge():
+    """DORMANT -> LISTENING -> THINKING -> ACTING -> SPEAKING -> ERROR -> DORMANT.
+
+    Walks the machine exactly as main.py drives it (string states through
+    coerce_legacy) and checks the *bridge* surface QML reads, which is what the
+    verifier asserted on Windows.
+    """
+    from PySide6.QtCore import QCoreApplication
+
+    app = QCoreApplication.instance() or QCoreApplication([])
+    from ui_siri.bridge import UiBridge, UiDispatcher
+    from ui_siri.event_bus import EventBus
+    from ui_siri.state_machine import AssistantStateMachine
+
+    machine = AssistantStateMachine()
+    dispatcher = UiDispatcher()
+    dispatcher.bind_gui_thread()
+    bridge = UiBridge(machine, EventBus(), dispatcher)
+
+    cycle = [
+        ("DORMANT", "BOOTING"),
+        ("LISTENING", "LISTENING"),
+        ("THINKING", "THINKING"),
+        ("ACTING", "PROCESSING"),
+        ("SPEAKING", "SPEAKING"),
+        ("ERROR", "MUTED"),
+        ("DORMANT", "BOOTING"),
+    ]
+    seen = []
+    for sent, expected in cycle:
+        machine.coerce_legacy(sent)
+        app.processEvents()
+        actual = bridge.state
+        seen.append((sent, actual))
+        assert actual == expected, (
+            f"{sent} -> assistantState={actual!r}, expected {expected!r}; "
+            f"history={seen}")
+    # And back to a clean listening state afterwards.
+    machine.coerce_legacy("LISTENING")
+    app.processEvents()
+    assert bridge.state == "LISTENING"
+
+
+def test_text_only_is_reachable():
+    """`-` is folded to `_` before comparison, so the hyphenated spelling used
+    to match nothing and silently did nothing."""
+    machine = AssistantStateMachine()
+    machine.coerce_legacy("TEXT-ONLY")
+    assert machine.silent_mode is True
+    assert machine.snapshot()["silent"] is True

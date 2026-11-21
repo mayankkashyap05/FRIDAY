@@ -116,13 +116,20 @@ class _LayerWindow(QQuickView):
 
         # `required property` bindings must exist BEFORE the component is
         # instantiated: setting them afterwards means Qt warns "Required
-        # property ... was not initialized" and, for a `var` holding an object,
-        # the QML that binds to it never re-evaluates. setInitialProperties +
-        # loadFromModule is the supported order.
+        # property ... was not initialized" and the QML that binds to them
+        # never re-evaluates.
+        #
+        # setInitialProperties + setSource, NOT loadFromModule: the latter
+        # resolves the type out of the `ui_siri.qml` module, and on Windows it
+        # failed with:
+        #     Module "ui_siri.qml" contains no type named "OverlayWindow"
+        # setSource takes a direct file URL, so the windows do not have to be
+        # exported as module types at all. The module still exists for the
+        # `Theme` singleton, which every file resolves through qmldir.
         self.setResizeMode(QQuickView.ResizeMode.SizeRootObjectToView)
         if initial_properties:
             self.setInitialProperties(initial_properties)
-        self.loadFromModule(QML_MODULE, Path(qml_file).stem)
+        self.setSource(QUrl.fromLocalFile(str((QML_DIR / qml_file).resolve())))
 
     # ── lifecycle ────────────────────────────────────────────────────────────
     def _on_status(self, status) -> None:
