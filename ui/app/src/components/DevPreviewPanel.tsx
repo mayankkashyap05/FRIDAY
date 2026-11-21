@@ -10,7 +10,7 @@ export interface DevPreviewPanelProps {
   onOpenChange: (open: boolean) => void;
   onState: (state: AssistantState) => void;
   onCard: (kind: CardKind) => void;
-  onAmplitude: (value: number) => void;
+  onAmplitude: (value: number, bands?: { low: number; mid: number; high: number; source: "mic" | "tts" }) => void;
   onToggleInspector: () => void;
   onError: () => void;
   onShutdown: () => void;
@@ -50,6 +50,7 @@ export function DevPreviewPanel({
   onClear,
 }: DevPreviewPanelProps) {
   const [amplitude, setAmplitude] = useState(0.25);
+  const [bands, setBands] = useState<{ low: number; mid: number; high: number; source: "mic" | "tts" } | undefined>(undefined);
 
   return (
     <div className="fixed bottom-4 left-4 z-50 w-[268px]">
@@ -144,6 +145,30 @@ export function DevPreviewPanel({
                 }}
                 className="w-full accent-siri-cyan"
               />
+              <div className="flex flex-wrap gap-1 mt-1">
+                <button
+                  type="button"
+                  onClick={() => {
+                    const newBands = { low: 0.8, mid: 0.5, high: 0.2, source: "mic" as const };
+                    setBands(newBands);
+                    onAmplitude(amplitude, newBands);
+                  }}
+                  className="rounded-full bg-white/[0.07] px-2 py-0.5 text-[10px] font-medium text-white/70 hairline hover:bg-white/[0.14] hover:text-white"
+                >
+                  mic bands
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    const newBands = { low: 0.2, mid: 0.6, high: 0.9, source: "tts" as const };
+                    setBands(newBands);
+                    onAmplitude(amplitude, newBands);
+                  }}
+                  className="rounded-full bg-white/[0.07] px-2 py-0.5 text-[10px] font-medium text-white/70 hairline hover:bg-white/[0.14] hover:text-white"
+                >
+                  tts bands
+                </button>
+              </div>
             </section>
 
             <section className="flex items-center gap-1">

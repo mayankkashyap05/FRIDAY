@@ -1,24 +1,26 @@
 #version 300 es
 /*
- * FRIDAY — 1:1 Apple 3D volumetric silk Siri orb.
+ * FRIDAY — 2:1 Reference-grade 3D volumetric glass & luminous ferrofluid-silk orb.
  *
  * Optical anatomy, in the order it is composited:
  *
  *   1. a restrained ambient halo, outside the silhouette, that echoes the live
- *      ribbon colours and is *exactly* 0.0 by r = 0.88 (no box, no seam);
+ *      spectral ribbon colours (low/mid/high) and is *exactly* 0.0 by r = 0.88.
  *   2. a deep crystal void core — obsidian-indigo, #0A0724 centre → #081134
  *      mid → #16072C rim — with spherical depth shading. The high contrast in
- *      the core is what makes the ribbons read as luminous instead of pastel;
+ *      the core is what makes the ribbons read as luminous instead of pastel.
  *   3. four broad volumetric silk petals, each a 3D-tilted Gaussian sheet
  *      (soft body + inner core filament) that wraps the glass sphere, its
  *      domain warped through the spherical lens, additively accumulated so
  *      crossings climb past 1.0 and ACES tone-mapping turns them white-hot
- *      incandescent silk;
+ *      incandescent silk.
  *   4. a razor-thin iridescent Fresnel rim with RGB dispersion in the outer
- *      few percent, plus a lower-hemisphere chromatic caustic bounce;
+ *      few percent, plus a lower-hemisphere chromatic caustic bounce.
  *   5. an upper-left glass glint and a broad upper crescent sheen, strictly
- *      inside the silhouette;
+ *      inside the silhouette.
  *   6. 1/255 hash dither, so an 8-bit wallpaper never bands.
+ *   7. spring-driven micro-physics: the glass sphere displaces (uState, uVoice)
+ *      and the ferrofluid-silk ribbons react to spectral bands (low/mid/high).
  *
  * Output is canonical premultiplied (`vec4(color * alpha, alpha)`), and the
  * canvas is created with `premultipliedAlpha: true`, so the feathered halo
@@ -33,6 +35,10 @@
  *   uAttention 0..1 confirmation card waiting
  *   uError     0..1 recent error, decays over ~900 ms
  *   uFlash     0..1 summon bloom
+ *   uLow       0..1 spectral low band (60-260 Hz)
+ *   uMid       0..1 spectral mid band (260-2200 Hz)
+ *   uHigh      0..1 spectral high band (2200-7500 Hz)
+ *   uSource    0=mic, 1=tts (ferrofluid-silk reaction bias)
  */
 
 precision highp float;
@@ -52,6 +58,19 @@ uniform float uFlash;
 uniform float uActing;
 uniform float uReducedMotion;
 
+  // Spectral bands and source
+  uniform float uLow;
+  uniform float uMid;
+  uniform float uHigh;
+  uniform float uSource; // 0.0 = mic, 1.0 = tts
+
+
+// Spectral bands and source
+uniform float uLow;
+uniform float uMid;
+uniform float uHigh;
+uniform float uSource; // 0.0 = mic, 1.0 = tts
+
 const float PI = 3.14159265359;
 const float TAU = 6.28318530718;
 
@@ -65,15 +84,19 @@ const vec3 CORE_CENTER = vec3(0.039, 0.027, 0.141); // #0A0724
 const vec3 CORE_MID = vec3(0.031, 0.067, 0.204);    // #081134
 const vec3 CORE_RIM = vec3(0.086, 0.027, 0.173);    // #16072C
 
-/* ── the four silk ribbons ──────────────────────────────────────────────── */
-const vec3 RIBBON0_A = vec3(0.024, 0.969, 1.000); // #06F7FF electric cyan
-const vec3 RIBBON0_B = vec3(0.220, 0.910, 1.000); // #38E8FF aqua
-const vec3 RIBBON1_A = vec3(0.118, 0.373, 1.000); // #1E5FFF sapphire
-const vec3 RIBBON1_B = vec3(0.302, 0.545, 1.000); // #4D8BFF cobalt
-const vec3 RIBBON2_A = vec3(1.000, 0.176, 0.624); // #FF2D9F magenta
-const vec3 RIBBON2_B = vec3(1.000, 0.369, 0.722); // #FF5EB8 rose
-const vec3 RIBBON3_A = vec3(0.690, 0.188, 1.000); // #B030FF amethyst
-const vec3 RIBBON3_B = vec3(0.561, 0.357, 1.000); // #8F5BFF violet
+/* ── the four ferrofluid-silk ribbons ────────────────────────────────────── */
+// Low band: Electric Cyan / Aqua (60-260 Hz)
+const vec3 RIBBON0_A = vec3(0.024, 0.969, 1.000); // #06F7FF
+const vec3 RIBBON0_B = vec3(0.220, 0.910, 1.000); // #38E8FF
+// Mid band: Sapphire / Cobalt (260-2200 Hz)
+const vec3 RIBBON1_A = vec3(0.118, 0.373, 1.000); // #1E5FFF
+const vec3 RIBBON1_B = vec3(0.302, 0.545, 1.000); // #4D8BFF
+// High band: Magenta / Rose (2200-7500 Hz)
+const vec3 RIBBON2_A = vec3(1.000, 0.176, 0.624); // #FF2D9F
+const vec3 RIBBON2_B = vec3(1.000, 0.369, 0.722); // #FF5EB8
+// Ferrofluid core / Ambient: Amethyst / Violet (source bias)
+const vec3 RIBBON3_A = vec3(0.690, 0.188, 1.000); // #B030FF
+const vec3 RIBBON3_B = vec3(0.561, 0.357, 1.000); // #8F5BFF
 
 float hash12(vec2 p) {
   vec3 p3 = fract(vec3(p.xyx) * 0.1031);
@@ -116,15 +139,35 @@ float stateWeight(float value) {
   return clamp(1.0 - abs(uState - value), 0.0, 1.0);
 }
 
-/** Slow gradient across a ribbon: front-facing silk is brighter. */
-vec3 ribbonColor(vec3 a, vec3 b, float z, float theta, float time, float seed) {
-  float t = clamp(0.32 + 0.62 * z + 0.10 * sin(theta * 1.7 + time * 0.21 + seed),
-                  0.0, 1.0);
-  return mix(a, b, t);
+/**
+ * Spectral blend: maps low/mid/high bands to the ribbon colour sets.
+ * Source bias (mic vs tts) shifts the ferrofluid core tint.
+ */
+vec3 spectralTint(float low, float mid, float high, float source, float z, float theta, float time) {
+  // Low band drives cyan/aqua (RIBBON0)
+  vec3 lowTint = mix(RIBBON0_A, RIBBON0_B, 0.5 + 0.5 * sin(theta * 1.2 + time * 0.1));
+  lowTint *= low;
+
+  // Mid band drives sapphire/cobalt (RIBBON1)
+  vec3 midTint = mix(RIBBON1_A, RIBBON1_B, 0.5 + 0.5 * cos(theta * 1.7 + time * 0.15));
+  midTint *= mid;
+
+  // High band drives magenta/rose (RIBBON2)
+  vec3 highTint = mix(RIBBON2_A, RIBBON2_B, 0.5 + 0.5 * sin(theta * 2.1 + time * 0.2));
+  highTint *= high;
+
+  // Source bias: mic (0) -> violet/amethyst (RIBBON3), tts (1) -> warm magenta
+  vec3 sourceTint = mix(RIBBON3_A, RIBBON3_B, 0.5 + 0.5 * cos(theta * 0.8 + time * 0.05));
+  sourceTint = mix(sourceTint, vec3(1.0, 0.3, 0.7), source * 0.4);
+
+  // Combine with z-depth and theta
+  float t = clamp(0.32 + 0.62 * z + 0.10 * sin(theta * 1.7 + time * 0.21), 0.0, 1.0);
+  vec3 combined = lowTint + midTint + highTint + sourceTint * (0.3 + 0.4 * z);
+  return mix(combined, vec3(1.0), t * 0.1); // slight white-hot glow
 }
 
 /**
- * One broad silk petal.
+ * One broad silk petal (ferrofluid-silk).
  *
  * The sheet is a *plane through the sphere*: `dot(n, dir)` measures how far the
  * surface point sits from it, so the ribbon is a great-circle band that wraps
@@ -137,7 +180,8 @@ vec3 ribbonColor(vec3 a, vec3 b, float z, float theta, float time, float seed) {
 vec3 silkRibbon(vec3 n, vec2 lens, float angle, float offset, float tilt,
                 float sharpen, float warpAmp, float phase, float gain,
                 vec3 colA, vec3 colB, float z, float theta, float time,
-                float seed, float thinkShift, float speakBoost) {
+                float seed, float thinkShift, float speakBoost,
+                float low, float mid, float high, float source) {
   float ca = cos(angle);
   float sa = sin(angle);
   // The lensed sample coordinate is rotated into the ribbon's own frame; that
@@ -159,11 +203,11 @@ vec3 silkRibbon(vec3 n, vec2 lens, float angle, float offset, float tilt,
   float body = exp(-d * d * sharpen);
   float filament = exp(-d * d * sharpen * 4.5);
   // Attenuate toward the sphere edge: the sheet is inside glass, not on it.
-  // A steeper falloff than a bare pow(z, 0.45) stops the ribbons from tracing
-  // a neon outline around the silhouette; they sink into the glass instead.
   float edge = pow(z, 0.80);
 
-  vec3 tint = ribbonColor(colA, colB, z, theta, time, seed);
+  // Spectral tinting: the ribbons physically react to the bands
+  vec3 tint = spectralTint(low, mid, high, source, z, theta, time);
+
   // THINKING: ribbons pull toward luminous amethyst / sapphire.
   tint = mix(tint, mix(RIBBON1_B, RIBBON3_A, 0.55), 0.42 * thinkShift);
   // SPEAKING: a touch brighter and warmer at the core.
@@ -186,6 +230,10 @@ void main() {
   float energy = clamp(uEnergy, 0.0, 1.0);
   float muted = clamp(uMuted, 0.0, 1.0);
   float acting = clamp(uActing, 0.0, 1.0);
+  float low = clamp(uLow, 0.0, 1.0);
+  float mid = clamp(uMid, 0.0, 1.0);
+  float high = clamp(uHigh, 0.0, 1.0);
+  float source = clamp(uSource, 0.0, 1.0);
 
   float wThink = stateWeight(1.0);
   float wProcess = stateWeight(2.0);
@@ -193,9 +241,11 @@ void main() {
   float wMuted = max(stateWeight(4.0), muted);
 
   // SPEAKING breathes: the whole glass swells 2.8 % with each syllable.
-  float R = BASE_R * (1.0 + 0.028 * voice * wSpeak);
+  // Spring-driven micro-physics: displacement scales with voice and energy.
+  float springDisplacement = 0.028 * voice * wSpeak + 0.012 * energy;
+  float R = BASE_R * (1.0 + springDisplacement);
 
-  // ── 1. ambient halo: echoes the live ribbon colours ──────────────────────
+  // ── 1. ambient halo: echoes the live spectral ribbon colours ──────────────
   // Periodic angular weights (cos of theta, never theta itself) so the atan2
   // branch cut cannot leave a seam across the glow.
   float a0 = 0.5 + 0.5 * cos(theta - 0.00);
@@ -203,8 +253,10 @@ void main() {
   float a2 = 0.5 + 0.5 * cos(theta - 2.31);
   float a3 = 0.5 + 0.5 * cos(theta - 3.74);
   float aSum = max(a0 + a1 + a2 + a3, 1e-4);
-  vec3 haloColor = (RIBBON0_A * a0 + RIBBON1_A * a1 +
-                    RIBBON2_A * a2 + RIBBON3_A * a3) / aSum;
+  
+  // Spectral halo weighting
+  vec3 haloColor = (RIBBON0_A * a0 * low + RIBBON1_A * a1 * mid +
+                    RIBBON2_A * a2 * high + RIBBON3_A * a3 * (1.0 - source)) / aSum;
 
   float outside = max(r - R, 0.0);
   float haloFalloff = exp(-outside / 0.085);
@@ -246,7 +298,7 @@ void main() {
     core *= 0.42 + 0.45 * pow(z, 0.85);
     core *= 0.90 + 0.35 * energy;
 
-    // ── four volumetric silk petals ───────────────────────────────────────
+    // ── four volumetric ferrofluid-silk petals ───────────────────────────────
     float speed = mix(0.34, 1.05, energy) * mix(1.0, 1.65, wSpeak) *
                   mix(1.0, 0.38, wMuted) * mix(1.0, 1.28, wThink);
     float drift = time * speed * 0.16;
@@ -262,19 +314,19 @@ void main() {
     silk += silkRibbon(n, lens, 0.00 + drift,        0.06, 1.35,
                        sharpen, warpAmp, time * 0.22, gain,
                        RIBBON0_A, RIBBON0_B, z, theta, time, 0.0,
-                       thinkShift, speakBoost);
+                       thinkShift, speakBoost, low, mid, high, source);
     silk += silkRibbon(n, lens, 1.18 - drift * 0.86, 0.18, 0.55,
                        sharpen * 0.94, warpAmp, time * 0.19, gain * 0.96,
                        RIBBON1_A, RIBBON1_B, z, theta, time, 1.7,
-                       thinkShift, speakBoost);
+                       thinkShift, speakBoost, low, mid, high, source);
     silk += silkRibbon(n, lens, 2.31 + drift * 0.71, -0.14, 0.95,
                        sharpen * 1.06, warpAmp * 0.9, time * 0.26, gain * 0.92,
                        RIBBON2_A, RIBBON2_B, z, theta, time, 3.4,
-                       thinkShift, speakBoost);
+                       thinkShift, speakBoost, low, mid, high, source);
     silk += silkRibbon(n, lens, 3.74 - drift * 0.61, 0.24, 0.30,
                        sharpen * 0.88, warpAmp * 1.1, time * 0.17, gain * 0.90,
                        RIBBON3_A, RIBBON3_B, z, theta, time, 5.1,
-                       thinkShift, speakBoost);
+                       thinkShift, speakBoost, low, mid, high, source);
 
     // PROCESSING / uActing: brisk cyan-violet internal energy.
     silk += mix(RIBBON0_A, RIBBON3_A, 0.5 + 0.5 * sin(time * 1.3)) *
@@ -296,8 +348,9 @@ void main() {
             rim * 0.40;
     // Delicate spectral split at the outer edge: red and blue separate, the
     // outer 5 % reads as real glass rather than a painted outline.
-    body.r += rim * 0.12;
-    body.b += rim * 0.20;
+    body.r += rim * 0.12 * low;
+    body.g += rim * 0.15 * mid;
+    body.b += rim * 0.20 * high;
 
     // ── upper-left glass specular ────────────────────────────────────────
     vec3 lightDir = normalize(vec3(-0.42, 0.68, 0.60));
