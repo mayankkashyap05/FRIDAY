@@ -1,5 +1,13 @@
-import { app, BrowserWindow, ipcMain, screen, session, shell } from "electron";
-import type { WebPreferences } from "electron";
+import {
+  app,
+  BrowserWindow,
+  globalShortcut,
+  ipcMain,
+  screen,
+  session,
+  shell,
+} from "electron";
+import type { Display, WebPreferences } from "electron";
 import * as path from "node:path";
 
 /**
@@ -10,8 +18,13 @@ import * as path from "node:path";
  *   preload is the *only* bridge, and it exposes an explicit allow-list.
  *
  * Window posture: a transparent, frameless, always-on-top panel anchored to the
- * bottom-centre of the primary display, hidden from the taskbar and excluded
+ * bottom-centre of the *active* display, hidden from the taskbar and excluded
  * from screen capture, that ignores the mouse unless a surface asks for input.
+ *
+ * Geometry note: `screen.*.workArea` and `BrowserWindow` bounds are already in
+ * DIPs on every platform. Multiplying by `display.scaleFactor` (as v1 did)
+ * double-scaled the stage on 125 %/150 %/175 % Windows displays and pushed it
+ * off-centre; nothing here ever multiplies by the scale factor.
  */
 
 const APP_DIR = app.getAppPath();
@@ -22,11 +35,19 @@ const STAGE_WIDTH = 520;
 const STAGE_HEIGHT = 640;
 const STAGE_MARGIN_BOTTOM = 24;
 
+/** Inspector surface; centred on the display the user is actually using. */
+const INSPECTOR_WIDTH = 900;
+const INSPECTOR_HEIGHT = 620;
+const INSPECTOR_MIN_WIDTH = 720;
+const INSPECTOR_MIN_HEIGHT = 480;
+
 let stageWindow: BrowserWindow | null = null;
 let inspectorWindow: BrowserWindow | null = null;
 let interactive = false;
 let focusable = false;
+let invoked = false;
 let escapeArmed = false;
+let escapeShortcutActive = false;
 let inspectorTab = "camera";
 let quitting = false;
 
@@ -79,25 +100,75 @@ function harden(win: BrowserWindow): void {
   });
 }
 
-function stagePosition(): { x: number; y: number } {
-  const display = screen.getPrimaryDisplay();
+/* ── geometry ─────────────────────────────────────────────────────────────── */
+
+/** The display under the cursor — where the user is actually looking. */
+function activeDisplay(): Display {
+  try {
+    const point = screen.getCursorScreenPoint();
+    return screen.getDisplayNearestPoint(point) ?? screen.getPrimaryDisplay();
+  } catch {
+    return screen.getPrimaryDisplay();
+  }
+}
+
+export interface StageGeometry {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
+/**
+ * Bottom-centre anchor inside the display's work area.
+ *
+ * Everything above is DIPs already, so this is pure arithmetic — the v1
+ * `* scale` multiplication is gone for good.
+ */
+function stageGeometry(display: Display = activeDisplay()): StageGeometry {
   const area = display.workArea;
-  const scale = display.scaleFactor || 1;
-  const width = Math.round(STAGE_WIDTH * scale);
-  const height = Math.round(STAGE_HEIGHT * scale);
+  const width = Math.min(STAGE_WIDTH, Math.max(240, area.width - 16));
+  const height = Math.min(STAGE_HEIGHT, Math.max(380, area.height - 20));
+  const x = Math.round(area.x + (area.width - width) / 2);
+  const y = Math.round(
+    Math.max(area.y, area.y + area.height - height - STAGE_MARGIN_BOTTOM),
+  );
+  return { x, y, width, height };
+}
+
+function stagePosition(): { x: number; y: number } {
+  const { x, y } = stageGeometry();
+  return { x, y };
+}
+
+/** Re-anchor a live stage to the active display without touching focus. */
+function applyStageGeometry(): void {
+  const win = stageWindow;
+  if (!win || win.isDestroyed()) return;
+  const geometry = stageGeometry();
+  if (win.isMaximized() || win.isFullScreen()) return;
+  win.setBounds(geometry, false);
+}
+
+function inspectorPosition(): { x: number; y: number } {
+  const area = activeDisplay().workArea;
+  const width = Math.min(INSPECTOR_WIDTH, Math.max(INSPECTOR_MIN_WIDTH, area.width - 40));
+  const height = Math.min(INSPECTOR_HEIGHT, Math.max(INSPECTOR_MIN_HEIGHT, area.height - 60));
   return {
     x: Math.round(area.x + (area.width - width) / 2),
-    y: Math.round(area.y + area.height - height - STAGE_MARGIN_BOTTOM * scale),
+    y: Math.round(area.y + (area.height - height) / 2),
   };
 }
 
+/* ── windows ──────────────────────────────────────────────────────────────── */
+
 function createStage(): BrowserWindow {
-  const { x, y } = stagePosition();
+  const geometry = stageGeometry();
   const win = new BrowserWindow({
-    width: STAGE_WIDTH,
-    height: STAGE_HEIGHT,
-    x,
-    y,
+    width: geometry.width,
+    height: geometry.height,
+    x: geometry.x,
+    y: geometry.y,
     show: false,
     transparent: true,
     frame: false,
@@ -131,11 +202,21 @@ function createStage(): BrowserWindow {
 
   win.on("closed", () => {
     stageWindow = null;
+    syncEscapeShortcut();
     if (!quitting) {
       quitting = true;
       app.quit();
     }
   });
+
+  // Hidden means hidden: never leave an Escape hook (or an input grab) behind.
+  win.on("hide", () => {
+    interactive = false;
+    focusable = false;
+    syncEscapeShortcut();
+  });
+  win.on("show", () => syncEscapeShortcut());
+  win.on("blur", () => syncEscapeShortcut());
 
   // Esc is handled here because a click-through window does not always own the
   // keyboard: forward it only while the renderer has armed it.
@@ -149,6 +230,21 @@ function createStage(): BrowserWindow {
   return win;
 }
 
+/**
+ * Windows 11 (build >= 22000) is the only place Electron can hand us real
+ * Acrylic. On Windows 10 the material is a no-op, so we keep an opaque
+ * `#0b0b0f` window instead of a translucent-but-blank one.
+ */
+function supportsAcrylic(): boolean {
+  if (process.platform !== "win32") return false;
+  try {
+    const build = Number.parseInt(process.getSystemVersion().split(".")[2] ?? "0", 10);
+    return Number.isFinite(build) && build >= 22000;
+  } catch {
+    return false;
+  }
+}
+
 function createInspector(tab: string): BrowserWindow {
   inspectorTab = tab || "camera";
   if (inspectorWindow && !inspectorWindow.isDestroyed()) {
@@ -158,15 +254,22 @@ function createInspector(tab: string): BrowserWindow {
     return inspectorWindow;
   }
 
+  const { x, y } = inspectorPosition();
+  const acrylic = supportsAcrylic();
   const win = new BrowserWindow({
-    width: 900,
-    height: 620,
-    minWidth: 720,
-    minHeight: 480,
+    width: INSPECTOR_WIDTH,
+    height: INSPECTOR_HEIGHT,
+    x,
+    y,
+    minWidth: INSPECTOR_MIN_WIDTH,
+    minHeight: INSPECTOR_MIN_HEIGHT,
     show: false,
     frame: false,
     title: "FRIDAY Inspector",
-    backgroundColor: "#0b0b0f",
+    // Windows 11 Acrylic; older Windows 10 builds simply ignore the material
+    // and fall back to the solid surface colour baked into index.css.
+    backgroundColor: acrylic ? "#00000000" : "#0b0b0f",
+    ...(acrylic ? { backgroundMaterial: "acrylic" as const } : {}),
     skipTaskbar: false,
     autoHideMenuBar: true,
     webPreferences: commonWebPreferences("inspector"),
@@ -187,12 +290,75 @@ function createInspector(tab: string): BrowserWindow {
   return win;
 }
 
+/* ── input / keyboard modes ───────────────────────────────────────────────── */
+
 function applyStageInputMode(): void {
   const win = stageWindow;
   if (!win || win.isDestroyed()) return;
   // Ignore mouse *unless* a surface claimed input; always forward, so leaving a
   // surface (and hovering the next one) keeps working.
   win.setIgnoreMouseEvents(!interactive, { forward: true });
+}
+
+/**
+ * The voice-summoned stage is intentionally *not focusable*, so a window-level
+ * Escape handler would never see the key. Instead, a global Escape is armed
+ * only while `invoked && !focusable && visible` and released on blur, hide,
+ * dismissal, or quit. When the stage *is* focusable, `before-input-event`
+ * handles Escape locally and this registration is deliberately absent.
+ */
+function syncEscapeShortcut(): void {
+  const win = stageWindow;
+  const wanted = Boolean(
+    win && !win.isDestroyed() && win.isVisible() && invoked && !focusable,
+  );
+  if (wanted === escapeShortcutActive) return;
+
+  if (wanted) {
+    let registered = false;
+    try {
+      registered = globalShortcut.register("Escape", () => {
+        const target = stageWindow;
+        if (!target || target.isDestroyed()) return;
+        target.webContents.send("friday:escape");
+      });
+    } catch {
+      // Another app owns Escape; the orb simply keeps the pointer-only path.
+      registered = false;
+    }
+    escapeShortcutActive = registered;
+    return;
+  }
+
+  if (escapeShortcutActive) {
+    try {
+      globalShortcut.unregister("Escape");
+    } catch {
+      /* already released */
+    }
+  }
+  escapeShortcutActive = false;
+}
+
+/** True 0 % dormant HWND footprint: hidden, click-through, no input hooks. */
+function hideStage(): void {
+  const win = stageWindow;
+  interactive = false;
+  focusable = false;
+  invoked = false;
+  if (win && !win.isDestroyed()) {
+    applyStageInputMode();
+    try {
+      win.setFocusable(false);
+      win.blur();
+    } catch {
+      /* window may already be closing */
+    }
+    syncEscapeShortcut();
+    win.hide();
+  } else {
+    syncEscapeShortcut();
+  }
 }
 
 function registerIpc(): void {
@@ -204,24 +370,43 @@ function registerIpc(): void {
   });
 
   ipcMain.handle("friday:focusable", (_event, value: unknown) => {
-    focusable = Boolean(value);
     const win = stageWindow;
-    if (!win || win.isDestroyed()) return;
-    win.setFocusable(focusable);
-    if (focusable && !win.isFocused()) {
-      win.focus();
-    } else if (!focusable) {
-      win.blur();
+    if (!win || win.isDestroyed()) {
+      focusable = Boolean(value);
+      return;
     }
+    const next = Boolean(value);
+    if (!next) {
+      // Release the keyboard *before* dropping focusability, so Windows returns
+      // the caret to the user's foreground app instead of a hidden panel.
+      if (focusable) win.blur();
+      win.setFocusable(false);
+      focusable = false;
+    } else {
+      focusable = true;
+      win.setFocusable(true);
+      if (!win.isVisible()) win.showInactive();
+      win.focus();
+    }
+    syncEscapeShortcut();
   });
 
   ipcMain.handle("friday:invoked", (_event, value: unknown) => {
     const win = stageWindow;
+    invoked = Boolean(value);
     if (!win || win.isDestroyed()) return;
-    if (value) {
+    if (invoked) {
+      // Re-anchor to whatever display the user is on right now, then summon
+      // without stealing focus (`showInactive`, never `show`+`focus`).
+      applyStageGeometry();
       if (!win.isVisible()) win.showInactive();
       win.setAlwaysOnTop(true, "screen-saver");
     }
+    syncEscapeShortcut();
+  });
+
+  ipcMain.handle("friday:hide-stage", () => {
+    hideStage();
   });
 
   ipcMain.handle("friday:open-inspector", (_event, tab: unknown) => {
@@ -231,6 +416,24 @@ function registerIpc(): void {
   ipcMain.handle("friday:close-inspector", () => {
     if (inspectorWindow && !inspectorWindow.isDestroyed()) inspectorWindow.close();
     inspectorWindow = null;
+    if (stageWindow && !stageWindow.isDestroyed()) {
+      stageWindow.webContents.send("friday:inspector-closed");
+    }
+  });
+
+  ipcMain.handle("friday:inspector-minimize", () => {
+    if (inspectorWindow && !inspectorWindow.isDestroyed()) inspectorWindow.minimize();
+  });
+
+  ipcMain.handle("friday:inspector-maximize", () => {
+    const win = inspectorWindow;
+    if (!win || win.isDestroyed()) return false;
+    if (win.isMaximized()) {
+      win.unmaximize();
+      return false;
+    }
+    win.maximize();
+    return true;
   });
 
   ipcMain.handle("friday:inspector-tab", (_event, tab: unknown) => {
@@ -277,6 +480,13 @@ if (!app.requestSingleInstanceLock()) {
 
     registerIpc();
     stageWindow = createStage();
+
+    // Monitors come and go (docking stations, RDP, projectors): the overlay
+    // re-anchors itself instead of living off-screen forever.
+    const reanchor = () => applyStageGeometry();
+    screen.on("display-metrics-changed", reanchor);
+    screen.on("display-added", reanchor);
+    screen.on("display-removed", reanchor);
   });
 
   app.on("window-all-closed", () => {
@@ -288,6 +498,15 @@ if (!app.requestSingleInstanceLock()) {
     quitting = true;
   });
 
+  app.on("will-quit", () => {
+    // Never leave a global Escape hook installed after FRIDAY exits.
+    try {
+      globalShortcut.unregisterAll();
+    } catch {
+      /* nothing registered */
+    }
+  });
+
   // Never let a stray certificate error or crashed GPU take the overlay down.
   app.on("child-process-gone", (_event, details) => {
     if (details.type === "GPU") {
@@ -297,4 +516,14 @@ if (!app.requestSingleInstanceLock()) {
   });
 }
 
-export const __test = { STAGE_WIDTH, STAGE_HEIGHT, INDEX_HTML, rendererUrl };
+export const __test = {
+  STAGE_WIDTH,
+  STAGE_HEIGHT,
+  STAGE_MARGIN_BOTTOM,
+  INSPECTOR_WIDTH,
+  INSPECTOR_HEIGHT,
+  INDEX_HTML,
+  rendererUrl,
+  stageGeometry,
+  stagePosition,
+};

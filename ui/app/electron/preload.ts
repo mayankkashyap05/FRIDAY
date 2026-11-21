@@ -51,6 +51,14 @@ const api = {
     void ipcRenderer.invoke("friday:focus-stage");
   },
 
+  /**
+   * Dormant means *gone*: hide the stage HWND entirely (no always-on-top
+   * panel, no input hooks, 0 % GPU) once the dismissal contraction finishes.
+   */
+  hideStage: (): void => {
+    void ipcRenderer.invoke("friday:hide-stage");
+  },
+
   openInspector: (tab: string): void => {
     void ipcRenderer.invoke("friday:open-inspector", tab);
   },
@@ -62,6 +70,14 @@ const api = {
   setInspectorTab: (tab: string): void => {
     void ipcRenderer.invoke("friday:inspector-tab", tab);
   },
+
+  minimizeInspector: (): void => {
+    void ipcRenderer.invoke("friday:inspector-minimize");
+  },
+
+  /** Returns the *new* state: true when the window is now maximized. */
+  toggleMaximizeInspector: (): Promise<boolean> =>
+    ipcRenderer.invoke("friday:inspector-maximize") as Promise<boolean>,
 
   setEscapeArmed: (armed: boolean): void => {
     void ipcRenderer.invoke("friday:escape-armed", armed);

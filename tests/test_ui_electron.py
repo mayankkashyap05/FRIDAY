@@ -101,19 +101,24 @@ def test_ws_accepts_a_valid_token_and_pushes_a_snapshot(controller):
         assert key in message, f"snapshot is missing {key!r}"
     assert message["state"]["state"] in {
         "BOOTING", "LISTENING", "THINKING", "PROCESSING", "SPEAKING", "MUTED"}
-    assert controller.ws.stats()["clients"] == 0  # closed cleanly
+    # The server observes the close asynchronously; wait for it rather than
+    # racing the socket thread on a busy CI machine.
+    assert _wait_until(lambda: controller.ws.stats()["clients"] == 0, timeout=2), (
+        "the client never left the server's connection table")
 
 
 def test_ws_rejects_an_invalid_token(controller):
-    from websockets.exceptions import (
-        ConnectionClosed,
-        InvalidStatus,
-        InvalidStatusCode,
-    )
+    import websockets.exceptions as ws_errors
 
-    bad_status = (InvalidStatus,)
-    if InvalidStatusCode is not None:  # websockets < 14 alias
-        bad_status += (InvalidStatusCode,)
+    ConnectionClosed = ws_errors.ConnectionClosed
+    # ``InvalidStatus`` is the modern name; websockets < 14 only has the (then
+    # non-deprecated) ``InvalidStatusCode``. Resolve them without ever touching
+    # the deprecated ``websockets.legacy`` shim, so this test is warning-free on
+    # every supported version.
+    rejected_exception = getattr(ws_errors, "InvalidStatus", None)
+    if rejected_exception is None:  # pragma: no cover - websockets < 14
+        rejected_exception = ws_errors.InvalidStatusCode
+    bad_status = (rejected_exception, ConnectionClosed)
 
     with pytest.raises(bad_status + (ConnectionClosed,)) as excinfo:
         with _connect(controller.ws_url, token="wrong-token") as ws:
@@ -245,6 +250,35 @@ def test_window_dismissed_hides_the_stage(controller):
         _next_json(ws)
         ws.send(json.dumps({"t": protocol.C_WINDOW_DISMISSED}))
         assert _wait_until(lambda: not controller.visible)
+
+
+def test_cancel_hides_the_stage_and_clears_the_live_transcript(controller):
+    """Escape is a dismissal: cancel the turn *and* contract the overlay."""
+    controller.show()
+    assert _wait_until(lambda: controller.visible)
+    controller.bridge.set_live_transcript("reading the previous line")
+    assert controller.bridge.lastEvent == "reading the previous line"
+
+    with _connect(controller.ws_url) as ws:
+        _next_json(ws)
+        ws.send(json.dumps({"t": protocol.C_CANCEL}))
+        cleared = _wait_for(
+            ws, lambda m: m["t"] == protocol.T_LIVE_TRANSCRIPT and m["text"] == "",
+            timeout=5)
+
+    assert cleared["text"] == ""
+    assert _wait_until(lambda: not controller.visible)
+    assert controller.bridge.invoked is False
+    assert controller.bridge.lastEvent == ""
+
+
+def test_live_transcript_is_cleared_on_plain_dismissal(controller):
+    controller.show()
+    assert _wait_until(lambda: controller.visible)
+    controller.bridge.set_live_transcript("still on screen")
+    controller.hide()
+    assert _wait_until(lambda: not controller.visible)
+    assert controller.bridge.lastEvent == ""
 
 
 def test_unknown_message_types_are_ignored(controller):
@@ -593,6 +627,22 @@ def test_shutdown_is_idempotent(controller):
     assert controller.dispatcher.running is False
 
 
+def test_shutdown_farewell_is_logged_exactly_once(controller, capsys):
+    """Every teardown path may race here; the user sees one line, not three."""
+    capsys.readouterr()  # drop anything the fixture printed while starting
+
+    controller.start()
+    threading.Thread(target=controller.request_quit, daemon=True).start()
+    assert controller.wait(5)
+
+    controller.request_quit()   # already closed: must stay silent
+    controller.shutdown()       # idempotent: must stay silent
+
+    farewell = "Tray stopped, audio restored, UI closed."
+    output = capsys.readouterr().out
+    assert output.count(farewell) == 1, output
+
+
 def test_shutdown_message_reaches_the_renderer(controller):
     with _connect(controller.ws_url) as ws:
         _next_json(ws)
@@ -741,7 +791,7 @@ REQUIRED_APP_FILES = (
     "package.json",
     "tsconfig.json",
     "tsconfig.electron.json",
-    "vite.config.ts",
+    "vite.config.mts",
     "index.html",
     "electron/main.ts",
     "electron/preload.ts",
@@ -802,7 +852,7 @@ def test_package_json_declares_the_required_stack():
 def test_vite_build_targets_the_electron_loader():
     package = json.loads((APP / "package.json").read_text(encoding="utf-8"))
     assert package.get("main") == "dist/electron/main.js"
-    config = (APP / "vite.config.ts").read_text(encoding="utf-8")
+    config = (APP / "vite.config.mts").read_text(encoding="utf-8")
     assert "base: './'" in config, "file:// loading needs relative asset URLs"
     assert "tailwindcss" in config
     assert "emptyOutDir: false" in config, (

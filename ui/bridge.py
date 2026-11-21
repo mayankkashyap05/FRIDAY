@@ -457,6 +457,18 @@ class UiBridge:
         self._last_event = clean
         self._emit(protocol.T_LIVE_TRANSCRIPT, {"text": clean})
 
+    def clear_live_transcript(self) -> None:  # noqa: N802
+        """Drop the floating line — always, even if it already reads empty.
+
+        Called when the overlay hides so re-summoning Siri can never flash the
+        previous session's last line before the new one arrives. The emit is
+        unconditional (unlike :meth:`set_live_transcript`, which de-duplicates)
+        because the renderer keeps its own hold timer and needs the explicit
+        clear on every dismissal.
+        """
+        self._last_event = ""
+        self._emit(protocol.T_LIVE_TRANSCRIPT, {"text": ""})
+
     def ingest(self, payload: Any) -> None:
         """Single entry point for *any* backend content. UI thread only."""
         card, activities, event = card_mapper.to_cards(payload)

@@ -3,7 +3,10 @@ import {
   Camera,
   Gamepad2,
   History,
+  Maximize2,
   Mic,
+  Minimize2,
+  Minus,
   MonitorPlay,
   Settings,
   Volume2,
@@ -48,10 +51,17 @@ function pretty(value: string): string {
  * itself can stay a single quiet orb, and it is excluded from screen capture.
  */
 export function InspectorApp({ initialTab }: { initialTab?: string }) {
-  const [frames, setFrames] = useState<Uint8Array | null>(null);
+  // Two independent live streams: 1 = vision camera, 2 = arcade. The arcade
+  // tab used to render an empty box because only stream 1 was ever stored.
+  const [frames, setFrames] = useState<{ camera: Uint8Array | null; arcade: Uint8Array | null }>({
+    camera: null,
+    arcade: null,
+  });
   const onFrame = useCallback((stream: number, jpeg: Uint8Array) => {
-    if (stream === 1) setFrames(jpeg);
+    if (stream === 1) setFrames((current) => ({ ...current, camera: jpeg }));
+    else if (stream === 2) setFrames((current) => ({ ...current, arcade: jpeg }));
   }, []);
+  const [maximized, setMaximized] = useState(false);
   const socket = useFridaySocket({ onFrame });
   const ui = socket.ui.ready ? socket.ui : initialUiState;
   const send = socket.send;
@@ -82,8 +92,20 @@ export function InspectorApp({ initialTab }: { initialTab?: string }) {
 
   const transcript = useMemo(() => ui.transcript.slice(-120).reverse(), [ui.transcript]);
 
+  // The backend publishes its whole diagnostic tree as inspector props; show
+  // it verbatim (pretty-printed) so a support session needs no second tool.
+  const diagnostics = useMemo(() => {
+    const raw = ui.inspector.props?.diagnostics;
+    if (raw === undefined || raw === null) return "";
+    try {
+      return JSON.stringify(raw, null, 2);
+    } catch {
+      return "";
+    }
+  }, [ui.inspector.props]);
+
   return (
-    <div className="flex h-full w-full flex-col bg-[#0b0b0f] text-siri-text">
+    <div className="inspector-shell flex h-full w-full flex-col text-siri-text">
       <header
         className="flex h-11 shrink-0 items-center gap-2 border-b border-white/[0.07] bg-[#111114] px-3"
         style={{ WebkitAppRegion: "drag" } as CSSProperties}
@@ -105,6 +127,30 @@ export function InspectorApp({ initialTab }: { initialTab?: string }) {
             aria-label={ui.state.muted ? "Unmute" : "Mute"}
           >
             {ui.state.muted ? <VolumeX size={13} /> : <Volume2 size={13} />}
+          </button>
+          <span aria-hidden className="mx-0.5 h-4 w-px bg-white/10" />
+          <button
+            type="button"
+            className="focus-ring grid size-6 place-items-center rounded-full text-white/45 hover:bg-white/10 hover:text-white"
+            onClick={() => window.fridayAPI?.minimizeInspector()}
+            aria-label="Minimize window"
+          >
+            <Minus size={13} strokeWidth={2.4} />
+          </button>
+          <button
+            type="button"
+            className="focus-ring grid size-6 place-items-center rounded-full text-white/45 hover:bg-white/10 hover:text-white"
+            onClick={async () => {
+              const next = await window.fridayAPI?.toggleMaximizeInspector();
+              setMaximized(Boolean(next));
+            }}
+            aria-label={maximized ? "Restore window" : "Maximize window"}
+          >
+            {maximized ? (
+              <Minimize2 size={12} strokeWidth={2.4} />
+            ) : (
+              <Maximize2 size={12} strokeWidth={2.4} />
+            )}
           </button>
           <button
             type="button"
@@ -157,8 +203,8 @@ export function InspectorApp({ initialTab }: { initialTab?: string }) {
           {tab === "camera" ? (
             <section className="space-y-3">
               <div className="relative overflow-hidden rounded-2xl border border-white/10 bg-black">
-                {frames ? (
-                  <StreamCanvas bytes={frames} className="aspect-video w-full object-cover" />
+                {frames.camera ? (
+                  <StreamCanvas bytes={frames.camera} className="aspect-video w-full object-cover" />
                 ) : (
                   <div className="grid aspect-video w-full place-items-center text-[11px] text-white/35">
                     <span className="flex items-center gap-1.5">
@@ -216,6 +262,30 @@ export function InspectorApp({ initialTab }: { initialTab?: string }) {
 
           {tab === "arcade" ? (
             <section className="space-y-3">
+              <div className="relative overflow-hidden rounded-2xl border border-white/10 bg-black">
+                {frames.arcade ? (
+                  <StreamCanvas
+                    bytes={frames.arcade}
+                    className="aspect-video w-full object-cover"
+                    label="FRIDAY arcade"
+                  />
+                ) : (
+                  <div className="grid aspect-video w-full place-items-center text-[11px] text-white/35">
+                    <span className="flex items-center gap-1.5">
+                      <Gamepad2 size={13} /> awaiting arcade frames
+                    </span>
+                  </div>
+                )}
+                <span className="absolute left-2.5 top-2.5 rounded-full bg-black/65 px-2 py-0.5 text-[9.5px] font-semibold uppercase tracking-[0.08em] text-siri-cyan">
+                  {ui.arcade.game.replace(/_/g, " ")}
+                </span>
+                <span className="absolute right-2.5 top-2.5 rounded-full bg-black/65 px-2 py-0.5 text-[9.5px] font-semibold tabular-nums text-white/85">
+                  {ui.arcade.score} pts · {ui.arcade.lives} lives
+                </span>
+                <span className="absolute bottom-2.5 left-2.5 rounded-full bg-black/65 px-2 py-0.5 text-[9.5px] font-medium text-white/70">
+                  {ui.arcade.open ? "live" : "idle"} · {ui.arcade.message}
+                </span>
+              </div>
               <div className="grid grid-cols-3 gap-2">
                 <div className="rounded-xl bg-white/[0.04] p-2.5">
                   <p className="text-[9.5px] uppercase tracking-[0.09em] text-white/40">Score</p>
@@ -334,6 +404,23 @@ export function InspectorApp({ initialTab }: { initialTab?: string }) {
                 <SettingRow label="Persona" value={`${ui.persona.mode} · ${ui.persona.voice}`} />
                 <SettingRow label="Status" value={ui.state.statusLabel} />
                 <SettingRow label="Connection" value={ui.state.connectionLabel || "local"} />
+              </div>
+
+              <div className="rounded-xl bg-white/[0.04] p-3">
+                <details className="group">
+                  <summary className="cursor-pointer list-none text-[10px] font-semibold uppercase tracking-[0.09em] text-white/40 group-open:text-white/60">
+                    Live diagnostics
+                  </summary>
+                  {diagnostics ? (
+                    <pre className="scrollbar-none mt-2 max-h-[220px] overflow-auto rounded-lg bg-black/40 p-2 text-[10px] leading-relaxed text-white/70">
+                      {diagnostics}
+                    </pre>
+                  ) : (
+                    <p className="mt-1 text-[11px] text-white/35">
+                      no diagnostics reported yet
+                    </p>
+                  )}
+                </details>
               </div>
 
               <div className="flex flex-wrap gap-1.5">

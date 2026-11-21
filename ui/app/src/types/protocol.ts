@@ -231,9 +231,14 @@ export interface FridayAPI {
   setInvoked(invoked: boolean): void;
   setFocusable(focusable: boolean): void;
   focusStage(): void;
+  /** Hide the stage HWND completely once dismissal has finished. */
+  hideStage(): void;
   openInspector(tab: string): void;
   closeInspector(): void;
   setInspectorTab(tab: string): void;
+  minimizeInspector(): void;
+  /** Resolves with the new state: true when now maximized. */
+  toggleMaximizeInspector(): Promise<boolean>;
   setEscapeArmed(armed: boolean): void;
   quitApp(): void;
   onEscape(cb: () => void): () => void;
