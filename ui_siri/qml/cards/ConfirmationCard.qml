@@ -2,48 +2,53 @@ pragma ComponentBehavior: Bound
 import QtQuick
 import ".."
 
-/*      Safety gate: a high-risk action needs explicit approval. Renders the
+/*
+    Safety gate: a high-risk action needs explicit approval. Renders the
     Approve / Deny pair and emits the natural-language reply so `main.py`'s
     existing safety flow (verbal consent + token) keeps working untouched.
-    Derived from BaseGlassCard: inherits the glass surface, severity rail,
-    spring entrance and TTL hairline. Only the payload-specific body is new.
+
+    Derived from BaseGlassCard: inherits the glass surface, severity accent,
+    spring entrance and TTL hairline. Only the payload body is new.
 */
 BaseGlassCard {
     id: card
 
     required property var payload
 
-    // Convenience alias so bodies read `card.p.temp_c` instead of
-    // `card.payload.temp_c` (and tolerate a null payload).
     readonly property var p: payload !== undefined && payload !== null ? payload : ({})
-    // Set by whichever card type needs the front-row highlight; keeps
-    // delegates from capturing `index` implicitly.
-    property int ctxIndex: 0
-    readonly property real titleHeight: Math.round(18 * Theme.uiScale)
-
-    implicitHeight: Math.round(150 * Theme.uiScale)
 
     signal replied(string text)
-    // ── payload-specific body ───────────────────────────────────────────────
-    Row {
-        anchors.bottom: parent.bottom
-        anchors.bottomMargin: Math.round(22 * Theme.uiScale)
-        spacing: 8
 
+    // A confirmation is never auto-dismissed while it is unresolved; the
+    // controller's grace timer honours this through `busy`.
+    customBody: true
+    contentBodyHeight: body.implicitHeight
+
+    Row {
+        id: body
+        x: card.contentLeft
+        y: card.contentTop
+        spacing: Math.round(8 * Theme.uiScale)
+
+        // Primary action: filled, high-emphasis.
         Rectangle {
-            width: Math.round(96 * Theme.uiScale)
-            height: Math.round(30 * Theme.uiScale)
+            width: Math.max(Math.round(96 * Theme.uiScale),
+                            approveLabel.width + Math.round(26 * Theme.uiScale))
+            height: Math.round(32 * Theme.uiScale)
             radius: height / 2
-            color: approve.containsMouse ? Theme.withAlpha(Theme.green, 0.30)
-                                         : Theme.withAlpha(Theme.green, 0.14)
+            color: approve.containsMouse ? Theme.withAlpha(card.tone, 0.34)
+                                         : Theme.withAlpha(card.tone, 0.20)
             border.width: 1
-            border.color: Theme.withAlpha(Theme.green, 0.55)
+            border.color: Theme.withAlpha(card.tone, 0.55)
+            Behavior on color { ColorAnimation { duration: Theme.durMicro } }
             Text {
+                id: approveLabel
                 anchors.centerIn: parent
                 text: card.p.confirm_label !== undefined ? card.p.confirm_label : "Approve"
-                color: Theme.green
+                color: Theme.textOnGlass
                 font.pixelSize: Theme.fontS
                 font.bold: true
+                font.family: Theme.fontText
             }
             MouseArea {
                 id: approve
@@ -54,19 +59,24 @@ BaseGlassCard {
             }
         }
 
+        // Secondary action: quiet glass, same footprint.
         Rectangle {
-            width: Math.round(80 * Theme.uiScale)
-            height: Math.round(30 * Theme.uiScale)
+            width: Math.max(Math.round(78 * Theme.uiScale),
+                            denyLabel.width + Math.round(26 * Theme.uiScale))
+            height: Math.round(32 * Theme.uiScale)
             radius: height / 2
-            color: deny.containsMouse ? Theme.withAlpha(Theme.red, 0.26)
-                                      : "transparent"
+            color: deny.containsMouse ? Theme.withAlpha(Theme.textOnGlass, 0.12)
+                                      : Theme.withAlpha(Theme.textOnGlass, 0.05)
             border.width: 1
-            border.color: Theme.withAlpha(Theme.red, 0.45)
+            border.color: Theme.withAlpha(Theme.textOnGlass, 0.14)
+            Behavior on color { ColorAnimation { duration: Theme.durMicro } }
             Text {
+                id: denyLabel
                 anchors.centerIn: parent
                 text: card.p.deny_label !== undefined ? card.p.deny_label : "Deny"
-                color: Theme.red
+                color: Theme.withAlpha(Theme.textOnGlass, 0.8)
                 font.pixelSize: Theme.fontS
+                font.family: Theme.fontText
             }
             MouseArea {
                 id: deny

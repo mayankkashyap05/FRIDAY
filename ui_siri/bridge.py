@@ -482,7 +482,12 @@ class UiBridge(QObject):
         card, activities, event = card_mapper.to_cards(payload)
         if event is not None:
             self._transcript.add(event)
-            self._last_event = event.text[:120]
+            # `lastEvent` is declared with notify=stateChanged, so a new
+            # transcript line has to announce itself or the QML binding never
+            # re-evaluates and the stage keeps showing the previous turn.
+            if event.text[:120] != self._last_event:
+                self._last_event = event.text[:120]
+                self.stateChanged.emit()
             implied = derive_state_for_log(event)
             if implied is not None and not self._muted:
                 # Legacy parity: transcript lines nudge the orb state.

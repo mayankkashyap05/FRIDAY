@@ -2,109 +2,131 @@ pragma ComponentBehavior: Bound
 import QtQuick
 import ".."
 
-/*      A single controllable value (volume, brightness, playback). The pills emit
-    `command` so the controller can route it back through `on_text_command`.
-    Derived from BaseGlassCard: inherits the glass surface, severity rail,
-    spring entrance and TTL hairline. Only the payload-specific body is new.
+/*
+    A single controllable value (volume, brightness, playback): a glass knob, a
+    tabular readout, and a pair of stepper capsules that emit `command` so the
+    controller can route it back through `on_text_command`.
+
+    Derived from BaseGlassCard: inherits the glass surface, severity accent,
+    spring entrance and TTL hairline. Only the payload body is new.
 */
 BaseGlassCard {
     id: card
 
     required property var payload
 
-    // Convenience alias so bodies read `card.p.temp_c` instead of
-    // `card.payload.temp_c` (and tolerate a null payload).
     readonly property var p: payload !== undefined && payload !== null ? payload : ({})
-    // Set by whichever card type needs the front-row highlight; keeps
-    // delegates from capturing `index` implicitly.
-    property int ctxIndex: 0
-    readonly property real titleHeight: Math.round(18 * Theme.uiScale)
-
-    implicitHeight: Math.round(104 * Theme.uiScale)
 
     signal command(string text)
 
-    readonly property var actions: p.actions !== undefined
+    readonly property var actions: p.actions !== undefined && p.actions.length
         ? p.actions
         : [{ label: "−", cmd: "reduce" }, { label: "+", cmd: "increase" }]
-    // ── payload-specific body ───────────────────────────────────────────────
-    Row {
-        anchors.top: parent.top
-        anchors.topMargin: Math.round(30 * Theme.uiScale)
-        spacing: 8
 
-        Rectangle {
-            width: Math.round(46 * Theme.uiScale)
-            height: Math.round(46 * Theme.uiScale)
-            radius: width / 2
-            color: Theme.withAlpha(card.tone, 0.16)
-            border.width: 1
-            border.color: Theme.withAlpha(card.tone, 0.4)
-            Text {
-                anchors.centerIn: parent
-                text: card.p.icon !== undefined ? card.p.icon : "◐"
-                color: card.tone
-                font.pixelSize: Theme.fontL
-            }
-        }
+    readonly property string valueText: p.value !== undefined
+        ? String(p.value) + (p.unit !== undefined ? p.unit : "")
+        : "—"
 
-        Column {
-            anchors.verticalCenter: parent.verticalCenter
-            spacing: 2
-            Text {
-                text: card.p.label !== undefined ? card.p.label : ""
-                color: Theme.withAlpha(Theme.mid, 1)
-                font.pixelSize: Theme.fontXS
-                font.bold: true
-                font.letterSpacing: 0.8
-            }
-            Text {
-                text: card.p.value !== undefined
-                      ? card.p.value + (card.p.unit !== undefined ? card.p.unit : "")
-                      : "--"
-                color: Theme.onGlass
-                font.pixelSize: Theme.fontXL
-                font.bold: true
-            }
-        }
-    }
+    customBody: true
+    contentBodyHeight: body.implicitHeight
 
-    Row {
-        anchors.bottom: parent.bottom
-        anchors.bottomMargin: Math.round(24 * Theme.uiScale)
-        spacing: 6
-        Repeater {
-            model: card.actions
-            delegate: Rectangle {
-                id: actionPill
-                required property var modelData
-                required property int index
-                // The static analyser cannot type dynamic list models, so
-                // role access is funnelled through two helpers.
-                readonly property string pillLabel:
-                    modelData && modelData.label !== undefined ? modelData.label : ""
-                readonly property string pillCommand:
-                    modelData && modelData.cmd !== undefined ? modelData.cmd : ""
-                width: Math.round(30 * Theme.uiScale)
-                height: Math.round(24 * Theme.uiScale)
-                radius: Theme.radiusChip
-                color: tap.containsMouse ? Theme.withAlpha(card.tone, 0.24)
-                                         : Theme.withAlpha(card.tone, 0.10)
+    Column {
+        id: body
+        x: card.contentLeft
+        y: card.contentTop
+        width: card.contentWidth
+        spacing: Math.round(9 * Theme.uiScale)
+
+        Row {
+            spacing: Math.round(12 * Theme.uiScale)
+
+            // Glass knob.
+            Rectangle {
+                width: Math.round(42 * Theme.uiScale)
+                height: width
+                radius: width / 2
+                color: Theme.withAlpha(card.tone, 0.12)
                 border.width: 1
                 border.color: Theme.withAlpha(card.tone, 0.3)
+
+                Rectangle {
+                    anchors.fill: parent
+                    anchors.margins: 1
+                    radius: parent.radius - 1
+                    gradient: Gradient {
+                        GradientStop {
+                            position: 0.0
+                            color: Theme.withAlpha(Theme.glassSpecular, 0.10)
+                        }
+                        GradientStop { position: 0.6; color: "transparent" }
+                    }
+                }
+
                 Text {
                     anchors.centerIn: parent
-                    text: actionPill.pillLabel
+                    text: card.p.icon !== undefined ? card.p.icon : "◐"
                     color: card.tone
-                    font.pixelSize: Theme.fontS
-                    font.bold: true
+                    font.pixelSize: Theme.fontL
                 }
-                MouseArea {
-                    id: tap
-                    anchors.fill: parent
-                    hoverEnabled: true
-                    cursorShape: Qt.PointingHandCursor
-                    onClicked: card.command(actionPill.pillCommand)
+            }
+
+            Column {
+                anchors.verticalCenter: parent.verticalCenter
+                spacing: 0
+
+                Text {
+                    text: card.p.label !== undefined
+                          ? String(card.p.label).toUpperCase() : ""
+                    color: Theme.withAlpha(Theme.textOnGlass, 0.5)
+                    font.pixelSize: Theme.fontXS - 1
+                    font.bold: true
+                    font.family: Theme.fontText
+                    font.letterSpacing: 0.9
+                }
+                Text {
+                    text: card.valueText
+                    color: Theme.textOnGlass
+                    font: card.numFont(Math.round(24 * Theme.uiScale), true)
+                }
+            }
+        }
+
+        Row {
+            spacing: Math.round(6 * Theme.uiScale)
+
+            Repeater {
+                model: card.actions
+                delegate: Rectangle {
+                    id: actionPill
+                    required property var modelData
+                    required property int index
+                    // The static analyser cannot type dynamic list models, so
+                    // role access is funnelled through two helpers.
+                    readonly property string pillLabel:
+                        modelData && modelData.label !== undefined ? modelData.label : ""
+                    readonly property string pillCommand:
+                        modelData && modelData.cmd !== undefined ? modelData.cmd : ""
+                    width: Math.round(34 * Theme.uiScale)
+                    height: Math.round(26 * Theme.uiScale)
+                    radius: height / 2
+                    color: tap.containsMouse ? Theme.withAlpha(Theme.textOnGlass, 0.16)
+                                             : Theme.withAlpha(Theme.textOnGlass, 0.07)
+                    border.width: 1
+                    border.color: Theme.withAlpha(Theme.textOnGlass, 0.10)
+                    Text {
+                        anchors.centerIn: parent
+                        text: actionPill.pillLabel
+                        color: Theme.textOnGlass
+                        font.pixelSize: Theme.fontS
+                        font.bold: true
+                    }
+                    MouseArea {
+                        id: tap
+                        anchors.fill: parent
+                        hoverEnabled: true
+                        cursorShape: Qt.PointingHandCursor
+                        onClicked: card.command(actionPill.pillCommand)
+                    }
                 }
             }
         }
