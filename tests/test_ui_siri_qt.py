@@ -55,11 +55,11 @@ gui_only = pytest.mark.skipif(not GUI, reason="set FRIDAY_GUI_TESTS=1 to run")
 
 def test_qml_assets_exist():
     expected = {
-        "Theme.qml", "PerimeterGlow.qml", "AnchorPill.qml", "SnippetStack.qml",
-        "LiveActivityBar.qml", "ScreenEffects.qml", "InspectorDrawer.qml",
-        "OverlayWindow.qml", "AnchorWindow.qml", "qmldir",
+        "Theme.qml", "SiriOrb.qml", "SiriWindow.qml", "TypeToSiriPill.qml",
+        "SnippetStack.qml", "LiveActivityBar.qml", "InspectorDrawer.qml",
+        "InspectorWindow.qml", "SetupCard.qml", "qmldir",
     }
-    # `cards/` is checked separately; `ScreenEffects` covers Layer 1b.
+    # `cards/` is checked separately.
     expected |= {"cards/" + name for name in (
         "BaseGlassCard.qml", "TextCard.qml", "WeatherBriefingCard.qml",
         "CalendarCard.qml", "EmailDigestCard.qml", "FlightCard.qml",
@@ -77,7 +77,7 @@ def test_qml_dir_is_resolvable_without_qt():
     from ui_siri.themes import QML_DIR as THEME_QML
 
     assert THEME_QML.is_dir()
-    assert (THEME_QML / "AnchorWindow.qml").is_file()
+    assert (THEME_QML / "SiriWindow.qml").is_file()
     assert (THEME_QML / "Theme.qml").is_file()
 
 
@@ -362,20 +362,6 @@ def test_bridge_diagnostics_shape(app):
             "theme"} <= set(data)
 
 
-def test_theme_table_matches_legacy_names():
-    """The four classic palettes must survive the migration byte-for-byte."""
-    from ui_siri.themes import THEMES
-
-    pytest.importorskip("tkinter", reason="legacy Tk module needs tkinter")
-    from ui_legacy import THEMES as LEGACY_THEMES
-
-    assert set(THEMES) == set(LEGACY_THEMES)
-    for name, legacy in LEGACY_THEMES.items():
-        for key in ("bg", "panel", "pri", "mid", "acc", "acc2", "text", "green",
-                    "red", "mutcol"):
-            assert THEMES[name][key].lower() == legacy[key].lower(), (name, key)
-
-
 # ─────────────────────────────────────────────────────────────────────────────
 # Full GUI stack (opt-in)
 # ─────────────────────────────────────────────────────────────────────────────
@@ -490,11 +476,11 @@ def test_every_qml_window_consumes_the_python_palette():
     The palette reaches QML through a required property set at construction
     (themeData), so a missing wiring is a silent visual regression.
     """
-    for name in ("AnchorWindow.qml", "OverlayWindow.qml", "InspectorWindow.qml"):
+    for name in ("SiriWindow.qml", "InspectorWindow.qml"):
         text = (QML_DIR / name).read_text(encoding="utf-8")
         assert "required property var themeData" in text, f"{name}: themeData not declared"
         assert "applyTheme(themeData)" in text or "applyTheme(root.themeData)" in text \
-            or "applyTheme(overlay.themeData)" in text or "applyTheme(window.themeData)" in text, \
+            or "applyTheme(window.themeData)" in text or "applyTheme(siri.themeData)" in text, \
             f"{name}: themeData never applied"
 
 
@@ -522,7 +508,7 @@ def test_windows_verifier_script_is_wellformed():
 
 # ── Bug 1: every .qml loaded into a QQuickView must be resolvable ──────────
 
-QML_LOADED_AS_WINDOWS = ("OverlayWindow.qml", "AnchorWindow.qml", "InspectorWindow.qml")
+QML_LOADED_AS_WINDOWS = ("SiriWindow.qml", "InspectorWindow.qml")
 
 
 def test_qmldir_declares_every_root_qml_type():
@@ -700,9 +686,17 @@ def test_dormant_cycle_ends_idle(app):
 
 
 def test_perimeter_glow_idles_when_not_working():
-    """The glow's spin must collapse to idle for LISTENING and MUTED."""
-    qml = (QML_DIR / "PerimeterGlow.qml").read_text(encoding="utf-8")
-    assert 'root.assistantState === "THINKING" ? 1.1 : 0.35' in qml, (
-        "idle states must fall through to the slow 0.35 sweep")
-    assert "glowSpinSpeed" in (QML_DIR / "OverlayWindow.qml").read_text(
-        encoding="utf-8"), "OverlayWindow must expose the glow for the verifier"
+    """The legacy perimeter glow and its overlay window are gone.
+
+    The Siri orb is the only always-loaded visual: it materialises with an
+    elastic spring bloom on invocation, and its halo collapses to a faint
+    idle sweep for LISTENING / MUTED — nothing persists on the desktop.
+    """
+    qml = (QML_DIR / "SiriOrb.qml").read_text(encoding="utf-8")
+    assert "summoning" in qml and "dismissing" in qml, (
+        "the orb must materialise on invocation and contract on dismissal")
+    assert "Easing.OutElastic" in qml, (
+        "materialisation must be an elastic spring bloom, not a pop-in")
+    assert "muted ? 0.4 : 1" in qml, (
+        "idle/muted states must collapse the halo to near-zero")
+    assert "OverlayWindow" not in qml and "PerimeterGlow" not in qml

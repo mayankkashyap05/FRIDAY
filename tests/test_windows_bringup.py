@@ -153,45 +153,35 @@ def test_no_deprecated_asyncio_get_event_loop():
 
 # ── the strict-UI escape hatch ─────────────────────────────────────────────
 
-def test_make_ui_honours_strict_and_legacy_flags(monkeypatch):
+def test_make_ui_is_siri_only(monkeypatch):
+    import inspect
     import ui
 
-    assert ui._env_flag("FRIDAY_LEGACY_UI") is False
+    assert ui.THEME_NAMES == ("siri",)
+    assert ui.DEFAULT_THEME == "siri"
+    # No legacy switching machinery survives the removal of ui_legacy.py.
+    for removed in ("_env_flag", "_load_legacy_class", "_legacy_requested",
+                    "_strict_requested"):
+        assert not hasattr(ui, removed), f"{removed} must not remain"
+    src = inspect.getsource(ui.make_ui)
+    for token in ("FRIDAY_LEGACY_UI", "FRIDAY_STRICT_UI", "_load_legacy_class",
+                  "_legacy_requested", "_strict_requested"):
+        assert token not in src, f"{token} must not gate make_ui()"
+    # Env flags no longer select an implementation: make_ui builds the
+    # ambient Siri overlay and exits hard if QML cannot load.
     monkeypatch.setenv("FRIDAY_LEGACY_UI", "1")
-    assert ui._legacy_requested() is True
-    assert ui._strict_requested() is False
-    monkeypatch.setenv("FRIDAY_STRICT_UI", "true")
-    assert ui._strict_requested() is True
-    monkeypatch.setenv("FRIDAY_STRICT_UI", "0")
-    assert ui._strict_requested() is False
-
-
-def test_make_ui_raises_instead_of_falling_back_when_strict(monkeypatch):
-    import ui
-
-    def _explode(*_a, **_k):
-        raise RuntimeError("simulated QML failure")
-
     monkeypatch.setenv("FRIDAY_STRICT_UI", "1")
-    monkeypatch.delenv("FRIDAY_LEGACY_UI", raising=False)
-    monkeypatch.setattr(ui, "FridayUI", _explode)
-    with pytest.raises(RuntimeError, match="simulated QML failure"):
-        ui.make_ui("face.png")
+    assert ui.THEME_NAMES == ("siri",)
+    assert ui.DEFAULT_THEME == "siri"
 
 
-def test_make_ui_logs_a_full_traceback_before_falling_back(monkeypatch, capsys):
+def test_make_ui_logs_a_full_traceback_before_system_exit(monkeypatch, capsys):
     import ui
 
     def _explode(*_a, **_k):
         raise RuntimeError("simulated QML failure")
 
-    def _no_tk(*_a, **_k):
-        raise ModuleNotFoundError("no tkinter either")
-
-    monkeypatch.delenv("FRIDAY_STRICT_UI", raising=False)
-    monkeypatch.delenv("FRIDAY_LEGACY_UI", raising=False)
     monkeypatch.setattr(ui, "FridayUI", _explode)
-    monkeypatch.setattr(ui, "_load_legacy_class", _no_tk)
 
     with pytest.raises(SystemExit):
         ui.make_ui("face.png")
@@ -201,8 +191,6 @@ def test_make_ui_logs_a_full_traceback_before_falling_back(monkeypatch, capsys):
     assert "Traceback (most recent call last)" in combined
     assert "simulated QML failure" in combined
 
-
-# ── Bug 4: the verifier mis-unpacked card_mapper's return value ────────────
 
 def test_card_mapper_return_arity_is_documented():
     """from_log_event -> (card, activities); to_cards -> (card, activities, event).

@@ -2,12 +2,11 @@ pragma Singleton
 import QtQuick
 
 /*
-    FRIDAY adaptive design-token singleton.
+    Siri adaptive design-token singleton.
 
     Registered from Python as `Theme` (see controller.py). All colours are
-    strings so they can be driven either by the built-in palettes below or by
-    the Python-side theme table (which mirrors the legacy THEMES dict so the
-    four classic looks survive the migration).
+    strings so they can be driven either by the built-in Siri palette below or
+    by the Python-side theme table (the sole ``siri`` palette now).
 
     Reduced-motion and transparency are hard constraints here: components read
     `Theme.motion` / `Theme.surfaceAlpha` and degrade to static, opaque
@@ -17,33 +16,35 @@ QtObject {
     id: theme
 
     // ── palette identity ────────────────────────────────────────────────────
-    property string name: "cyber"
+    property string name: "siri"
 
-    // ── core surfaces ───────────────────────────────────────────────────────
+    // ── core surfaces (dark frosted glass) ──────────────────────────────────
     property color bg: "#000000"
-    property color panel: "#010c10"
-    property color hdr: "#00080d"
-    property color input: "#000d12"
+    property color panel: "#0C141C"
+    property color hdr: "#090E13"
+    property color input: "#0F1720"
 
-    // ── accents ─────────────────────────────────────────────────────────────
-    property color pri: "#00d4ff"
-    property color mid: "#007a99"
-    property color dim: "#003344"
-    property color dimmer: "#001520"
-    property color acc: "#ff6600"
-    property color acc2: "#ffcc00"
-    property color text: "#8ffcff"
-    property color textStrong: "#ffffff"
-    property color green: "#00ff88"
-    property color red: "#ff3333"
-    property color mutcol: "#ff3366"
-    property color inpBorder: "#003344"
+    // ── Siri accents ────────────────────────────────────────────────────────
+    property color pri: "#22D3EE"   // cyan / aqua
+    property color mid: "#3B82F6"   // sapphire / cobalt
+    property color dim: "#1E293B"
+    property color dimmer: "#070B10"
+    property color acc: "#E879F9"   // magenta / rose
+    property color acc2: "#A855F7"  // iridescent violet
+    property color text: "#F8FAFC"  // near-white additive
+    property color textStrong: "#FFFFFF"
+    property color green: "#34D399"
+    property color red: "#FB7185"
+    property color mutcol: "#F43F5E"
+    property color inpBorder: "#334155"
 
-    // Iridescent sweep used by the perimeter glow & orb.
-    property color iridA: "#00d4ff"
-    property color iridB: "#7d5cff"
-    property color iridC: "#ff4fd8"
-    property color iridD: "#ffcc00"
+    // Iridescent ribbon hues that drift inside the orb (cyan → blue → magenta
+    // → violet → white-hot at intersections).
+    property color iridA: "#22D3EE"
+    property color iridB: "#3B82F6"
+    property color iridC: "#E879F9"
+    property color iridD: "#A855F7"
+    property color iridE: "#FFFFFF"
 
     // ── accessibility / system state ────────────────────────────────────────
     property bool lightMode: false
@@ -52,8 +53,8 @@ QtObject {
     property real uiScale: 1.0
 
     // ── derived metrics ─────────────────────────────────────────────────────
-    readonly property int radiusPill: Math.round(26 * uiScale)
-    readonly property int radiusCard: Math.round(20 * uiScale)
+    readonly property int radiusPill: Math.round(24 * uiScale)
+    readonly property int radiusCard: Math.round(18 * uiScale)
     readonly property int radiusChip: Math.round(10 * uiScale)
     readonly property int gap: Math.round(10 * uiScale)
     readonly property int pad: Math.round(16 * uiScale)
@@ -61,7 +62,7 @@ QtObject {
     readonly property int fontS: Math.max(10, Math.round(11 * uiScale))
     readonly property int fontM: Math.max(12, Math.round(13 * uiScale))
     readonly property int fontL: Math.max(14, Math.round(17 * uiScale))
-    readonly property int fontXL: Math.max(18, Math.round(22 * uiScale))
+    readonly property int fontXL: Math.max(20, Math.round(26 * uiScale))
 
     // Motion: a single scalar multiplier means every animation in the app
     // obeys the OS "show animations" setting without extra branching.
@@ -73,8 +74,8 @@ QtObject {
 
     // Frosted-glass strength; 0 when the user disabled transparency.
     readonly property real glass: transparency ? 1.0 : 0.0
-    readonly property real surfaceAlpha: transparency ? 0.62 : 0.97
-    readonly property real veilAlpha: transparency ? 0.38 : 0.92
+    readonly property real surfaceAlpha: transparency ? 0.60 : 0.97
+    readonly property real veilAlpha: transparency ? 0.42 : 0.92
     // Opaque-enough background for high-contrast text over the blurred surface.
     readonly property color onGlass: lightMode ? "#0b1116" : "#f2fbff"
 
@@ -87,7 +88,7 @@ QtObject {
         return Qt.rgba(c.r, c.g, c.b, a)
     }
 
-    // Applies a Python-supplied theme dict (legacy THEMES parity).
+    // Applies a Python-supplied theme dict (the ``siri`` palette).
     function apply(data) {
         if (!data)
             return
@@ -99,13 +100,15 @@ QtObject {
             "inp_border": "inpBorder", "inpBorder": "inpBorder",
             "irid_a": "iridA", "iridA": "iridA", "irid_b": "iridB",
             "iridB": "iridB", "irid_c": "iridC", "iridC": "iridC",
-            "irid_d": "iridD", "iridD": "iridD"
+            "irid_d": "iridD", "iridD": "iridD", "irid_e": "iridE",
+            "iridE": "iridE"
         }
         for (var key in map) {
             if (data[key] !== undefined && data[key] !== null)
                 theme[map[key]] = data[key]
         }
-        if (data.lightMode !== undefined) theme.lightMode = !!data.lightMode
+        // Siri is dark-only: the palette never follows a light-mode toggle.
+        if (data.lightMode !== undefined) theme.lightMode = false
         if (data.reducedMotion !== undefined) theme.reducedMotion = !!data.reducedMotion
         if (data.transparency !== undefined) theme.transparency = !!data.transparency
         if (data.uiScale !== undefined) theme.uiScale = data.uiScale

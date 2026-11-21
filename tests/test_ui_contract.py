@@ -1,9 +1,10 @@
 """Legacy UI compatibility contract.
 
 These tests are the executable form of ``docs/UI_AUDIT_CONTRACT.md`` §3. They
-assert that *both* the ambient implementation and the legacy Tk implementation
-expose the same surface, so the migration cannot silently break ``main.py`` or
-``actions/``.
+assert that the ambient Siri implementation exposes the full legacy-compatible
+surface, so the migration cannot silently break ``main.py`` or ``actions/``.
+``ui_legacy.py`` and the FRIDAY_LEGACY_UI escape hatch are gone: ``ui_siri``
+is the sole UI of the application.
 
 The ambient façade is imported and introspected but never instantiated with a
 real window here (a GUI session is not available in CI), which is why the
@@ -69,9 +70,9 @@ def test_module_global_present(name):
     assert hasattr(ui, name), f"ui.{name} disappeared — callers depend on it"
 
 
-def test_themes_keep_the_four_classic_names():
-    for name in ("cyber", "ocean", "aurora", "sunset"):
-        assert name in ui.THEMES
+def test_themes_are_siri_only():
+    assert ui.THEME_NAMES == ("siri",)
+    assert "siri" in ui.THEMES
 
 
 def test_api_file_is_reassignable(tmp_path, monkeypatch):
@@ -128,15 +129,15 @@ def test_ambient_class_declares_parity_attributes_via_source():
             f"FridayUI.__init__ no longer sets self.{name}"
 
 
-def test_legacy_class_still_available_and_matches_contract():
-    """The Tk fallback must keep satisfying the same contract."""
-    pytest.importorskip("tkinter", reason="Tk not installed on this host")
-    legacy = ui._load_legacy_class()
-    for name in REQUIRED_METHODS:
-        if name in ("show", "hide", "quit", "run", "raise_window"):
-            # Tk implements these through `root`; the adapter handles the rest.
-            continue
-        assert callable(getattr(legacy, name, None)), f"legacy FridayUI.{name} missing"
+def test_no_legacy_tk_fallback_remains():
+    """ui_legacy.py and the FRIDAY_LEGACY_UI escape hatch were removed: Siri
+    is the sole UI implementation, so nothing can silently fall back to Tk."""
+    assert not hasattr(ui, "_load_legacy_class")
+    assert not hasattr(ui, "_legacy_requested")
+    assert not hasattr(ui, "_strict_requested")
+    import importlib.util
+
+    assert importlib.util.find_spec("ui_legacy") is None
 
 
 # ── root duck-type contract ─────────────────────────────────────────────────
@@ -273,17 +274,6 @@ def test_write_log_call_sites_all_use_a_string():
                 continue
             offenders.append(f"{path.name}:{lineno}: {line.strip()}")
     assert not offenders, "write_log called with a non-literal:\n" + "\n".join(offenders)
-
-
-# ── legacy switch ──────────────────────────────────────────────────────────
-
-def test_legacy_env_switch_is_parsed(monkeypatch):
-    for value in ("1", "true", "TRUE", "yes", "on"):
-        monkeypatch.setenv("FRIDAY_LEGACY_UI", value)
-        assert ui._legacy_requested() is True
-    for value in ("0", "false", "", "no", "off"):
-        monkeypatch.setenv("FRIDAY_LEGACY_UI", value)
-        assert ui._legacy_requested() is False
 
 
 # ── startup burst control ───────────────────────────────────────────────────

@@ -316,17 +316,31 @@ class UiController(QObject):
         self.bridge.apply_theme(self.theme)
         self.reloadTheme.emit(self.theme)
 
+        # ── auto-dismissal grace ──────────────────────────────────────────
+        # When Siri settles back into LISTENING with no cards or live
+        # activities, the stage dissolves to invisibility after a reading
+        # grace period. Any new card, activity, or interaction resets it.
+        self._dismissTimer = QTimer(self)
+        self._dismissTimer.setSingleShot(True)
+        self._dismissTimer.setInterval(4000)
+        self._dismissTimer.timeout.connect(self.hide)
+        self._dismissalGraceMs = 4000
+
+        self.bridge.cardsChanged.connect(self._reschedule_dismissal)
+        self.bridge.activityChanged.connect(self._reschedule_dismissal)
+
     def qml_errors(self) -> list[tuple[str, str, int, int, str]]:
         """Every window that failed to load: (layer, url, line, column, message).
 
-        ``make_ui()`` treats a non-empty result as a startup failure when
-        FRIDAY_STRICT_UI=1, and logs it unconditionally otherwise. A window
-        that failed to load but still "exists" is the worst case: the app runs,
-        shows nothing, and looks hung.
+        ``make_ui()`` treats a non-empty result as a startup failure and logs
+        it unconditionally. A window that failed to load but still "exists" is
+        the worst case: the app runs, shows nothing, and looks hung.
         """
         found: list[tuple[str, str, int, int, str]] = []
-        for layer, win in (("overlay", self.overlay), ("anchor", self.anchor),
+        for layer, win in (("siri", self.siri), ("anchor", self.anchor),
                            ("inspector", self.inspector)):
+            if win is None:
+                continue
             for url, line, column, message in getattr(win, "load_errors", []) or []:
                 found.append((layer, url, line, column, message))
         return found
@@ -345,45 +359,27 @@ class UiController(QObject):
 
     def _create_windows(self, capture_excluded: bool) -> None:
         try:
-            self.overlay = _LayerWindow(
-                "OverlayWindow.qml", click_through=True,
-                capture_excluded=capture_excluded, focusable=False,
+            self.siri = _LayerWindow(
+                "SiriWindow.qml", click_through=False,
+                capture_excluded=False, focusable=False,
                 dark=self._system_dark,
                 initial_properties={"bridge": self.bridge,
                                     "reducedMotion": self.reduced_motion,
                                     "themeData": self.theme})
-            self.overlay.visibilityChanged.connect(self._sync_overlay_geometry)
-        except Exception as exc:
-            print(f"[Controller] ⚠️ overlay window unavailable: {exc}")
-            self.overlay = None
-
-        try:
-            self.anchor = _LayerWindow(
-                "AnchorWindow.qml", click_through=False,
-                capture_excluded=capture_excluded, focusable=True,
-                dark=self._system_dark,
-                initial_properties={"bridge": self.bridge,
-                                    "reducedMotion": self.reduced_motion,
-                                    "setupVisible": self._setup_visible,
-                                    "themeData": self.theme})
-            root = self.anchor.rootObject()
+            # Legacy-compat alias: ui.py and tests address the stage as `anchor`.
+            self.anchor = self.siri
+            root = self.siri.rootObject()
             if root is not None:
-                for signal_name, handler in (("contentHeightChanged", self._resize_anchor),
-                                             ("apiKeySubmitted", self._on_api_key_submitted)):
-                    try:
-                        getattr(root, signal_name).connect(handler)
-                    except Exception:
-                        pass
-            self.bridge.setupChanged.connect(self._sync_setup_visibility)
-            if self.anchor.load_error:
-                # Keep the window object so qml_errors() can report it; just
-                # stop treating it as usable.
-                print("[Controller] ⚠️ anchor QML did not load; the ambient "
+                root.apiKeySubmitted.connect(self._on_api_key_submitted)
+                root.dismissed.connect(self.windowDismissed)
+            if self.siri.load_error:
+                print("[Controller] ⚠️ Siri QML did not load; the ambient "
                       "overlay cannot be shown")
-                self.anchor.hide()
+                self.siri.hide()
                 self._degraded = True
         except Exception as exc:
-            print(f"[Controller] ⚠️ anchor window unavailable: {exc}")
+            print(f"[Controller] ⚠️ Siri window unavailable: {exc}")
+            self.siri = None
             self.anchor = None
             self._degraded = True
 
@@ -523,82 +519,81 @@ class UiController(QObject):
     def _layout_windows(self) -> None:
         try:
             screen = self.active_screen()
-            if screen is None:
+            if screen is None or self.siri is None:
                 return
             geo: QRect = screen.geometry()
-            avail: QRect = screen.availableGeometry()
 
-            if self.overlay is not None:
-                self.overlay.setGeometry(geo)
-                if not self.overlay.isVisible() and not self._hidden:
-                    self.overlay.show()
-
-            if self.anchor is not None:
-                pill_w = int(456 * self._scale)
-                # Tall enough for the pill + one card, and never shrunk on
-                # relayout: QML needs stable bounds while animating.
-                pill_h = max(int(240 * self._scale),
-                             self.anchor.height() if self.anchor.isVisible() else 0)
-                pos = self._load_anchor(screen) if not self.anchor.isVisible() \
-                    else self.anchor.geometry().topLeft()
-                self.anchor.setGeometry(QRect(pos.x(), pos.y(), pill_w, pill_h))
-                if not self.anchor.isVisible() and not self._hidden:
-                    self.anchor.show()
+            # macOS Siri placement: centred near the top of the active screen,
+            # never wall-to-wall and never covering the user's focus of attention.
+            stage_w = int(560 * self._scale)
+            stage_h = int(460 * self._scale)
+            x = geo.x() + (geo.width() - stage_w) // 2
+            y = geo.y() + int(geo.height() * 0.07)
+            self.siri.setGeometry(QRect(x, y, stage_w, stage_h))
+            if not self.siri.isVisible() and not self._hidden:
+                self.siri.show()
         except Exception as exc:
             print(f"[Controller] ⚠️ layout failed: {exc}")
 
-    def _resize_anchor(self) -> None:
-        """Grow/shrink the anchor window to fit the stack (stable, no flicker)."""
-        if self.anchor is None:
-            return
-        root = self.anchor.rootObject()
-        if root is None:
-            return
-        try:
-            # `contentHeight` is a QML *function* on the root. property() hands
-            # back a bound-method wrapper (never 0), so float() on it raises and
-            # the whole resize silently no-ops — the stack would then be clipped
-            # by the fixed initial height. Call it directly.
-            content = float(root.contentHeight())
-            wanted = int(max(110 * self._scale, content + 24 * self._scale))
-            current = self.anchor.height()
-            if wanted > current + 6:
-                self.anchor.setHeight(wanted)
-            elif wanted < current - 40:
-                # Shrink only with hysteresis, so a card expiring mid-scroll
-                # does not cause a visible jump.
-                self.anchor.setHeight(max(int(240 * self._scale), wanted))
-        except Exception:
-            pass
-
-    def _sync_overlay_geometry(self, *_args) -> None:
-        if self.overlay is None:
-            return
-        try:
-            screen = self.active_screen()
-            if screen is not None and self.overlay.geometry() != screen.geometry():
-                self.overlay.setGeometry(screen.geometry())
-        except Exception:
-            pass
-
-    # ── public window ops (legacy tray parity) ───────────────────────────────
+    # ── public window ops (tray / hotkeys / invocation / dismissal) ────────
     def show(self) -> None:
+        """Show the Siri stage (invocation). The orb springs into view."""
         self._hidden = False
-        for win in (self.overlay, self.anchor):
-            if win is not None:
-                win.show()
+        self._cancel_dismissal()
+        if self.siri is not None:
+            self.siri.show()
+            self.siri.set_root_property("invoked", True)
+            self._layout_windows()
 
     def hide(self) -> None:
+        """Dismiss Siri: the orb contracts and fades, then the window hides."""
         self._hidden = True
-        for win in (self.overlay, self.anchor):
-            if win is not None:
-                win.hide()
+        self._cancel_dismissal()
+        if self.siri is not None:
+            self.siri.set_root_property("invoked", False)
+
+    @Slot()
+    def windowDismissed(self) -> None:
+        """Called by QML once the dismissal animation has finished."""
+        if self.siri is None:
+            return
+        try:
+            invoked = bool(self.siri.rootObject().property("invoked"))
+        except Exception:
+            invoked = False
+        if not invoked and self.siri.isVisible():
+            self.siri.hide()
+
+    def invoke(self) -> None:
+        """Explicit invocation (wake word / hotkey / tray / programmatic)."""
+        self.show()
+
+    def dismiss(self) -> None:
+        """Graceful dismissal back to zero desktop footprint."""
+        self.hide()
 
     def toggle_visibility(self) -> None:
         if self._hidden:
             self.show()
         else:
             self.hide()
+
+    def _reschedule_dismissal(self) -> None:
+        """Restart the auto-dismiss grace, or start it when Siri is idle.
+
+        Dismissal only arms when Siri is back in LISTENING with no cards and
+        no live activities — a response being read, a pending confirmation, or
+        an active background job keeps the stage on screen.
+        """
+        self._dismissTimer.stop()
+        st = self.state.state
+        if (st is UiState.LISTENING and not self.state.muted
+                and self.bridge.cardCount == 0
+                and self.bridge.activeActivities == 0):
+            self._dismissTimer.start()
+
+    def _cancel_dismissal(self) -> None:
+        self._dismissTimer.stop()
 
     @property
     def visible(self) -> bool:
@@ -681,9 +676,13 @@ class UiController(QObject):
 
     def _sync_setup_visibility(self) -> None:
         self._setup_visible = bool(self.bridge.setupVisible)
-        if self.anchor is not None:
-            self.anchor.set_root_property("setupVisible", self._setup_visible)
-            self._resize_anchor()
+        if self.siri is not None:
+            self.siri.set_root_property("setupVisible", self._setup_visible)
+        # First-run onboarding must be visible to the user: invoke Siri so the
+        # setup card can be seen, then let the normal dismissal grace take over
+        # once systems are initialised.
+        if self._setup_visible:
+            self.show()
 
     def _on_api_key_submitted(self, key: str) -> None:
         """QML handed us a key. Persist it and unblock the voice worker."""
@@ -720,6 +719,7 @@ class UiController(QObject):
                 self.audio.play("listen")
         except Exception:
             pass
+        self._reschedule_dismissal()
 
     # ── shutdown ─────────────────────────────────────────────────────────────
     # ── graceful interrupt ───────────────────────────────────────────────────
@@ -832,8 +832,9 @@ class UiController(QObject):
             "dnd": self._dnd,
             "degraded": self._degraded,
             "windows": {
-                "overlay": self.overlay is not None,
+                "siri": self.siri is not None,
                 "anchor": self.anchor is not None,
+                "inspector": self.inspector is not None,
             },
             "images": self.images.status(),
             "bus": self.bus.stats(),

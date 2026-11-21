@@ -3,8 +3,7 @@
 Import policy: **importing this package must never import Qt.** ``ui.py`` is the
 only module allowed to pull Qt in, and it does so inside ``FridayUI.__init__``.
 That keeps ``python -c "import ui"`` (used by the test-suite and by tooling)
-working on a machine with no Qt installed, and it keeps ``ui_legacy`` usable as
-an escape hatch.
+working on a machine with no Qt installed.
 
 Submodules, in dependency order (each layer only imports the ones above it):
 

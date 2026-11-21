@@ -25,6 +25,11 @@ except ModuleNotFoundError:
     sd = None
 
 try:
+    import numpy as np
+except ModuleNotFoundError:
+    np = None
+
+try:
     from google import genai
     from google.genai import types
 except ModuleNotFoundError:
@@ -1362,12 +1367,14 @@ class FridayLive:
         self._send_lock     = None
         self._is_speaking   = False
         self._speaking_lock = threading.Lock()
-        self._last_play_ts  = 0.0
+        self._last_play_ts = 0.0
         self._turn_complete = False
         # Monotonic timestamp of the last chunk handed to the speaker. The
         # watchdog measures silence from *this*, not from the last chunk
         # that happened to arrive, so a stall inside a reply is detected.
         self._last_audio_write_ts = 0.0
+        # Throttle for live mic-amplitude updates pushed to the Siri orb.
+        self._last_mic_amp_ts = 0.0
         self._ready         = False
         self._phase         = PHASE_IDLE
         self._phase_lock    = threading.Lock()
@@ -1406,13 +1413,17 @@ class FridayLive:
             pass
 
     def _on_wake_detect(self):
-        """Excited when the wake word is heard — un-mute and listen (barge-in)."""
+        """Excited when the wake word is heard — un-mute, invoke Siri, listen."""
         try:
             if not self._ready or not self.session:
                 print("[WakeWord] ⚠️ Ignored — session not ready.")
                 return
+            # Un-mute on the GUI thread so the orb's muted colour follows.
+            self.ui._dispatch(self.ui.state_machine.set_muted, False, "wake-word")
             self.ui.muted = False
             self.set_speaking(False)
+            # Invoke Siri: the orb springs into view (dormant → listening).
+            self.ui.invoke()
             self.ui.write_log("SYS: Wake word heard — listening.")
         except Exception as e:
             print(f"[WakeWord] ⚠️ {e}")
@@ -2620,6 +2631,23 @@ class FridayLive:
             if not assistant_speaking and not self.ui.muted:
                 data = indata.tobytes()
                 loop.call_soon_threadsafe(self._safe_put_mic, data)
+
+            # Voice reactivity: feed live mic energy to the Siri orb so the
+            # ribbons respond to the user's voice in real time. Kept cheap and
+            # throttled (~30 Hz) so the audio callback never blocks and the
+            # cross-thread dispatcher is never flooded.
+            try:
+                if np is not None:
+                    rms = float(np.sqrt(np.mean(np.square(indata.astype(np.float32))))) / 32768.0
+                    amp = min(1.0, rms * 3.0)
+                else:
+                    amp = 0.0
+            except Exception:
+                amp = 0.0
+            now = time.monotonic()
+            if now - self._last_mic_amp_ts > 0.03:
+                self._last_mic_amp_ts = now
+                self.ui._dispatch(self.ui.bridge.setAmplitude, amp)
 
         if sd is None:
             print("[FRIDAY] ⚠️ sounddevice not available — mic disabled")
