@@ -362,7 +362,6 @@ export function StageApp() {
           reducedMotion={reducedMotion}
           acting={ui.activeCount > 0 || ui.state.state === "PROCESSING"}
           speechPulse={speechPulse}
-          audioBands={ui.audioBands ?? { low: 0, mid: 0, high: 0, source: "mic" }}
           onActivate={() => setTyping(true)}
           onDismissed={handleOrbDismissed}
           onInteraction={notifyInteraction}
@@ -467,7 +466,7 @@ export function StageApp() {
             devDispatch({ t: "state", state, invoked: true, statusLabel: state, energy: state === "SPEAKING" ? 0.85 : 0.4 })
           }
           onCard={injectCard}
-          onAmplitude={(value, bands) => devDispatch({ t: "amplitude", value, ...bands ?? {} })}
+          onAmplitude={(value) => devDispatch({ t: "amplitude", value })}
           onToggleInspector={() => devDispatch({ t: "inspector", open: true, tab: "camera", props: {} })}
           onError={() => setErrorSignal((value) => value + 1)}
           onShutdown={() => devDispatch({ t: "shutdown" })}

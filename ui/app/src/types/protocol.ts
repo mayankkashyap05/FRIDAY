@@ -171,21 +171,12 @@ export interface UiState extends UiSnapshot {
   toast: { text: string; severity: Severity } | null;
   /** True once a snapshot has been received. */
   ready: boolean;
-  /** Real-time spectral bands (optional, from mic or TTS). */
-  audioBands?: {
-    rms: number;
-    low: number;
-    mid: number;
-    high: number;
-    source: "mic" | "tts";
-    ts: number;
-  };
 }
 
 export type ServerMessage =
   | ({ t: "snapshot" } & UiSnapshot)
   | ({ t: "state" } & Partial<StatePayload>)
-  | { t: "amplitude"; value: number; low?: number; mid?: number; high?: number; source?: "mic" | "tts" }
+  | { t: "amplitude"; value: number }
   | { t: "live_transcript"; text: string }
   | ({ t: "transcript_append" } & TranscriptItem)
   | { t: "transcript_clear" }

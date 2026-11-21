@@ -2632,24 +2632,24 @@ class FridayLive:
                 data = indata.tobytes()
                 loop.call_soon_threadsafe(self._safe_put_mic, data)
 
-            # Voice reactivity: feed live mic energy + spectral bands to the Siri orb
-            # so the ribbons respond to the user's voice in real time. Kept cheap and
+            # Voice reactivity: feed live mic energy to the Siri orb so the
+            # ribbons respond to the user's voice in real time. Kept cheap and
             # throttled (~30 Hz) so the audio callback never blocks and the
             # cross-thread dispatcher is never flooded.
             try:
                 if (np is not None and not assistant_speaking
                         and not self.ui.muted):
-                    from ui.audio_bands import _extract_audio_bands
-                    rms, low, mid, high = _extract_audio_bands(indata.astype(np.int16), SEND_SAMPLE_RATE)
-                    amp = rms
+                    rms = float(np.sqrt(np.mean(
+                        np.square(indata.astype(np.float32))))) / 32768.0
+                    amp = min(1.0, rms * 3.0)
                 else:
-                    amp, low, mid, high = 0.0, 0.0, 0.0, 0.0
+                    amp = 0.0
             except Exception:
-                amp, low, mid, high = 0.0, 0.0, 0.0, 0.0
+                amp = 0.0
             now = time.monotonic()
             if now - self._last_mic_amp_ts > 0.03:
                 self._last_mic_amp_ts = now
-                self.ui._dispatch(self.ui.bridge.setAmplitude, amp, low, mid, high, "mic")
+                self.ui._dispatch(self.ui.bridge.setAmplitude, amp)
 
         if sd is None:
             print("[FRIDAY] ⚠️ sounddevice not available — mic disabled")
@@ -2854,26 +2854,6 @@ class FridayLive:
             self.ui.write_log(f"SYS: Speaker unavailable ({str(e)[:60]}).")
             while True:
                 chunk = await self.audio_in_queue.get()
-                # Voice reactivity: feed live TTS energy + spectral bands to the Siri orb
-                # so the ribbons respond to the assistant's voice in real time.
-                # Kept cheap and throttled (~30 Hz) so the loop never blocks.
-                try:
-                    if (np is not None and self._is_speaking
-                            and not getattr(self.ui, "silent_mode", False)):
-                        from ui.audio_bands import _extract_audio_bands
-                        # Convert chunk (bytes) to int16 array for _extract_audio_bands
-                        pcm_int16 = np.frombuffer(chunk, dtype=np.int16)
-                        rms, low, mid, high = _extract_audio_bands(pcm_int16, RECEIVE_SAMPLE_RATE)
-                        amp = rms
-                    else:
-                        amp, low, mid, high = 0.0, 0.0, 0.0, 0.0
-                except Exception:
-                    amp, low, mid, high = 0.0, 0.0, 0.0, 0.0
-                now = time.monotonic()
-                if now - self._last_mic_amp_ts > 0.03:
-                    self._last_mic_amp_ts = now
-                    self.ui._dispatch(self.ui.bridge.setAmplitude, amp, low, mid, high, "tts")
-                
                 self.set_speaking(False)
         finally:
             self.set_speaking(False)

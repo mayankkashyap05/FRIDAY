@@ -420,7 +420,6 @@ class UiBridge:
                       "phrase": "Hey Friday"}
         self._mic_amplitude = 0.0
         self._last_amp_ts = 0.0
-        self._last_amp_bands: dict[str, float | str] = {"low": 0.0, "mid": 0.0, "high": 0.0, "source": "mic"}
         self._persona = {"mode": "normal", "mood": "calm", "voice": "Aoede"}
 
         self._state.add_listener(self._on_transition)
@@ -748,41 +747,21 @@ class UiBridge:
                    for item in self.cards.raw())
 
     # ── microphone level ─────────────────────────────────────────────────────
-    def setAmplitude(
-        self,
-        value: float,
-        low: float = 0.0,
-        mid: float = 0.0,
-        high: float = 0.0,
-        source: str = "mic",
-    ) -> None:  # noqa: N802 - wire name
-        """Live microphone level (0..1) + optional spectral bands; feeds Siri's voice-reactive ribbons."""
+    def setAmplitude(self, value: float) -> None:  # noqa: N802 - wire name
+        """Live microphone level (0..1); feeds Siri's voice-reactive ribbons."""
         try:
             level = max(0.0, min(1.0, float(value or 0.0)))
-            l = max(0.0, min(1.0, float(low or 0.0)))
-            m = max(0.0, min(1.0, float(mid or 0.0)))
-            h = max(0.0, min(1.0, float(high or 0.0)))
-            src = "tts" if source == "tts" else "mic"
         except (TypeError, ValueError):
             return
         previous = self._mic_amplitude
         self._mic_amplitude = level
-        if (
-            abs(level - previous) < self.AMPLITUDE_EPSILON
-            and abs(l - (self._last_amp_bands.get("low") or 0.0)) < self.AMPLITUDE_EPSILON
-            and abs(m - (self._last_amp_bands.get("mid") or 0.0)) < self.AMPLITUDE_EPSILON
-            and abs(h - (self._last_amp_bands.get("high") or 0.0)) < self.AMPLITUDE_EPSILON
-        ):
+        if abs(level - previous) < self.AMPLITUDE_EPSILON:
             return
         now = time.monotonic()
         if (now - self._last_amp_ts) < (1.0 / self.AMPLITUDE_HZ):
             return
         self._last_amp_ts = now
-        self._last_amp_bands = {"low": l, "mid": m, "high": h, "source": src}
-        payload = {"value": round(level, 4)}
-        if l > 0 or m > 0 or h > 0:
-            payload.update({"low": round(l, 4), "mid": round(m, 4), "high": round(h, 4), "source": src})
-        self._emit(protocol.T_AMPLITUDE, payload)
+        self._emit(protocol.T_AMPLITUDE, {"value": round(level, 4)})
 
     # ── user intents (renderer / legacy text path) ───────────────────────────
     def submitText(self, text: str) -> None:  # noqa: N802

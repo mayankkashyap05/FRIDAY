@@ -46,8 +46,6 @@ export interface SiriOrbProps {
   acting?: boolean;
   /** Bumped whenever FRIDAY's streaming words grow during SPEAKING. */
   speechPulse?: number;
-  /** Spectral bands and source from backend (mic/tts). */
-  audioBands?: { low: number; mid: number; high: number; source: "mic" | "tts" };
   onActivate: () => void;
   /** Called once the dismissal contraction has finished. */
   onDismissed: () => void;
@@ -66,11 +64,6 @@ interface Uniforms {
   uFlash: WebGLUniformLocation | null;
   uActing: WebGLUniformLocation | null;
   uReducedMotion: WebGLUniformLocation | null;
-  // Spectral bands and source
-  uLow: WebGLUniformLocation | null;
-  uMid: WebGLUniformLocation | null;
-  uHigh: WebGLUniformLocation | null;
-  uSource: WebGLUniformLocation | null;
 }
 
 function compile(gl: WebGL2RenderingContext, type: number, source: string): WebGLShader | null {
@@ -152,12 +145,8 @@ export function SiriOrb({
 
   const propsRef = useRef({
     state, energy, amplitude, muted, attention, reducedMotion, acting,
-    audioBands: audioBands ?? { low: 0, mid: 0, high: 0, source: "mic" },
   });
-  propsRef.current = {
-    state, energy, amplitude, muted, attention, reducedMotion, acting,
-    audioBands: audioBands ?? { low: 0, mid: 0, high: 0, source: "mic" },
-  };
+  propsRef.current = { state, energy, amplitude, muted, attention, reducedMotion, acting };
 
   const smoothed = useRef({
     voice: 0,
@@ -223,15 +212,10 @@ export function SiriOrb({
       uMuted: gl.getUniformLocation(program, "uMuted"),
       uAttention: gl.getUniformLocation(program, "uAttention"),
       uError: gl.getUniformLocation(program, "uError"),
-  uFlash: gl.getUniformLocation(program, "uFlash"),
-  uActing: gl.getUniformLocation(program, "uActing"),
-  uReducedMotion: gl.getUniformLocation(program, "uReducedMotion"),
-  // Spectral bands and source
-  uLow: gl.getUniformLocation(program, "uLow"),
-  uMid: gl.getUniformLocation(program, "uMid"),
-  uHigh: gl.getUniformLocation(program, "uHigh"),
-  uSource: gl.getUniformLocation(program, "uSource"),
-};
+      uFlash: gl.getUniformLocation(program, "uFlash"),
+      uActing: gl.getUniformLocation(program, "uActing"),
+      uReducedMotion: gl.getUniformLocation(program, "uReducedMotion"),
+    };
     gl.uniform2f(uniformsRef.current.uResolution, canvas.width, canvas.height);
     setSupported(true);
     return true;
@@ -471,18 +455,11 @@ export function SiriOrb({
       gl.uniform1f(uniforms.uMuted, s.muted);
       gl.uniform1f(uniforms.uAttention, s.attention);
       gl.uniform1f(uniforms.uError, s.error);
-  gl.uniform1f(uniforms.uFlash, s.flash);
-  gl.uniform1f(uniforms.uActing, s.acting);
-  gl.uniform1f(uniforms.uReducedMotion, props.reducedMotion ? 1 : 0);
-  // Spectral bands and source
-  // (populated by StageApp via UiState.audioBands)
-  const bands = props.audioBands ?? { low: 0, mid: 0, high: 0, source: "mic" };
-  gl.uniform1f(uniforms.uLow, clamp01(bands.low));
-  gl.uniform1f(uniforms.uMid, clamp01(bands.mid));
-  gl.uniform1f(uniforms.uHigh, clamp01(bands.high));
-  gl.uniform1f(uniforms.uSource, bands.source === "tts" ? 1 : 0);
+      gl.uniform1f(uniforms.uFlash, s.flash);
+      gl.uniform1f(uniforms.uActing, s.acting);
+      gl.uniform1f(uniforms.uReducedMotion, props.reducedMotion ? 1 : 0);
 
-  gl.clear(gl.COLOR_BUFFER_BIT);
+      gl.clear(gl.COLOR_BUFFER_BIT);
       gl.drawArrays(gl.TRIANGLES, 0, 3);
 
       frameRef.current = requestAnimationFrame(tick);

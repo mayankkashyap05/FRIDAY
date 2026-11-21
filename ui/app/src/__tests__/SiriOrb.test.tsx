@@ -130,24 +130,13 @@ describe("SiriOrb", () => {
     expect(fragment).toContain("uniform float uEnergy;");
     expect(fragment).toContain("uniform float uTime;");
     expect(fragment).toContain("uniform float uActing;");
-    // Volumetric glass & ferrofluid-silk implementation
+    // The Apple 3D-silk optics the v1 stripe shader was missing.
     expect(fragment).toContain("0.62 + 0.38 * z");
     expect(fragment).toContain("exp(-d * d * sharpen)");
     expect(fragment).toContain("0.85 * body + 0.45 * filament");
     expect(fragment).toContain("pow(z, 0.80)");
     expect(fragment).toContain("mix(1.0, 0.38, wMuted)");
     expect(fragment).toContain("vec4(color * alpha, alpha)");
-    // Spectral bands and source uniforms
-    expect(fragment).toContain("uniform float uLow;");
-    expect(fragment).toContain("uniform float uMid;");
-    expect(fragment).toContain("uniform float uHigh;");
-    expect(fragment).toContain("uniform float uSource;");
-    // Spectral tinting logic
-    expect(fragment).toContain("spectralTint");
-    expect(fragment).toContain("lowTint * low");
-    expect(fragment).toContain("midTint * mid");
-    expect(fragment).toContain("highTint * high");
-    expect(fragment).toContain("sourceTint");
   });
 
   it("draws a frame while summoned", () => {
@@ -237,31 +226,6 @@ describe("SiriOrb", () => {
     render(<SiriOrb {...baseProps} invoked acting />);
     flushFrame(14);
     expect(lastUniform("uActing") ?? 0).toBeGreaterThan(0.4);
-  });
-
-  it("uploads spectral bands and source to the shader", () => {
-    render(
-      <SiriOrb
-        {...baseProps}
-        invoked
-        amplitude={0.5}
-        audioBands={{ low: 0.8, mid: 0.4, high: 0.2, source: "tts" }}
-      />
-    );
-    flushFrame(1);
-    expect(lastUniform("uLow")).toBeCloseTo(0.8, 2);
-    expect(lastUniform("uMid")).toBeCloseTo(0.4, 2);
-    expect(lastUniform("uHigh")).toBeCloseTo(0.2, 2);
-    expect(lastUniform("uSource")).toBe(1); // tts -> 1
-  });
-
-  it("defaults spectral bands to zero/mic when omitted", () => {
-    render(<SiriOrb {...baseProps} invoked amplitude={0.5} />);
-    flushFrame(1);
-    expect(lastUniform("uLow")).toBe(0);
-    expect(lastUniform("uMid")).toBe(0);
-    expect(lastUniform("uHigh")).toBe(0);
-    expect(lastUniform("uSource")).toBe(0); // mic -> 0
   });
 
   it("rebuilds the backing buffer when devicePixelRatio changes", () => {

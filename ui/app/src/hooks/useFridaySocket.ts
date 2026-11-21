@@ -80,21 +80,7 @@ export function applyMessage(ui: UiState, message: ServerMessage): UiState {
       };
     }
     case "amplitude":
-      return {
-        ...ui,
-        amplitude: message.value,
-        state: { ...ui.state, micAmplitude: message.value },
-        audioBands: message.low !== undefined || message.mid !== undefined || message.high !== undefined
-          ? {
-              rms: message.value,
-              low: message.low ?? 0,
-              mid: message.mid ?? 0,
-              high: message.high ?? 0,
-              source: message.source ?? "mic",
-              ts: Date.now(),
-            }
-          : ui.audioBands,
-      };
+      return { ...ui, amplitude: message.value, state: { ...ui.state, micAmplitude: message.value } };
     case "live_transcript":
       return { ...ui, liveTranscript: message.text };
     case "transcript_append": {
