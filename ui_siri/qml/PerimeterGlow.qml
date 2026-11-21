@@ -39,7 +39,7 @@ Item {
     Behavior on opacity { NumberAnimation { duration: Theme.durMed } }
 
     // ── breathing envelope ────────────────────────────────────────────────
-    property real breath: 0.5
+    property real breath
     SequentialAnimation on breath {
         running: root.motion > 0
         loops: Animation.Infinite
@@ -97,9 +97,9 @@ Item {
         }
     }
 
-    property real spinA: 0
-    property real spinB: 120
-    property real spinC: 240
+    property real spinA
+    property real spinB
+    property real spinC
 
     // Speech makes the sweep ~4x faster; this is the single strongest
     // "FRIDAY is talking" cue at the edges of the screen.

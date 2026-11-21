@@ -56,9 +56,11 @@ SYSTEM_NAME = "FRIDAY"
 MODEL_BADGE = "FRIDAY"
 
 # Kept for parity with the legacy module: callers/tests may read THEMES.
+# Deliberately the *Qt-free* theme module, so `import ui` never loads Qt and the
+# legacy fallback stays reachable on a machine with a broken PySide6 install.
 try:  # pragma: no cover - import-order safety
-    from ui_siri.controller import THEMES, THEME_NAMES  # noqa: F401
-except Exception:  # pragma: no cover - allows `import ui` without Qt
+    from ui_siri.themes import THEMES, THEME_NAMES  # noqa: F401
+except Exception:  # pragma: no cover - last-resort literal
     THEMES = {
         "cyber": {"name": "CYBER"}, "ocean": {"name": "OCEAN"},
         "aurora": {"name": "AURORA"}, "sunset": {"name": "SUNSET"},

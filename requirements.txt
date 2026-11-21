@@ -9,7 +9,11 @@ websockets>=13.0,<17.0
 # Qt Quick powers the ambient overlay (ui_siri/). PySide6 is the only new
 # hard dependency introduced by the UI overhaul; the Tk fallback remains
 # importable but is no longer required.
-PySide6>=6.6.0
+# Upper bound is deliberate: PySide6/Qt 6.12.0 aborts with
+# "Fatal Python error: bool_dealloc ... refcount error in a C extension" when
+# QAbstractListModel rows are inserted, which crashes the UI on first paint.
+# 6.8.x is verified good; 6.9-6.11 are untested here, so they are excluded too.
+PySide6>=6.8.0,<6.12
 pillow>=10.0.0,<13.0.0
 pyautogui>=0.9.54
 pyperclip>=1.9.0

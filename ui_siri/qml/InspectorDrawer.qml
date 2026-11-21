@@ -71,31 +71,38 @@ Rectangle {
             Repeater {
                 model: drawer.tabs
                 delegate: Rectangle {
+                    id: tabChip
                     required property var modelData
+                    // The static analyser cannot type a JS-array model, so the
+                    // role is read once here and everything below uses helpers.
+                    readonly property string tabId: modelData.id
+                    readonly property string tabText: modelData.glyph + "  "
+                                                      + modelData.label
+                    readonly property bool active: drawer.tab === tabChip.tabId
                     width: Math.max(Math.round(74 * Theme.uiScale),
                                     tabLabel.width + 20)
                     height: Math.round(30 * Theme.uiScale)
                     radius: Theme.radiusChip
-                    color: drawer.tab === modelData.id
+                    color: tabChip.active
                            ? Theme.withAlpha(Theme.pri, 0.18) : "transparent"
-                    border.width: drawer.tab === modelData.id ? 1 : 0
+                    border.width: tabChip.active ? 1 : 0
                     border.color: Theme.withAlpha(Theme.pri, 0.45)
                     Behavior on color { ColorAnimation { duration: Theme.durMicro } }
 
                     Text {
                         id: tabLabel
                         anchors.centerIn: parent
-                        text: modelData.glyph + "  " + modelData.label
-                        color: drawer.tab === modelData.id
+                        text: tabChip.tabText
+                        color: tabChip.active
                                ? Theme.pri : Theme.withAlpha(Theme.text, 0.62)
                         font.pixelSize: Theme.fontXS
-                        font.bold: drawer.tab === modelData.id
+                        font.bold: tabChip.active
                         font.family: "Segoe UI Variable Text, Segoe UI, sans-serif"
                     }
                     MouseArea {
                         anchors.fill: parent
                         cursorShape: Qt.PointingHandCursor
-                        onClicked: drawer.tab = modelData.id
+                        onClicked: drawer.tab = tabChip.tabId
                     }
                 }
             }

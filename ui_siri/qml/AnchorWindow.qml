@@ -27,6 +27,12 @@ Item {
     property alias stackHeight: stack.implicitHeight
     property alias barHeight: activity.implicitHeight
 
+    // The window is a real (transparent) Win32 window, so it cannot auto-size
+    // to its content: the controller must be told. Card arrival/expiry changes
+    // `stackHeight`, which is the only thing that matters for clipping.
+    onStackHeightChanged: root.contentHeightChanged()
+    onBarHeightChanged: root.contentHeightChanged()
+
     // Pill is pinned top-centre; everything else flows beneath it.
     Column {
         id: column
@@ -86,7 +92,10 @@ Item {
             uiScale: Theme.uiScale
             onDismissed: (uid) => { if (root.bridge) root.bridge.dismissCard(uid) }
             onActivated: (uid, kind, body) => {
-                if (root.bridge) root.bridge.clearCards()
+                // A click means "I have read this": clear the stack so the
+                // desktop is given back immediately.
+                if (root.bridge)
+                    root.bridge.clearCards()
             }
             onCommand: (text) => {
                 if (root.bridge) root.bridge.submitText(text)

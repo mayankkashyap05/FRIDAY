@@ -424,7 +424,7 @@ Item {
     }
 
     // Shared animation clock (one timer for the whole pill, not per-element).
-    property real phase: 0
+    property real phase
     NumberAnimation on phase {
         running: Theme.motion > 0
         loops: Animation.Infinite

@@ -103,18 +103,13 @@ def _qmllint_binary() -> str | None:
     return str(candidate) if candidate.exists() else None
 
 
-# The static analyser cannot type a JS-array literal used as a Repeater model,
-# so role access inside those two delegates is flagged `unqualified` even though
-# it is correct at runtime. This is the *only* tolerated warning class, and only
-# for these two files; every other diagnostic anywhere is a hard failure.
-LINT_ALLOW_UNQUALIFIED = {
-    "TelemetryCard.qml",
-    "ControlPillCard.qml",
-}
-
-
 def test_every_qml_file_lints_clean():
-    """Zero errors; zero warnings outside the documented dynamic-model exemption."""
+    """Every QML file must lint with zero warnings.
+
+    No exemption list: dynamic JS-array models are handled by reading the role
+    once into a delegate-level property, which keeps the analyser satisfied and
+    the runtime behaviour identical.
+    """
     lint = _qmllint_binary()
     if not lint:
         pytest.skip("qmllint not shipped with this PySide6 build")
@@ -128,9 +123,6 @@ def test_every_qml_file_lints_clean():
                               capture_output=True, text=True, timeout=180)
         problems = [line for line in (proc.stdout + proc.stderr).splitlines()
                     if line.startswith(("Warning:", "Error:"))]
-        if Path(path).name in LINT_ALLOW_UNQUALIFIED:
-            problems = [line for line in problems
-                        if "[unqualified]" not in line]
         if problems:
             failures.append(f"\n{Path(path).name}:\n  " + "\n  ".join(problems[:8]))
 
@@ -425,3 +417,27 @@ def test_ambient_facade_roundtrip():
     ]:
         getattr(instance, method)(*args)
     instance.quit()
+
+
+# ── import policy: the facade must never require Qt to be imported ──────────
+
+def test_importing_ui_does_not_load_qt():
+    """``import ui`` must stay Qt-free.
+
+    main.py imports `ui` at module scope, before it can possibly fall back. If
+    this module pulled in PySide6 eagerly, a machine with a broken Qt install
+    would crash with an ImportError instead of reaching the Tk fallback in
+    make_ui(). The facade therefore reads its theme table from ui_siri.themes,
+    which is Qt-free by design.
+    """
+    code = (
+        "import sys; sys.path.insert(0, %r); import ui; "
+        "print(','.join(sorted(m for m in sys.modules if m.startswith('PySide6'))))"
+        % str(REPO)
+    )
+    proc = subprocess.run([sys.executable, "-c", code],
+                          capture_output=True, text=True, timeout=120)
+    assert proc.returncode == 0, proc.stderr
+    loaded = proc.stdout.strip()
+    assert loaded == "", f"importing ui loaded Qt modules: {loaded}"
+    assert "cyber" in proc.stdout.lower() or loaded == ""

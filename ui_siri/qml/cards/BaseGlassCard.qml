@@ -50,7 +50,7 @@ Item {
     scale: stacked ? 0.94 : 1.0
 
     // ── entrance: springy settle, suppressed when reduced-motion ────────────
-    property real entrance: 0
+    property real entrance
     NumberAnimation on entrance {
         running: Theme.motion > 0 && !card.stacked
         from: 0; to: 1

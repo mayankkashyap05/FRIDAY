@@ -1,3 +1,4 @@
+pragma ComponentBehavior: Bound
 import QtQuick
 
 /*
@@ -30,6 +31,9 @@ Item {
     Item {
         id: scan
         anchors.fill: parent
+        // Explicit alias: inner Items also use the id `effects`, so bind the
+        // accent once at this level instead of repeatedly across scopes.
+        readonly property color accentColor: effects.accent
         visible: effects.scanActive
         opacity: effects.scanActive ? 1.0 : 0.0
         Behavior on opacity { NumberAnimation { duration: Theme.durMed } }
@@ -43,35 +47,40 @@ Item {
                 { hx: 1, hy: 1, sx: -1, sy: -1 }
             ]
             delegate: Item {
+                id: corner
+                // The static analyser cannot type a JS-array model; read the
+                // two coordinates once and derive everything from them.
+                readonly property bool isLeft: modelData.hx === 0
+                readonly property bool isTop: modelData.hy === 0
                 required property var modelData
                 required property int index
                 readonly property real m: Math.round(26 * Theme.uiScale)
                 readonly property real len: Math.round(34 * Theme.uiScale)
-                x: modelData.hx * (effects.width - m) - (modelData.hx ? 0 : 0)
-                y: modelData.hy * (effects.height - m)
+                // Anchors below do the positioning; x/y keep the
+                // delegate inside the item before the first layout.
                 width: len
                 height: len
 
                 // Anchor to each screen corner.
-                anchors.left: modelData.hx === 0 ? parent.left : undefined
-                anchors.right: modelData.hx === 1 ? parent.right : undefined
-                anchors.top: modelData.hy === 0 ? parent.top : undefined
-                anchors.bottom: modelData.hy === 1 ? parent.bottom : undefined
+                anchors.left: corner.isLeft ? parent.left : undefined
+                anchors.right: corner.isLeft ? undefined : parent.right
+                anchors.top: corner.isTop ? parent.top : undefined
+                anchors.bottom: corner.isTop ? undefined : parent.bottom
                 anchors.margins: Math.round(26 * Theme.uiScale)
 
                 Rectangle {
                     width: parent.width; height: Math.round(2 * Theme.uiScale)
-                    color: effects.accent
+                    color: scan.accentColor
                     opacity: 0.75
-                    anchors.top: modelData.hy === 0 ? parent.top : undefined
-                    anchors.bottom: modelData.hy === 1 ? parent.bottom : undefined
+                    anchors.top: corner.isTop ? parent.top : undefined
+                    anchors.bottom: corner.isTop ? undefined : parent.bottom
                 }
                 Rectangle {
                     width: Math.round(2 * Theme.uiScale); height: parent.height
-                    color: effects.accent
+                    color: scan.accentColor
                     opacity: 0.75
-                    anchors.left: modelData.hx === 0 ? parent.left : undefined
-                    anchors.right: modelData.hx === 1 ? parent.right : undefined
+                    anchors.left: corner.isLeft ? parent.left : undefined
+                    anchors.right: corner.isLeft ? undefined : parent.right
                 }
             }
         }
@@ -150,7 +159,7 @@ Item {
                     height: width
                     radius: width / 2
                     anchors.verticalCenter: parent.verticalCenter
-                    color: effects.accent
+                    color: scan.accentColor
                     SequentialAnimation on opacity {
                         running: !effects.reducedMotion
                         loops: Animation.Infinite

@@ -264,10 +264,13 @@ class UiController(QObject):
 
         # Drain the bus on the GUI thread at ~30 Hz: cheap, and keeps the
         # transcript live even while QML is busy animating.
+        # Bus drain (event_bus -> QML models).
         self._drain = QTimer(self)
         self._drain.setInterval(33)
         self._drain.timeout.connect(self._on_drain)
         self._drain.start()
+        # Dispatcher drain (cross-thread legacy calls -> GUI thread).
+        self.dispatcher.start()
 
         self.bridge.apply_theme(self.theme)
         self.reloadTheme.emit(self.theme)
@@ -641,6 +644,10 @@ class UiController(QObject):
                 timer.stop()
             except Exception:
                 pass
+        try:
+            self.dispatcher.stop()
+        except Exception:
+            pass
         self._remember_anchor()
         try:
             self.audio.stop()
