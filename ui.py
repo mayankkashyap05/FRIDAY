@@ -32,6 +32,7 @@ import json
 import os
 import sys
 import threading
+import traceback
 import time
 from pathlib import Path
 from typing import Any, Callable
@@ -89,9 +90,32 @@ def _save_theme_name(name: str) -> None:
         pass
 
 
+def _log_exception(exc: BaseException) -> None:
+    """Append a traceback to the application log, if logging is up.
+
+    ``logger.log`` is already used across main.py; it may not be imported yet
+    when make_ui() runs, and it must never mask the real failure.
+    """
+    try:
+        from logger import log
+
+        log(f"UI: ambient interface failed: {type(exc).__name__}: {exc}",
+            level="ERROR")
+    except Exception:
+        pass
+
+
+def _env_flag(name: str) -> bool:
+    return os.environ.get(name, "").strip().lower() in ("1", "true", "yes", "on")
+
+
 def _legacy_requested() -> bool:
-    value = os.environ.get("FRIDAY_LEGACY_UI", "").strip().lower()
-    return value in ("1", "true", "yes", "on")
+    return _env_flag("FRIDAY_LEGACY_UI")
+
+
+def _strict_requested() -> bool:
+    """FRIDAY_STRICT_UI=1 -> never fall back; raise so the traceback is visible."""
+    return _env_flag("FRIDAY_STRICT_UI")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -299,7 +323,11 @@ class FridayUI:
         if self._app is None:
             from ui_siri import win32_native as w32
 
-            w32.enable_per_monitor_dpi()          # must precede QApplication
+            # Both of these MUST run before the QGuiApplication exists: Qt
+            # reads the alpha-buffer flag and the DPI-awareness context once,
+            # at platform-window creation.
+            w32.enable_alpha_buffer()
+            w32.enable_per_monitor_dpi()
             self._app = QGuiApplication(sys.argv[:1] or ["friday"])
         try:
             self._app.setApplicationName("FRIDAY")
@@ -765,18 +793,49 @@ def _load_legacy_class():
 
 
 def make_ui(face_path: str = "face.png", size: Any = None):
-    """Return a UI instance, honouring ``FRIDAY_LEGACY_UI``."""
+    """Return a UI instance, honouring ``FRIDAY_LEGACY_UI`` / ``FRIDAY_STRICT_UI``.
+
+    Order of precedence:
+
+    * ``FRIDAY_LEGACY_UI=1`` -- use the original Tk interface, no Qt at all.
+    * ``FRIDAY_STRICT_UI=1`` -- use the ambient UI and *raise* on any failure,
+      including a QML load error, so the traceback is never swallowed. This is
+      the flag to use while bringing the overlay up on a new machine.
+    * otherwise -- try ambient, fall back to Tk, and print a full traceback
+      for the ambient failure so the log file records the real cause.
+    """
     if _legacy_requested():
         cls = _load_legacy_class()
         return cls(face_path, size)
+
+    strict = _strict_requested()
     try:
-        return FridayUI(face_path, size)
+        ui = FridayUI(face_path, size)
+        load_errors = []
+        try:
+            load_errors = ui.controller.qml_errors()
+        except Exception:
+            pass
+        if load_errors:
+            detail = "\n".join(f"  [{layer}] {url}:{line}:{col}: {msg}"
+                               for layer, url, line, col, msg in load_errors)
+            raise RuntimeError(f"QML failed to load:\n{detail}")
+        return ui
     except Exception as exc:
-        print(f"[UI] ⚠️ Ambient UI unavailable ({exc}); falling back to Tk.")
+        print(f"[UI] ⚠️ Ambient UI unavailable: {type(exc).__name__}: {exc}")
+        print("[UI]    falling back to Tk" if not strict
+              else "[UI]    FRIDAY_STRICT_UI is set — not falling back")
+        # Full traceback, not just str(exc): the whole point of this log line is
+        # to make a first-run failure on someone else's machine debuggable.
+        traceback.print_exc()
+        _log_exception(exc)
+        if strict:
+            raise
         try:
             cls = _load_legacy_class()
             return cls(face_path, size)
         except Exception as legacy_exc:
+            traceback.print_exc()
             raise SystemExit(
                 "FRIDAY could not start its interface.\n"
                 f"  Qt Quick error: {exc}\n"

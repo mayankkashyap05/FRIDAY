@@ -3,6 +3,7 @@ import threading
 import json
 import sys
 import os
+import re
 import time
 import traceback
 from pathlib import Path
@@ -1881,6 +1882,11 @@ class FridayLive:
         self._human_confirmed = False
 
         if face_verify:
+            # Imported lazily, like every other action module (see
+            # _build_tool_handlers): binding the name at module scope here was
+            # a NameError waiting for the first face-verified tool call.
+            from actions.vision_gesture import vision_gesture
+
             identity = await run_sync_tool(
                 lambda: vision_gesture({"action": "verify_identity"}, player=self.ui),
                 "face_identity_verification",
@@ -2576,7 +2582,7 @@ class FridayLive:
 
     async def _listen_audio(self):
         print("[FRIDAY] 🎤 Mic started")
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
 
         def callback(indata, frames, time_info, status):
             with self._speaking_lock:
@@ -2745,7 +2751,7 @@ class FridayLive:
                     pass
 
     async def run(self):
-        self._loop = asyncio.get_event_loop()
+        self._loop = asyncio.get_running_loop()
 
 
 
@@ -2788,7 +2794,7 @@ class FridayLive:
                     ):
                         backoff = 3  # success resets the backoff
                         self.session        = session
-                        self._loop          = asyncio.get_event_loop()
+                        self._loop          = asyncio.get_running_loop()
                         self._send_lock     = asyncio.Lock()
                         self.audio_in_queue = asyncio.Queue()
                         self.out_queue      = asyncio.Queue(maxsize=64)
