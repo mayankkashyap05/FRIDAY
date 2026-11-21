@@ -39,10 +39,10 @@ BaseGlassCard {
         return n
     }
 
-    contentBodyHeight: body.implicitHeight
+    contentBodyHeight: bodyContent.implicitHeight
 
     Column {
-        id: body
+        id: bodyContent
         x: card.contentLeft
         y: card.contentTop
         width: card.contentWidth

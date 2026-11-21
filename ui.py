@@ -54,11 +54,11 @@ from ui_siri.themes import DEFAULT_THEME, THEMES, THEME_NAMES  # noqa: F401
 
 
 def _load_theme_name() -> str:
-    """Read the persisted theme (same file the Tk UI wrote)."""
+    """Read the persisted theme (same file the Siri UI writes)."""
     try:
         if THEME_FILE.exists():
             data = json.loads(THEME_FILE.read_text(encoding="utf-8"))
-            name = str(data.get("theme", "cyber")).strip().lower()
+            name = str(data.get("theme", DEFAULT_THEME)).strip().lower()
             if name in THEME_NAMES:
                 return name
     except Exception:

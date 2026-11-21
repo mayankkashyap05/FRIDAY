@@ -17,13 +17,13 @@ BaseGlassCard {
     readonly property var p: payload !== undefined && payload !== null ? payload : ({})
 
     customBody: true
-    contentBodyHeight: body.implicitHeight
+    contentBodyHeight: bodyContent.implicitHeight
 
     readonly property int mailCount: p.emails !== undefined && p.emails.length
                                      ? Math.min(4, p.emails.length) : 0
 
     Column {
-        id: body
+        id: bodyContent
         x: card.contentLeft
         y: card.contentTop
         width: card.contentWidth
@@ -38,7 +38,7 @@ BaseGlassCard {
                 readonly property bool unread: mail !== undefined
                                                && mail.unread !== undefined
                                                && mail.unread === true
-                width: body.width
+                width: bodyContent.width
                 height: Math.round(17 * Theme.uiScale)
 
                 Rectangle {

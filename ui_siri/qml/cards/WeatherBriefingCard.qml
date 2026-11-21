@@ -21,7 +21,7 @@ BaseGlassCard {
     readonly property var p: payload !== undefined && payload !== null ? payload : ({})
 
     customBody: true
-    contentBodyHeight: body.implicitHeight
+    contentBodyHeight: bodyContent.implicitHeight
 
     readonly property bool hasTemp: p.temp_c !== undefined || p.temperature !== undefined
     readonly property real temp: p.temp_c !== undefined ? p.temp_c
@@ -41,7 +41,7 @@ BaseGlassCard {
                                      ? Math.min(6, p.hours.length) : 0
 
     Column {
-        id: body
+        id: bodyContent
         x: card.contentLeft
         y: card.contentTop
         width: card.contentWidth

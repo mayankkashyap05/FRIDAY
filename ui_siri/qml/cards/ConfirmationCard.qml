@@ -22,10 +22,10 @@ BaseGlassCard {
     // A confirmation is never auto-dismissed while it is unresolved; the
     // controller's grace timer honours this through `busy`.
     customBody: true
-    contentBodyHeight: body.implicitHeight
+    contentBodyHeight: bodyContent.implicitHeight
 
     Row {
-        id: body
+        id: bodyContent
         x: card.contentLeft
         y: card.contentTop
         spacing: Math.round(8 * Theme.uiScale)
