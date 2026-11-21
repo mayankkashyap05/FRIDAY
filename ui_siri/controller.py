@@ -2,13 +2,13 @@
 
 Owns:
 
-* the four overlay layers (perimeter/screen-effects, anchor pill + stack +
+- the four overlay layers (perimeter/screen-effects, anchor pill + stack +
   activity bar, inspector drawer) as separate top-level windows so each can
   carry different window flags;
-* monitor tracking (the pill follows the monitor the user is working on);
-* Win32 polish hooks (click-through, capture exclusion, DWM corners);
-* the 4 Hz UI tick (timers, card TTL, clock, DND polling);
-* the QML engine, theme table and the QML-side signal surface.
+- monitor tracking (the pill follows the monitor the user is working on);
+- Win32 polish hooks (click-through, capture exclusion, DWM corners);
+- the 4 Hz UI tick (timers, card TTL, clock, DND polling);
+- the QML engine, theme table and the QML-side signal surface.
 
 Everything here runs on the **GUI thread**. Producers reach it through
 :class:`ui_siri.bridge.UiDispatcher` (wired up by ``ui.py``), or through the
@@ -111,6 +111,7 @@ class _LayerWindow(QQuickView):
         self._capture_excluded = capture_excluded
         self._qml_file = qml_file
         self._polished = False
+        self._closing = False
         self._root: QQuickItem | None = None
 
         self.statusChanged.connect(self._on_status)
@@ -148,7 +149,15 @@ class _LayerWindow(QQuickView):
                                  e.description()) for e in self.errors()]
             print(f"[Controller] ⚠️ {self._qml_file} failed to load:\n{details}")
 
+    def prepare_close(self) -> None:
+        self._closing = True
+
+    def closeEvent(self, event) -> None:  # noqa: N802
+        self._closing = True
+        super().closeEvent(event)
+
     def showEvent(self, event) -> None:  # noqa: N802
+        self._closing = False
         super().showEvent(event)
         if not self._polished:
             self._polished = True
@@ -156,6 +165,8 @@ class _LayerWindow(QQuickView):
 
     def apply_native(self) -> None:
         """Apply Win32 behaviour once the HWND exists (and after show)."""
+        if self._closing or not self.isVisible():
+            return
         try:
             hwnd = int(self.winId())
         except Exception:
@@ -286,6 +297,7 @@ class UiController(QObject):
         self.audio.set_dnd_probe(lambda: self._dnd)
 
         # ── windows ──────────────────────────────────────────────────────────
+        self.siri: _LayerWindow | None = None
         self.overlay: _LayerWindow | None = None
         self.anchor: _LayerWindow | None = None
         self.inspector: _LayerWindow | None = None
@@ -1057,7 +1069,15 @@ class UiController(QObject):
             return
         self._shutdown_done = True
 
-        for timer in (self._tick, self._slow, self._drain, self._desktop_input):
+        for timer in (
+            getattr(self, "_tick", None),
+            getattr(self, "_slow", None),
+            getattr(self, "_drain", None),
+            getattr(self, "_desktop_input", None),
+            getattr(self, "_dismissTimer", None),
+        ):
+            if timer is None:
+                continue
             try:
                 timer.stop()
             except Exception:
@@ -1081,10 +1101,16 @@ class UiController(QObject):
             system_tray.stop()
         except Exception:
             pass
-        for win in (self.inspector, self.anchor, self.overlay):
+        seen: set[int] = set()
+        for win in (self.inspector, self.anchor, self.siri, self.overlay):
+            if win is None or id(win) in seen:
+                continue
+            seen.add(id(win))
             try:
-                if win is not None:
-                    win.close()
+                if hasattr(win, "prepare_close"):
+                    win.prepare_close()
+                win.hide()
+                win.close()
             except Exception:
                 pass
 

@@ -10,27 +10,27 @@ import QtQuick
     Optical anatomy, painted bottom-up every frame (the Canvas framebuffer is
     explicitly cleared first — it persists between paints):
 
-      1. feathered multi-hued halo — a soft cyan → violet → rose bloom that has
+1. feathered multi-hued halo — a soft cyan → violet → rose bloom that has
          already fallen to a few percent when it leaves the glass, so there is
          no visible ring and no hard outer edge;
-      2. deep translucent liquid-crystal core — sapphire-indigo-violet glass at
+2. deep translucent liquid-crystal core — sapphire-indigo-violet glass at
          ~90 % opacity (NEVER pitch black, never muddy grey), lifted toward the
          cool/warm end of the spectrum per state;
-      3. iridescent silk bands — three overlapping horizontal ribbons that
+3. iridescent silk bands — three overlapping horizontal ribbons that
          undulate across the sphere at independent angles, phases and
          harmonics. Each band is *stamped* from a soft radial brush along a
          tapered sine path (so nothing has a hard edge: no stroke, no polygon,
          no wireframe), and every stamp is accumulated with
          `globalCompositeOperation = "lighter"` — true additive light. Where
          bands cross, intensity accumulates to pure white-hot Siri silk;
-      4. a vertical shading veil that darkens the poles so the bands read as
+4. a vertical shading veil that darkens the poles so the bands read as
          *inside* a sphere, with a bounce of refracted colour along the lower
          contour;
-      5. a breathing white-hot core at the crossing of the bands;
-      6. a razor-thin full rim plus a crisp specular arc along the upper
+5. a breathing white-hot core at the crossing of the bands;
+6. a razor-thin full rim plus a crisp specular arc along the upper
          contour — Apple's unmistakable glass-edge signature, always strictly
          inside the silhouette;
-      7. an upper-left crescent sheen, tucked inside the contour.
+7. an upper-left crescent sheen, tucked inside the contour.
 
     State choreography (never an abrupt snap):
 
@@ -133,8 +133,8 @@ Item {
             const stiffness = 180.0
             const damping = 2.0 * Math.sqrt(stiffness)
             const acceleration =
-                    (orb.ampTarget - orb.smoothAmplitude) * stiffness
-                    - orb.ampVelocity * damping
+                    (orb.ampTarget - orb.smoothAmplitude) * stiffness -
+                    orb.ampVelocity * damping
 
             orb.ampVelocity += acceleration * dt
             orb.smoothAmplitude = Math.max(
@@ -199,9 +199,17 @@ Item {
             var cy = h / 2
             // Sphere radius, with the remainder of the canvas reserved for the
             // halo feathering out to zero.
-            var r = Math.min(w, h) / 2 * (orb.orbSize / orb.canvasSize)
+            var r = orb.canvasSize > 0
+                    ? Math.min(w, h) / 2 * (orb.orbSize / orb.canvasSize)
+                    : 0
+            if (!Number.isFinite(r) || r <= 0)
+                return
 
-            var amp = orb.smoothAmplitude
+            // `t` must be initialized before `outputVoice` references it;
+            // otherwise JS `var` hoisting leaves `t` undefined -> `voice` NaN
+            // -> createRadialGradient() throws on every speaking frame.
+            var t = Number.isFinite(orb.phase) ? orb.phase : 0.0
+            var amp = Number.isFinite(orb.smoothAmplitude) ? orb.smoothAmplitude : 0.0
 
             // Microphone energy belongs to user listening only. Otherwise the
             // speakers can feed back into the mic and make Friday react to itself.
@@ -217,9 +225,10 @@ Item {
                     : 0.0
 
             var voice = Math.min(1.0, Math.max(inputVoice, outputVoice))
-            var energy = Math.max(0.0, Math.min(1.0, orb.energy))
-            var mute = orb.muteFactor
-            var t = orb.phase
+            if (!Number.isFinite(voice))
+                voice = 0.0
+            var energy = Math.max(0.0, Math.min(1.0, Number.isFinite(orb.energy) ? orb.energy : 0.0))
+            var mute = Number.isFinite(orb.muteFactor) ? orb.muteFactor : 1.0
 
             // ── colour helpers ─────────────────────────────────────────────
             // QML exposes colour channels as 0..1 reals. Derived colours are
@@ -227,6 +236,8 @@ Item {
             // apart in one place prevents the classic "everything is black"
             // bug (a 0..1 channel clamped to 255 is 0).
             function rgb(c) {
+                if (!c)
+                    return [0, 0, 0]
                 if (c._255)
                     return [Math.round(Math.max(0, Math.min(255, c.r))),
                             Math.round(Math.max(0, Math.min(255, c.g))),
@@ -243,7 +254,7 @@ Item {
             }
             function mix(c1, c2, k) {
                 var a = rgb(c1), b = rgb(c2)
-                var kk = Math.max(0, Math.min(1, k))
+                var kk = Math.max(0, Math.min(1, Number.isFinite(k) ? k : 0))
                 return { r: a[0] + (b[0] - a[0]) * kk,
                          g: a[1] + (b[1] - a[1]) * kk,
                          b: a[2] + (b[2] - a[2]) * kk,
@@ -254,6 +265,8 @@ Item {
                 return mix(c, { r: 255, g: 255, b: 255, a: 1, _255: true }, k)
             }
             function disc(x, y, rad) {
+                if (!Number.isFinite(rad) || rad <= 0)
+                    return
                 ctx.beginPath()
                 ctx.arc(x, y, rad, 0, tau)
                 ctx.fill()
@@ -270,9 +283,11 @@ Item {
                              Theme.acc, warm * 0.55)
 
             // ── 1. feathered ambient halo (outside the clip) ──────────────
-            var haloGain = (0.30 + 0.40 * energy) * mute
-                     * (0.90 + 0.10 * Math.sin(tau * t * 1.3 + 0.8))
-            var halo = ctx.createRadialGradient(cx, cy, r * 0.62, cx, cy, r * 1.72)
+            var haloGain = (0.30 + 0.40 * energy) * mute *
+                    (0.90 + 0.10 * Math.sin(tau * t * 1.3 + 0.8))
+            var halo = ctx.createRadialGradient(
+                cx, cy, Math.max(0.0, r * 0.62),
+                cx, cy, Math.max(1.0, r * 1.72))
             halo.addColorStop(0.00, css(Theme.pri, 0.14 * haloGain))
             halo.addColorStop(0.26, css(mix(Theme.pri, Theme.acc2, 0.55),
                                         0.09 * haloGain))
@@ -293,8 +308,9 @@ Item {
             var glassTop = mix(Theme.orbGlassA, Theme.acc2, cool * 0.25 + warm * 0.10)
             var glassMid = mix(Theme.orbGlassB, Theme.mid, 0.16)
             var glassLow = mix(Theme.orbGlassC, Theme.acc2, 0.10 + cool * 0.12)
-            var glass = ctx.createRadialGradient(cx - r * 0.18, cy - r * 0.22, 0,
-                                                 cx, cy, r * 1.04)
+            var glass = ctx.createRadialGradient(
+                cx - r * 0.18, cy - r * 0.22, 0,
+                cx, cy, Math.max(1.0, r * 1.04))
             glass.addColorStop(0.00, css(lighten(glassTop, 0.14), 0.90))
             glass.addColorStop(0.42, css(glassMid, 0.93))
             glass.addColorStop(0.78, css(glassLow, 0.92))
@@ -311,15 +327,15 @@ Item {
             var bandCount = 3
             var stamps = 46
             var hueSteps = 11
-            var fieldAlpha = (0.72 + 0.26 * energy) * mute
-                             * (orb.thinking ? 0.90 : 1.0)
+            var fieldAlpha = (0.72 + 0.26 * energy) * mute *
+                    (orb.thinking ? 0.90 : 1.0)
             // Voice widens the bands and lifts them toward the rim; thinking
             // gathers them into a tighter weave.
             var spread = (orb.thinking ? 0.76 : 1.0) * (1.0 + 0.12 * voice)
             var lift = (orb.thinking ? -0.05 : 0.04) * voice
             // Broad brush: the ribbon must read as a band of light about a
             // third of the sphere tall, not as a drawn cord.
-            var stampBase = r * (0.30 + 0.04 * voice)
+            var stampBase = Math.max(1.0, r * (0.30 + 0.04 * voice))
 
             for (var b = 0; b < bandCount; b++) {
                 // Independent rate + irrational offsets: no two bands ever
@@ -329,8 +345,6 @@ Item {
                 // Band axis: spread across the sphere, each rocking slowly.
                 var axis = -0.26 + b * 0.24 + 0.10 * Math.sin(bp * 0.7 + b * 1.9)
                 var ampY = r * (0.20 + 0.05 * Math.sin(bp * 1.1)) * spread
-                // Below one full wave across the sphere: the ribbon S-folds
-                // gently instead of curling into a visible ring.
                 // Below half a wave across the sphere: the ribbon arcs and
                 // tilts instead of folding back through itself (a fold
                 // reads as a dark lens at this size).
@@ -414,12 +428,12 @@ Item {
             // ── 5. breathing white-hot core ───────────────────────────────
             ctx.globalCompositeOperation = "lighter"
             var corePulse = 0.55 + 0.45 * Math.sin(tau * (t * 2.2 + 0.1))
-            var coreA = (0.20 + 0.16 * energy) * (0.55 + 0.45 * voice)
-                        * (0.78 + 0.22 * corePulse) * mute
+            var coreA = (0.20 + 0.16 * energy) * (0.55 + 0.45 * voice) *
+                    (0.78 + 0.22 * corePulse) * mute
             // Wide and soft: the crossing of the bands is already hot, so the
             // core only has to add the last, largest breath of glow. A narrow
             // gradient here reads as a drawn ring.
-            var coreR = r * (0.62 + 0.14 * voice + 0.04 * corePulse)
+            var coreR = Math.max(1.0, r * (0.62 + 0.14 * voice + 0.04 * corePulse))
             var coreGrad = ctx.createRadialGradient(cx, cy, 0, cx, cy, coreR)
             coreGrad.addColorStop(0.00, css(Theme.iridE, Math.min(1, coreA * 1.15)))
             coreGrad.addColorStop(0.30, css(lighten(accent, 0.85), coreA * 0.55))
@@ -430,8 +444,9 @@ Item {
             disc(cx, cy, coreR)
 
             // ── 6. refracted bounce along the lower contour ───────────────
-            var bounce = ctx.createRadialGradient(cx, cy + r * 0.66, 0,
-                                                  cx, cy + r * 0.66, r * 0.92)
+            var bounce = ctx.createRadialGradient(
+                cx, cy + r * 0.66, 0,
+                cx, cy + r * 0.66, Math.max(1.0, r * 0.92))
             bounce.addColorStop(0.00, css(mix(accent, Theme.acc2, 0.45),
                                           0.22 * mute))
             bounce.addColorStop(0.50, css(accent, 0.075 * mute))
@@ -445,7 +460,7 @@ Item {
             ctx.lineWidth = Math.max(0.8, r * 0.010)
             ctx.strokeStyle = css(mix(accent, Theme.iridE, 0.55), 0.20 * mute)
             ctx.beginPath()
-            ctx.arc(cx, cy, r - ctx.lineWidth * 0.8, 0, tau)
+            ctx.arc(cx, cy, Math.max(0.5, r - ctx.lineWidth * 0.8), 0, tau)
             ctx.stroke()
 
             // specular arc: the upper contour catches the light, exactly as a
@@ -460,12 +475,12 @@ Item {
             ctx.lineWidth = Math.max(1.2, r * 0.030)
             ctx.lineCap = "round"
             ctx.beginPath()
-            ctx.arc(cx, cy, r - ctx.lineWidth * 0.9,
+            ctx.arc(cx, cy, Math.max(0.5, r - ctx.lineWidth * 0.9),
                     Math.PI * 1.14, Math.PI * 1.86)
             ctx.stroke()
 
             // ── 8. crescent sheen, tucked inside the contour ─────────────
-            var sheenR = r * 0.58
+            var sheenR = Math.max(1.0, r * 0.58)
             var sheenGrad = ctx.createRadialGradient(
                 cx - r * 0.28, cy - r * 0.40, 0,
                 cx - r * 0.28, cy - r * 0.40, sheenR)
@@ -480,7 +495,7 @@ Item {
             // ── 9. summon bloom (outside the clip: a bloom, not a disc) ──
             if (orb.summonFlash > 0.01) {
                 var flash = orb.summonFlash
-                var fg = ctx.createRadialGradient(cx, cy, 0, cx, cy, r * 1.9)
+                var fg = ctx.createRadialGradient(cx, cy, 0, cx, cy, Math.max(1.0, r * 1.9))
                 fg.addColorStop(0.0, css(Theme.iridE, flash * 0.26))
                 fg.addColorStop(0.32, css(Theme.pri, flash * 0.16))
                 fg.addColorStop(1.0, css(Theme.pri, 0.0))

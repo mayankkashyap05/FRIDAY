@@ -675,7 +675,10 @@ def test_live_activity_bar_never_assigns_its_bindings_imperatively():
     """`bar.visible = ...` in a signal handler destroys the binding."""
     raw = (QML_DIR / "LiveActivityBar.qml").read_text(encoding="utf-8")
     assert "function refresh() { bar.agentCount = bar.countActive() }" in raw
-    assert "visible: agentCount > 0 || expanded" in raw
+    assert (
+        "visible: agentCount > 0 || expanded" in raw
+        or "visible: presence && (agentCount > 0 || expanded)" in raw
+    )
     # Strip comments first: the file's own explanatory prose mentions the
     # anti-pattern it warns against.
     code = "\n".join(line.split("//")[0] for line in raw.splitlines())

@@ -3,22 +3,22 @@
 Everything here is **best-effort and non-fatal**. The contract (see
 ``docs/UI_AUDIT_CONTRACT.md`` §4.5) is:
 
-* Every public function returns a plain value and never raises.
-* Every function reports *why* it degraded, so the UI can log it once and move
+- Every public function returns a plain value and never raises.
+- Every function reports *why* it degraded, so the UI can log it once and move
   on instead of silently looking broken.
-* Importing this module on Linux/macOS must succeed (it is imported by the
+- Importing this module on Linux/macOS must succeed (it is imported by the
   cross-platform test-suite).
 
 Feature surface
 ---------------
-* Click-through (``WS_EX_TRANSPARENT | WS_EX_LAYERED | WS_EX_NOACTIVATE``)
-* Always-on-top / bottom / no-activate z-ordering
-* Capture exclusion (``SetWindowDisplayAffinity`` WDA_EXCLUDEFROMCAPTURE)
-* Per-monitor DPI awareness v2
-* Dark/light theme + transparency + reduced-motion probes
-* Do-Not-Disturb probe (``SHQueryUserNotificationState``)
-* DWM rounded corners / system backdrop / immersive dark titlebar
-* Monitor enumeration with virtual-desktop coordinates
+- Click-through (``WS_EX_TRANSPARENT | WS_EX_LAYERED | WS_EX_NOACTIVATE``)
+- Always-on-top / bottom / no-activate z-ordering
+- Capture exclusion (``SetWindowDisplayAffinity`` WDA_EXCLUDEFROMCAPTURE)
+- Per-monitor DPI awareness v2
+- Dark/light theme + transparency + reduced-motion probes
+- Do-Not-Disturb probe (``SHQueryUserNotificationState``)
+- DWM rounded corners / system backdrop / immersive dark titlebar
+- Monitor enumeration with virtual-desktop coordinates
 """
 
 from __future__ import annotations
@@ -239,9 +239,12 @@ _UINT_PTR = ctypes.c_size_t
 _SIGNATURES: tuple[tuple[str, str, tuple, Any], ...] = (
     # window styles
     ("user32", "GetWindowLongW", (wintypes.HWND, ctypes.c_int), ctypes.c_long),
+    ("user32", "GetWindowLongPtrW", (wintypes.HWND, ctypes.c_int), _LRESULT),
     ("user32", "GetAsyncKeyState", (ctypes.c_int,), ctypes.c_short),
     ("user32", "SetWindowLongW", (wintypes.HWND, ctypes.c_int, ctypes.c_long),
      ctypes.c_long),
+    ("user32", "SetWindowLongPtrW", (wintypes.HWND, ctypes.c_int, _LRESULT),
+     _LRESULT),
     ("user32", "SetWindowPos",
      (wintypes.HWND, wintypes.HWND, ctypes.c_int, ctypes.c_int,
       ctypes.c_int, ctypes.c_int, _UINT_PTR), wintypes.BOOL),
@@ -690,8 +693,8 @@ def enumerate_monitors() -> list[Monitor]:
     if IS_WINDOWS and CAPS.user32 and wintypes is not None:
         try:
             MonitorEnumProc = ctypes.WINFUNCTYPE(
-                ctypes.c_int, ctypes.c_ulong, ctypes.c_ulong,
-                ctypes.POINTER(wintypes.RECT), ctypes.c_double)
+                wintypes.BOOL, wintypes.HMONITOR, wintypes.HDC,
+                ctypes.POINTER(wintypes.RECT), _LRESULT)
 
             class MONITORINFOEXW(ctypes.Structure):
                 _fields_ = [
@@ -793,7 +796,6 @@ def windows_build() -> int:
     except Exception:
         pass
     return 0
-
 
 
 def _has(lib: Any, *names: str) -> bool:

@@ -1,5 +1,6 @@
 import io
 import json
+import os
 import sys
 import time
 import cv2
@@ -26,6 +27,7 @@ API_CONFIG_PATH = BASE_DIR / "config" / "api_keys.json"
 IMG_MAX_W = 640
 IMG_MAX_H = 360
 JPEG_Q    = 55
+VISION_MODEL = os.environ.get("FRIDAY_VISION_MODEL", "gemini-3.8-flash")
 
 
 def _get_api_key() -> str:
@@ -115,7 +117,12 @@ def _capture_camera() -> bytes:
     return buf.tobytes()
 
 
-def _analyze_image_text(image_bytes: bytes, mime_type: str, user_text: str, model: str = "gemini-2.5-flash") -> str:
+def _analyze_image_text(
+    image_bytes: bytes,
+    mime_type: str,
+    user_text: str,
+    model: str = VISION_MODEL,
+) -> str:
     """Synchronous vision: send image + question to Gemini, return the text answer.
     This is the path that feeds vision results BACK into the main conversation."""
     import google.genai.types as gtypes
