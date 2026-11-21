@@ -20,6 +20,8 @@
 import json
 import sys
 import time
+
+from config.models import MODEL_FLASH_LITE
 import random
 import string
 import subprocess
@@ -388,7 +390,7 @@ def _analyze_screen_for_element(description: str) -> tuple[int, int] | None:
             api_key = json.load(f)["gemini_api_key"]
 
         genai.configure(api_key=api_key)
-        model = genai.GenerativeModel("gemini-2.5-flash-lite")
+        model = genai.GenerativeModel(MODEL_FLASH_LITE)
 
 
         _ensure_pyautogui()

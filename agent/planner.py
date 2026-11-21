@@ -3,6 +3,8 @@ import re
 import sys
 from pathlib import Path
 
+from config.models import MODEL_FLASH_LITE
+
 
 def get_base_dir() -> Path:
     if getattr(sys, "frozen", False):
@@ -213,7 +215,7 @@ def create_plan(goal: str, context: str = "") -> dict:
 
     genai.configure(api_key=_get_api_key())
     model = genai.GenerativeModel(
-        model_name="gemini-2.5-flash-lite",
+        model_name=MODEL_FLASH_LITE,
         system_instruction=PLANNER_PROMPT
     )
 

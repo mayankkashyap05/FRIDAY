@@ -9,6 +9,8 @@ import traceback
 from pathlib import Path
 
 from logger import setup_logger, log, log_tool
+from config.audio import (AUDIO_END_GRACE_S, SPEAKING_WATCHDOG_S,
+                          SPEAKING_WATCHDOG_TICK_S)
 
 for _stream in (sys.stdout, sys.stderr):
     try:
@@ -265,6 +267,18 @@ def _get_voice_from_memory(memory: dict | None) -> str:
     voice = entry.get("value") if isinstance(entry, dict) else entry
     voice = _normalize_voice(voice)
     return voice or "Aoede"
+
+
+def _speech_should_release(silent_for: float, queue_empty: bool) -> bool:
+    """True when a still-raised "speaking" flag should be dropped.
+
+    Shared by the player loop (which releases as soon as a finished turn's
+    audio has drained) and the watchdog (which releases a flag nothing else
+    cleared). Keeping it in one place is what stops the two from disagreeing
+    about when speech ends -- the previous watchdog used a fixed 25s ceiling
+    while the player used a single ``queue.empty()`` sample.
+    """
+    return bool(queue_empty) and silent_for > AUDIO_END_GRACE_S
 
 
 def _get_api_key() -> str:
@@ -1350,6 +1364,10 @@ class FridayLive:
         self._speaking_lock = threading.Lock()
         self._last_play_ts  = 0.0
         self._turn_complete = False
+        # Monotonic timestamp of the last chunk handed to the speaker. The
+        # watchdog measures silence from *this*, not from the last chunk
+        # that happened to arrive, so a stall inside a reply is detected.
+        self._last_audio_write_ts = 0.0
         self._ready         = False
         self._phase         = PHASE_IDLE
         self._phase_lock    = threading.Lock()
@@ -1533,8 +1551,20 @@ class FridayLive:
 
     def set_speaking(self, value: bool):
         with self._speaking_lock:
+            was = self._is_speaking
             self._is_speaking = value
-        self._set_phase(PHASE_SPEAKING if value else PHASE_LISTENING)
+        if value:
+            self._set_phase(PHASE_SPEAKING)
+        elif was:
+            # Releasing must be unconditional. `_set_phase(PHASE_LISTENING)`
+            # deliberately does nothing when muted, which left the machine (and
+            # therefore audio ducking) stuck on SPEAKING for the rest of the
+            # session. release_speech() always publishes the transition.
+            self._set_phase(PHASE_LISTENING)
+            try:
+                self.ui.stop_speaking()
+            except Exception:
+                self._set_phase(PHASE_LISTENING)
 
     def _persona_info(self) -> tuple[str, str, str]:
         """Return (mode, mood, voice) for the UI header badges."""
@@ -2620,13 +2650,32 @@ class FridayLive:
             pass
 
     async def _watch_speaking(self):
+        """Backstop for a "speaking" flag that nothing else released.
+
+        This used to fire on every normal reply: it compared against
+        ``_last_play_ts`` (the last chunk that *arrived* from the network) with
+        a 25s ceiling. Whenever the model went quiet to run a tool call, the
+        flag stayed set -- the player never sees a ``turn_complete`` in that
+        case -- and roughly one reply later the watchdog "force-cleared" a flag
+        that had simply been forgotten. Meanwhile audio ducking stayed engaged.
+
+        It now measures silence from the last chunk actually handed to the
+        speaker, and only clears when the queue has been empty for the whole
+        grace period, so it cannot cut a reply off mid-sentence.
+        """
         while True:
-            await asyncio.sleep(2)
+            await asyncio.sleep(SPEAKING_WATCHDOG_TICK_S)
             with self._speaking_lock:
                 speaking = self._is_speaking
-                last     = self._last_play_ts
-            if speaking and last and time.monotonic() - last > 25:
-                print("[FRIDAY] ⏱ Speaking watchdog fired — force-cleared")
+                last     = self._last_audio_write_ts
+            if not speaking or not last:
+                continue
+            silent_for = time.monotonic() - last
+            if (silent_for > SPEAKING_WATCHDOG_S
+                    and _speech_should_release(silent_for,
+                                               self.audio_in_queue.empty())):
+                print(f"[FRIDAY] ⏱ Speaking watchdog fired — "
+                      f"{silent_for:.1f}s of silence, force-cleared")
                 self.set_speaking(False)
 
     async def _receive_audio(self):
@@ -2724,7 +2773,29 @@ class FridayLive:
             )
             stream.start()
             while True:
-                chunk = await self.audio_in_queue.get()
+                # ── drain with a bounded wait ───────────────────────────────
+                # The old loop blocked forever on the first `get()`, so once a
+                # turn's audio had played out it could not notice that the
+                # reply was over until the *next* turn produced a chunk: the
+                # speaking flag and the audio ducking stayed engaged the whole
+                # time in between. Waiting with a timeout lets the release run
+                # between turns as well as within one.
+                try:
+                    chunk = await asyncio.wait_for(
+                        self.audio_in_queue.get(),
+                        timeout=SPEAKING_WATCHDOG_TICK_S,
+                    )
+                except asyncio.TimeoutError:
+                    silent_for = (time.monotonic()
+                                  - self._last_audio_write_ts)
+                    if self._is_speaking and (
+                            self._turn_complete
+                            or _speech_should_release(
+                                silent_for, self.audio_in_queue.empty())):
+                        self._turn_complete = False
+                        self.set_speaking(False)
+                    continue
+
                 if getattr(self.ui, "silent_mode", False):
                     self.set_speaking(False)
                     continue
@@ -2732,9 +2803,20 @@ class FridayLive:
                     self.set_speaking(True)
                 self._last_play_ts = time.monotonic()
                 await asyncio.to_thread(stream.write, chunk)
-                if self.audio_in_queue.empty() and self._turn_complete:
-                    self._turn_complete = False
-                    self.set_speaking(False)
+                self._last_audio_write_ts = time.monotonic()
+
+                # Release only after the queue has been *continuously* empty
+                # for the grace period. A single `.empty()` sample is true
+                # between every chunk at the network's natural pacing, which
+                # is what truncated replies mid-sentence.
+                if self._turn_complete and self.audio_in_queue.empty():
+                    deadline = time.monotonic() + AUDIO_END_GRACE_S
+                    while (time.monotonic() < deadline
+                           and self.audio_in_queue.empty()):
+                        await asyncio.sleep(0.02)
+                    if self.audio_in_queue.empty():
+                        self._turn_complete = False
+                        self.set_speaking(False)
         except Exception as e:
             print(f"[FRIDAY] ⚠️ Audio output failed ({e}) — running in silent mode")
             self.ui.write_log(f"SYS: Speaker unavailable ({str(e)[:60]}).")
@@ -2890,17 +2972,38 @@ def main():
     try:
         ui.root.mainloop()
     except KeyboardInterrupt:
+        # Should be rare: FridayUI.run() installs a SIGINT handler that routes
+        # Ctrl+C to Controller.request_quit(). This path remains for an
+        # interrupt that lands before the handler is installed.
         print("\n🛑 Stopping Friday (Ctrl+C)...")
+        _graceful_shutdown(ui)
+        print("👋 Shut down cleanly. See you, sir!")
+
+
+def _graceful_shutdown(ui) -> None:
+    """Stop the tray, restore ducked audio, close the windows. Never raises.
+
+    Shared by the Ctrl+C path and the normal exit so the two cannot drift:
+    both used to be inline and only one of them stopped the tray.
+    """
+    controller = getattr(ui, "controller", None)
+    if controller is not None:
+        try:
+            # shutdown() restores audio ducking, stops the tray and closes the
+            # windows, and is idempotent.
+            controller.shutdown()
+        except Exception as exc:
+            print(f"[FRIDAY] ⚠️ controller shutdown: {exc}")
+    else:  # pragma: no cover - Tk fallback
         try:
             from actions.system_tray import stop as _tray_stop
             _tray_stop()
         except Exception:
             pass
-        try:
-            ui.root.destroy()
-        except Exception:
-            pass
-        print("👋 Shut down cleanly. See you, sir!")
+    try:
+        ui.root.destroy()
+    except Exception:
+        pass
 
 
 if __name__ == "__main__":

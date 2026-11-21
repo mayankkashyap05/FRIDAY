@@ -472,6 +472,11 @@ class FridayUI:
         self.connected = self.connected
         if not self.muted and not self.silent_mode:
             self._dispatch(self.state_machine.stop_speaking)
+        else:
+            # Muted / text-only: the branch above used to do *nothing*, so the
+            # machine stayed on SPEAKING and the controller never restored the
+            # audio it had ducked. release_speech() always emits a transition.
+            self._dispatch(self.state_machine.release_speech, "stop_speaking")
 
     # ── public API — transcript ──────────────────────────────────────────────
     def write_log(self, text: str) -> None:
@@ -692,11 +697,22 @@ class FridayUI:
             QTimer.singleShot(0, self._flush_pending_logs)
         except Exception:
             self._flush_pending_logs()
+        # Ctrl+C: turn it into an orderly teardown. Installed here (not in the
+        # controller's __init__, which the verifier and the tests also use) so
+        # only a real interactive run owns the process-wide handler. Must happen
+        # before exec(), otherwise the first Python frame SIGINT reaches is a
+        # timer callback inside UiDispatcher.drain and it escapes as a bare
+        # KeyboardInterrupt traceback with no teardown at all.
+        if not self.controller.install_interrupt_handler():
+            print("[UI] ⚠️ Could not install the Ctrl+C handler "
+                  "(not on the main thread?) — use the tray Quit item.")
+
         code = 0
         try:
             code = int(self._app.exec())
         except KeyboardInterrupt:
-            code = 0
+            # Belt and braces: a SIGINT that slips past the handler.
+            code = 130
         finally:
             try:
                 self.controller.shutdown()

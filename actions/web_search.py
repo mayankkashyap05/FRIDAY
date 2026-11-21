@@ -7,6 +7,8 @@ import json
 import sys
 from pathlib import Path
 
+from config.models import MODEL_FLASH_LITE
+
 
 def get_base_dir() -> Path:
     if getattr(sys, "frozen", False):
@@ -26,7 +28,7 @@ def _gemini_search(query: str) -> str:
 
     client = genai.Client(api_key=_get_api_key())
     response = client.models.generate_content(
-        model="gemini-2.5-flash-lite",
+        model=MODEL_FLASH_LITE,
         contents=query,
         config={"tools": [{"google_search": {}}]}
     )

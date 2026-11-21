@@ -2,6 +2,8 @@ import json
 import re
 import sys
 from pathlib import Path
+
+from config.models import MODEL_FLASH_LITE
 from enum import Enum
 
 
@@ -92,7 +94,7 @@ def analyze_error(
 
     genai.configure(api_key=_get_api_key())
     model = genai.GenerativeModel(
-        model_name="gemini-2.5-flash-lite",
+        model_name=MODEL_FLASH_LITE,
         system_instruction=ERROR_ANALYST_PROMPT
     )
 
