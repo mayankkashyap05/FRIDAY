@@ -122,9 +122,15 @@ Item {
         }
 
         onPaint: {
-            var ctx = getContext("2d")
+            // Guard against zero-size or NaN canvas (e.g. during window
+            // resize / before first layout) — CanvasGradient would otherwise
+            // receive NaN radii/stops and crash onPaint.
             var w = canvas.width
             var h = canvas.height
+            if (w <= 0 || h <= 0 || !Number.isFinite(w) || !Number.isFinite(h))
+                return
+
+            var ctx = getContext("2d")
             var cx = w / 2
             var cy = h / 2
             var r = Math.min(w, h) / 2 * 0.90   // sphere radius inside canvas
@@ -136,8 +142,43 @@ Item {
             var muteFactor = muted ? 0.4 : 1
 
             // ── QML color → CSS "rgba(r,g,b,a)" helper ──────────────────
+            // Accepts either a QColor (Theme.*) or a "#RRGGBB" / "#AARRGGBB"
+            // string.  Always clamps to valid CSS ranges so CanvasGradient
+            // never receives an invalid colour string (which crashes onPaint
+            // at 60 FPS on Windows).
             function toCss(c, a) {
-                return "rgba(" + c.r + ", " + c.g + ", " + c.b + ", " + a + ")"
+                var r, g, b, alpha
+                if (typeof c === "string") {
+                    // Parse "#RRGGBB" or "#AARRGGBB".
+                    var hex = c.replace(/^#/, "")
+                    if (hex.length === 6) {
+                        r = parseInt(hex.substring(0, 2), 16)
+                        g = parseInt(hex.substring(2, 4), 16)
+                        b = parseInt(hex.substring(4, 6), 16)
+                        alpha = 1.0
+                    } else if (hex.length === 8) {
+                        alpha = parseInt(hex.substring(0, 2), 16) / 255
+                        r = parseInt(hex.substring(2, 4), 16)
+                        g = parseInt(hex.substring(4, 6), 16)
+                        b = parseInt(hex.substring(6, 8), 16)
+                    } else {
+                        r = g = b = 0
+                        alpha = 0
+                    }
+                } else {
+                    // QColor: .r/.g/.b are 0..255 ints, .a is 0..1 real.
+                    r = c.r
+                    g = c.g
+                    b = c.b
+                    alpha = c.a
+                }
+                // Clamp every channel so CanvasGradient always gets a valid string.
+                r = Math.max(0, Math.min(255, Math.round(r)))
+                g = Math.max(0, Math.min(255, Math.round(g)))
+                b = Math.max(0, Math.min(255, Math.round(b)))
+                alpha = Math.max(0, Math.min(1, Number.isFinite(a) ? a : alpha))
+                alpha = Number(alpha.toFixed(3))
+                return "rgba(" + r + ", " + g + ", " + b + ", " + alpha + ")"
             }
 
             // ────────────────────────────────────────────────────────────

@@ -568,20 +568,18 @@ def test_legacy_state_strings_resolve(legacy, expected):
     assert UiState.coerce(legacy).value == expected
 
 
-def test_full_lifecycle_on_the_bridge():
+def test_full_lifecycle_on_the_bridge(qt_app):
     """DORMANT -> LISTENING -> THINKING -> ACTING -> SPEAKING -> ERROR -> DORMANT.
 
     Walks the machine exactly as main.py drives it (string states through
     coerce_legacy) and checks the *bridge* surface QML reads, which is what the
     verifier asserted on Windows.
     """
-    from PySide6.QtCore import QCoreApplication
-
-    app = QCoreApplication.instance() or QCoreApplication([])
     from ui_siri.bridge import UiBridge, UiDispatcher
     from ui_siri.event_bus import EventBus
     from ui_siri.state_machine import AssistantStateMachine
 
+    app = qt_app
     machine = AssistantStateMachine()
     dispatcher = UiDispatcher()
     dispatcher.bind_gui_thread()
