@@ -27,6 +27,7 @@ pywinauto>=0.6.8
 keyboard>=0.13.5
 pystray>=0.19.5
 winotify>=1.1.0
+pytest
 
 # Document & Web Operations
 beautifulsoup4>=4.12.0
