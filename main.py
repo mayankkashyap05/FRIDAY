@@ -28,7 +28,7 @@ except ModuleNotFoundError:
     genai = None
     types = None
 
-from ui import FridayUI
+from ui import FridayUI, make_ui
 from memory.memory_manager import (
     load_memory, update_memory, format_memory_for_prompt,
     should_extract_memory, extract_memory
@@ -1410,10 +1410,22 @@ class FridayLive:
                 from actions.wake_word import _pick_engine
                 return _pick_engine()[1]._running
 
+            def _sync_wake_ui():
+                """Mirror wake-word state into the Inspector's Wake tab."""
+                controller = getattr(self.ui, "controller", None)
+                if controller is None or not hasattr(controller, "set_wake_status"):
+                    return
+                try:
+                    active = bool(_wake_active())
+                    controller.set_wake_status(
+                        active,
+                        "Listening for \"Hey Friday\"" if active else "Engine idle")
+                except Exception:
+                    pass
+
             def _toggle_wake():
                 try:
                     from actions.wake_word import _pick_engine
-                    from actions.friday_wake import _matcher as kw_matcher
                     name, eng = _pick_engine()
                     if not eng.available:
                         print("[Tray] ⚠️ Wake word engine not ready:", name)
@@ -1425,6 +1437,7 @@ class FridayLive:
                         r = eng.start()
                     print(f"[Tray] {r}")
                     self.ui.write_log(f"SYS: {r}")
+                    _sync_wake_ui()
                 except Exception as e:
                     print(f"[Tray] ⚠️ {e}")
 
@@ -1472,6 +1485,7 @@ class FridayLive:
                     pystray.MenuItem("🚪 Quit Friday", _quit, default=True),
                 )
 
+            _sync_wake_ui()
             tray_ok   = system_tray.configure_icon(menu_factory)
             hot_ok    = system_tray.register_hotkeys(callbacks)
             print(f"[Tray] 🖥 Tray: {'on' if tray_ok else 'off'} | Hotkeys: {hot_ok} registered ({system_tray.available()})")
@@ -1482,6 +1496,27 @@ class FridayLive:
     def _mark_human_confirmed(self):
         self._human_confirmed = True
         print("[FRIDAY] 🛡️ Human confirmation verified out-of-band.")
+
+    def flush_audio(self):
+        """Drop queued TTS when the user switches to text-only mode."""
+        queue_ref = self.audio_in_queue
+        if queue_ref is None:
+            return
+        dropped = 0
+        try:
+            while True:
+                queue_ref.get_nowait()
+                dropped += 1
+        except asyncio.QueueEmpty:
+            pass
+        except Exception:
+            pass
+        if dropped:
+            print(f"[FRIDAY] 🔇 Text-only mode: dropped {dropped} queued audio chunk(s)")
+
+    def _on_silent_change(self, silent: bool):
+        if silent:
+            self.flush_audio()
 
     def _on_text_command(self, text: str):
         _words = set(re.findall(r"\w+", (text or "").lower()))
@@ -2823,19 +2858,29 @@ def main():
     _ensure_core_deps()
     log_file = setup_logger(BASE_DIR)
     log(f"Base dir: {BASE_DIR}\nLog file: {log_file}")
-    ui = FridayUI("face.png")
+    ui = make_ui("face.png")
 
     def runner():
+        # The tray icon owns a Win32 message loop, so it must be created from
+        # the thread that owns the UI's event loop (the main thread), never from
+        # this worker. We hand it back through `root.after`, which is
+        # thread-safe in both the Tk and Qt implementations.
         ui.wait_for_api_key()
         friday = FridayLive(ui)
-        friday.attach_tray()
+        try:
+            ui.root.after(0, friday.attach_tray)
+        except Exception:
+            friday.attach_tray()
         try:
             asyncio.run(friday.run())
         except KeyboardInterrupt:
             print("\n🔴 Shutting down...")
 
     threading.Thread(target=runner, daemon=True).start()
-    ui.root.report_callback_exception = _tk_exception_handler
+    try:
+        ui.root.report_callback_exception = _tk_exception_handler
+    except Exception:
+        pass
     try:
         ui.root.mainloop()
     except KeyboardInterrupt:

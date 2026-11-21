@@ -1,0 +1,4 @@
+module ui_siri.qml
+
+singleton Theme 1.0 Theme.qml
+PerimeterGlow 1.0 PerimeterGlow.qml
