@@ -19,6 +19,7 @@ Item {
     required property bool reducedMotion
 
     property bool expanded: false
+    property bool presence: true
     property int maxRows: 4
 
     signal cancel(string aid)
@@ -36,11 +37,11 @@ Item {
     // bindings below stay *bindings*. An imperative `bar.visible = ...` in a
     // signal handler would silently break them after the first insert.
     property int agentCount: 0
-    visible: agentCount > 0 || expanded
+    visible: presence && (agentCount > 0 || expanded)
     // Zero height and zero hit area while asleep, so the column above the orb
     // carries no invisible band and no click-stealing region.
     height: visible ? implicitHeight : 0
-    opacity: agentCount > 0 ? 1.0 : 0.0
+    opacity: visible && agentCount > 0 ? 1.0 : 0.0
     Behavior on opacity { NumberAnimation { duration: Theme.durShort } }
     Behavior on implicitHeight {
         NumberAnimation {
@@ -254,7 +255,7 @@ Item {
                         anchors.verticalCenter: parent.verticalCenter
                         width: rows.width - Math.round(140 * Theme.uiScale)
                         text: parent.role("detail", "")
-                        color: Theme.withAlpha(Theme.mid, 0.95)
+                        color: Theme.withAlpha(Theme.textOnGlass, 0.46)
                         font.pixelSize: Theme.fontXS
                         elide: Text.ElideRight
                     }

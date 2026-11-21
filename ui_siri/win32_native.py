@@ -239,6 +239,7 @@ _UINT_PTR = ctypes.c_size_t
 _SIGNATURES: tuple[tuple[str, str, tuple, Any], ...] = (
     # window styles
     ("user32", "GetWindowLongW", (wintypes.HWND, ctypes.c_int), ctypes.c_long),
+    ("user32", "GetAsyncKeyState", (ctypes.c_int,), ctypes.c_short),
     ("user32", "SetWindowLongW", (wintypes.HWND, ctypes.c_int, ctypes.c_long),
      ctypes.c_long),
     ("user32", "SetWindowPos",
@@ -955,11 +956,26 @@ def summary() -> str:
     return ", ".join(bits) + (f" | {reasons}" if reasons else "")
 
 
+VK_ESCAPE = 0x1B
+
+
+def key_is_down(virtual_key: int) -> bool:
+    """Non-invasive global key-state query; always False off Windows."""
+    if not IS_WINDOWS or not CAPS.user32:
+        return False
+    try:
+        return bool(user32.GetAsyncKeyState(int(virtual_key)) & 0x8000)
+    except Exception:
+        return False
+
+
 __all__ = [
     "IS_WINDOWS",
     "Capabilities",
     "CAPS",
     "Monitor",
+    "VK_ESCAPE",
+    "key_is_down",
     "probe",
     "summary",
     "warned",

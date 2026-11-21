@@ -318,7 +318,7 @@ Item {
                 width: parent.width - (closeBtn.visible ? 22 : 0)
                 text: card.footer
                 visible: text.length > 0
-                color: Theme.withAlpha(Theme.mid, 0.9)
+                color: Theme.withAlpha(Theme.textOnGlass, 0.46)
                 font.pixelSize: Theme.fontXS
                 font.family: Theme.fontText
                 elide: Text.ElideRight

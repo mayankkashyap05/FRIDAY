@@ -125,15 +125,66 @@ Item {
 
     onInvokedChanged: {
         if (invoked) {
-            orb.summoning = true
+            dismissalTimer.stop()
             orb.dismissing = false
+
+            // Explicitly clear the latch: after the first dismissal it would
+            // otherwise still be true and no second summon would be emitted.
+            orb.summoning = false
+            orb.summoning = true
         } else {
+            orb.summoning = false
             orb.dismissing = true
             root.typing = false
-            // Let the contraction finish before the controller hides the
-            // native window (dismissalAnimation runs ~400 ms).
+            interactiveRegions = []
             dismissalTimer.start()
         }
+
+        Qt.callLater(root.refreshInteractiveRegions)
+    }
+
+    // Visible interactive geometry in stage/window coordinates. The controller
+    // uses this to apply native click-through outside the actual Siri surfaces.
+    property var interactiveRegions: []
+
+    function appendRegion(list, item, shape) {
+        if (!item || !item.visible || item.opacity <= 0.02
+                || item.width <= 0 || item.height <= 0)
+            return
+
+        const p = item.mapToItem(root, 0, 0)
+        list.push({
+            "x": p.x,
+            "y": p.y,
+            "width": item.width,
+            "height": item.height,
+            "shape": shape || "rect"
+        })
+    }
+
+    function refreshInteractiveRegions() {
+        const next = []
+        if (root.invoked) {
+            appendRegion(next, orbHit, "ellipse")
+            appendRegion(next, stack)
+            appendRegion(next, transcriptRow)
+
+            if (activityBar.visible)
+                appendRegion(next, activityBar)
+            if (typePill.visible)
+                appendRegion(next, typePill)
+            if (setup.visible)
+                appendRegion(next, setup)
+        }
+        interactiveRegions = next
+    }
+
+    Timer {
+        interval: 80
+        repeat: true
+        running: root.invoked
+        triggeredOnStart: true
+        onTriggered: root.refreshInteractiveRegions()
     }
 
     Timer {
@@ -235,6 +286,7 @@ Item {
             // ── LiveActivityBar ── only while background work runs ──────
             LiveActivityBar {
                 id: activityBar
+                presence: root.invoked
                 // The bar owns its visibility (agentCount > 0); forcing it on
                 // with `root.invoked` would paint an empty 30px glass slab
                 // under the cards and steal clicks over a blank band.
@@ -262,7 +314,7 @@ Item {
                 Rectangle {
                     anchors.fill: parent
                     radius: height / 2
-                    color: Theme.withAlpha(Theme.dimmer, 0.42 * Theme.glass)
+                    color: Theme.withAlpha(Theme.dimmer, 0.24 * Theme.glass)
                 }
 
                 Text {
@@ -318,9 +370,14 @@ Item {
                     // Clicking the orb is the only way to ask for a keyboard:
                     // voice invocation never takes focus.
                     MouseArea {
-                        anchors.fill: parent
+                        id: orbHit
+                        width: orb.orbSize
+                        height: orb.orbSize
+                        anchors.centerIn: parent
                         acceptedButtons: Qt.LeftButton
-                        cursorShape: Qt.IBeamCursor
+                        cursorShape: Qt.PointingHandCursor
+                        hoverEnabled: true
+
                         onClicked: {
                             root.typing = !root.typing
                             root.interaction()
@@ -333,9 +390,7 @@ Item {
             TypeToSiriPill {
                 id: typePill
                 anchors.horizontalCenter: parent.horizontalCenter
-                visible: root.typing && root.invoked
-                opacity: visible ? 1 : 0
-                Behavior on opacity { NumberAnimation { duration: Theme.durShort } }
+                open: root.typing && root.invoked
                 bridge: root.bridge
                 reducedMotion: root.reducedMotion
 
@@ -349,7 +404,8 @@ Item {
             // ── SetupCard ── first-run onboarding (only before a key) ────
             SetupCard {
                 id: setup
-                visible: root.bridge ? root.bridge.setupVisible : false
+                visible: root.invoked
+                         && (root.bridge ? root.bridge.setupVisible : false)
                 anchors.horizontalCenter: parent.horizontalCenter
                 width: Math.round(360 * Theme.uiScale)
                 reducedMotion: root.reducedMotion
