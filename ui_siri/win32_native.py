@@ -59,9 +59,16 @@ WDA_EXCLUDEFROMCAPTURE = 0x00000011  # Windows 10 2004+
 DWMWA_USE_IMMERSIVE_DARK_MODE = 20
 DWMWA_WINDOW_CORNER_PREFERENCE = 33
 DWMWA_SYSTEMBACKDROP_TYPE = 38
+DWMWA_BORDER_COLOR = 34
+DWMWA_NCRENDERING_ENABLED = 1
+DWMWA_NCRENDERING_POLICY = 2
 DWMWCP_ROUND = 2
+DWMWCP_DONOTROUND = 1
 DWMSBT_TRANSIENTWINDOW = 3
 DWMSBT_MAINWINDOW = 2
+DWMNCRP_DISABLED = 1
+#: COLORREF sentinel: DWM draws no border at all.
+DWMWA_COLOR_NONE = 0xFFFFFFFE
 
 SPI_GETCLIENTAREAANIMATION = 0x1042
 SPI_GETACTIVEWINDOWTX = 0x1024
@@ -485,6 +492,49 @@ def apply_dwm_polish_no_backdrop(window: Any, dark: bool = True,
         pass
     # NOTE: deliberately do NOT set DWMWA_SYSTEMBACKDROP_TYPE here.
     return result
+
+
+def apply_dwm_naked(window: Any) -> bool:
+    """Strip **all** DWM decoration from an HWND: no rounded corners, no
+    border, no non-client shadow.
+
+    SiriWindow must present a completely naked window on Windows 11 — zero
+    visible outline, border, shadow, or rectangle anywhere.  This is the
+    opposite of ``apply_dwm_polish``: we explicitly request
+    ``DWMWCP_DONOTROUND`` so DWM does *not* draw its 1px rounded border,
+    and ``DWMWA_COLOR_NONE`` so there is no border color to paint.
+    ``DWMNCRP_DISABLED`` turns off non-client rendering (shadow) too.
+
+    Returns True if every attribute was applied; False on any failure.
+    Every failure is non-fatal: the window still works, it just may show a
+    subtle DWM outline on some builds.
+    """
+    hwnd = _hwnd(window)
+    if not hwnd or not CAPS.dwmapi:
+        return False
+    ok = True
+    try:
+        pref = ctypes.c_int(DWMWCP_DONOTROUND)
+        ok = dwmapi.DwmSetWindowAttribute(
+            hwnd, DWMWA_WINDOW_CORNER_PREFERENCE,
+            ctypes.byref(pref), ctypes.sizeof(pref)) == 0
+    except Exception:
+        ok = False
+    try:
+        none = ctypes.c_int(DWMWA_COLOR_NONE)
+        dwmapi.DwmSetWindowAttribute(
+            hwnd, DWMWA_BORDER_COLOR,
+            ctypes.byref(none), ctypes.sizeof(none))
+    except Exception:
+        ok = False
+    try:
+        policy = ctypes.c_int(DWMNCRP_DISABLED)
+        dwmapi.DwmSetWindowAttribute(
+            hwnd, DWMWA_NCRENDERING_POLICY,
+            ctypes.byref(policy), ctypes.sizeof(policy))
+    except Exception:
+        ok = False
+    return ok
 
 
 def enable_alpha_buffer() -> bool:
@@ -918,6 +968,7 @@ __all__ = [
     "keep_on_top",
     "exclude_from_capture",
     "apply_dwm_polish",
+    "apply_dwm_naked",
     "system_dark_mode",
     "transparency_enabled",
     "animations_enabled",
