@@ -977,7 +977,10 @@ class UiController:
             self.dispatcher.call(self.bridge.toggleSilent)
             return
         if kind == protocol.C_CANCEL:
-            self.dispatcher.call(self.bridge.cancel)
+            # Escape in the renderer is a *dismissal*, not just a mute: cancel
+            # whatever is being spoken/produced and contract the overlay. Both
+            # halves run on the UI thread so no state can land between them.
+            self.dispatcher.call(self._on_cancel)
             return
         if kind == protocol.C_BARGE_IN:
             self.dispatcher.call(self.bridge.bargeIn)
@@ -1081,11 +1084,24 @@ class UiController:
         """Dismiss Siri: the orb contracts, then the window hides."""
         self.dispatcher.call(self._hide_ui)
 
+    def _on_cancel(self) -> None:
+        """The renderer pressed Escape: stop the turn *and* hide the stage."""
+        try:
+            self.bridge.cancel()
+        finally:
+            self._hide_ui()
+
     def _hide_ui(self) -> None:
         self._hidden = True
         self._typing = False
         self._pointer_inside = False
         self._dismiss_deadline = None
+        # Never let a re-summon flash the previous session's last utterance
+        # before the new one arrives.
+        try:
+            self.bridge.clear_live_transcript()
+        except Exception:  # pragma: no cover - defensive
+            pass
         self.bridge.set_invoked(False)
 
     def invoke(self) -> None:
@@ -1116,6 +1132,11 @@ class UiController:
             except Exception:
                 pass
         self._dismiss_deadline = None
+        # Same contract as _hide_ui: a dismissed stage never keeps a stale line.
+        try:
+            self.bridge.clear_live_transcript()
+        except Exception:  # pragma: no cover - defensive
+            pass
         self.bridge.set_invoked(False)
 
     def raise_window(self) -> None:
@@ -1324,7 +1345,8 @@ class UiController:
     def request_quit(self) -> None:
         """Thread-safe "please exit": post the teardown to the UI thread."""
         def _quit() -> None:
-            print("[FRIDAY] 👋 Tray stopped, audio restored, UI closed.")
+            # The farewell is logged by ``shutdown()`` — exactly once, no matter
+            # how many paths raced here.
             self.shutdown()
             self._closed.set()
 
@@ -1342,6 +1364,7 @@ class UiController:
         if self._shutdown_done:
             return
         self._shutdown_done = True
+        print("[FRIDAY] 👋 Tray stopped, audio restored, UI closed.")
         self._cancel_dismissal()
 
         tick_stop = getattr(self, "_tick_stop", None)

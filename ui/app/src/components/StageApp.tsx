@@ -1,8 +1,9 @@
 import { AnimatePresence, motion } from "motion/react";
 import { X } from "lucide-react";
-import { useCallback, useEffect, useMemo, useReducer, useState } from "react";
+import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from "react";
 
 import { useFridaySocket, initialUiState, applyMessage } from "../hooks/useFridaySocket";
+import { useInteractiveRegion } from "../hooks/useInteractiveRegion";
 import type {
   AssistantState,
   CardItem,
@@ -114,6 +115,8 @@ export function StageApp() {
   const connected = socket.connected;
   const live = socket.ui;
   const ui = live.ready || connected ? live : devUi;
+  /** Summoned = the orb is (or is about to be) on screen. */
+  const invoked = ui.state.invoked;
 
   // The renderer boots before the socket exists, so "not connected" is normal
   // for the first second. Only call it a dev session once nothing has arrived.
@@ -157,11 +160,18 @@ export function StageApp() {
   useThemeVars(ui.theme);
 
   // ── focus / window discipline ─────────────────────────────────────────────
+  // Summoning by voice must NEVER steal focus from Notepad/VS Code/games.
+  // Only a surface that genuinely needs the keyboard — the type-to-Siri pill or
+  // the first-run setup card — makes the stage focusable.
+  const setupVisible = ui.setup.visible;
   useEffect(() => {
-    window.fridayAPI?.setEscapeArmed(ui.state.invoked);
-    window.fridayAPI?.setFocusable(ui.state.invoked);
-    window.fridayAPI?.setInvoked(ui.state.invoked);
-  }, [ui.state.invoked]);
+    window.fridayAPI?.setEscapeArmed(invoked);
+    window.fridayAPI?.setInvoked(invoked);
+  }, [invoked]);
+
+  useEffect(() => {
+    window.fridayAPI?.setFocusable(typing || setupVisible);
+  }, [typing, setupVisible]);
 
   const dismiss = useCallback(() => {
     setTyping(false);
@@ -199,6 +209,17 @@ export function StageApp() {
     }
   }, [ui.inspector.open, ui.inspector.tab]);
 
+  // Python closing the inspector (or the user closing it with its ×) must
+  // tear the second BrowserWindow down too — a true→false edge, not a level.
+  const inspectorOpen = ui.inspector.open;
+  const wasInspectorOpen = useRef(false);
+  useEffect(() => {
+    if (wasInspectorOpen.current && !inspectorOpen) {
+      window.fridayAPI?.closeInspector();
+    }
+    wasInspectorOpen.current = inspectorOpen;
+  }, [inspectorOpen]);
+
   useEffect(() => {
     const off = window.fridayAPI?.onInspectorClosed(() => {
       send({ t: "close_inspector" });
@@ -234,8 +255,13 @@ export function StageApp() {
   );
 
   const handleOrbDismissed = useCallback(() => {
-    send({ t: "window_dismissed" });
-  }, [send]);
+    // The contraction finished. Only a stage that is still *not* summoned may
+    // drop its HWND — hiding a live setup card would strand the user.
+    if (!invoked) {
+      window.fridayAPI?.hideStage();
+      send({ t: "window_dismissed" });
+    }
+  }, [invoked, send]);
 
   const injectedCards = useMemo(() => ui.cards, [ui.cards]);
   const confirmationWaiting = injectedCards.some((card) => card.kind === "confirmation");
@@ -250,7 +276,26 @@ export function StageApp() {
     return () => window.clearTimeout(timer);
   }, [toast]);
 
+  // FRIDAY's own streaming words are the only honest amplitude source while
+  // she speaks (the mic is muted during TTS), so each growth of the live line
+  // becomes a syllabic impulse the orb can feel.
+  const [speechPulse, setSpeechPulse] = useState(0);
+  const lastTranscriptLength = useRef(0);
+  useEffect(() => {
+    const length = ui.liveTranscript.length;
+    if (ui.state.speaking && length > lastTranscriptLength.current) {
+      setSpeechPulse((value) => value + 1);
+    }
+    lastTranscriptLength.current = length;
+  }, [ui.liveTranscript, ui.state.speaking]);
+
   const arcadeOpen = ui.arcade.open;
+  // A pinned region: the arcade feed must be hittable (close button, score
+  // chips) for as long as it covers the stage, not only while hovered.
+  const arcadeRegion = useInteractiveRegion({
+    pinned: arcadeOpen,
+    onChange: notifyInteraction,
+  });
 
   const injectCard = (kind: CardKind) => {
     fakeCounter += 1;
@@ -299,7 +344,13 @@ export function StageApp() {
         onTyping={(value) => send({ t: "typing_changed", value })}
       />
 
-      <div className="relative flex h-[204px] w-[204px] items-center justify-center">
+      <motion.div
+        className="relative flex h-[204px] w-[204px] items-center justify-center"
+        animate={{ opacity: setupVisible ? 0 : 1, scale: setupVisible ? 0.92 : 1 }}
+        transition={{ type: "spring", stiffness: 380, damping: 30 }}
+        style={{ pointerEvents: setupVisible ? "none" : "auto" }}
+        aria-hidden={setupVisible}
+      >
         <SiriOrb
           invoked={ui.state.invoked}
           state={ui.state.state as AssistantState}
@@ -309,11 +360,13 @@ export function StageApp() {
           attention={confirmationWaiting}
           errorSignal={errorSignal}
           reducedMotion={reducedMotion}
+          acting={ui.activeCount > 0 || ui.state.state === "PROCESSING"}
+          speechPulse={speechPulse}
           onActivate={() => setTyping(true)}
           onDismissed={handleOrbDismissed}
           onInteraction={notifyInteraction}
         />
-      </div>
+      </motion.div>
 
       {/* Vision pip: only while the camera preview is open. */}
       {ui.vision.previewOpen && frames.vision ? (
@@ -333,7 +386,8 @@ export function StageApp() {
       <AnimatePresence>
         {arcadeOpen ? (
           <motion.div
-            className="absolute inset-0 z-30 flex flex-col items-center justify-center bg-black/70 backdrop-blur-sm"
+            {...arcadeRegion.regionProps}
+            className={`${arcadeRegion.regionProps.className} absolute inset-0 z-30 flex flex-col items-center justify-center bg-black/70 backdrop-blur-sm`}
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
@@ -395,6 +449,9 @@ export function StageApp() {
         <div className="pointer-events-auto">
           <SetupCard
             open={ui.setup.visible}
+            error={
+              ui.setup.visible && ui.toast?.severity === "error" ? ui.toast.text : ""
+            }
             onSubmitKey={(key) => send({ t: "submit_api_key", key })}
             onInteraction={notifyInteraction}
           />

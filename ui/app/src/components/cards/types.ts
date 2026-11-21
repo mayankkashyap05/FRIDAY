@@ -8,6 +8,8 @@ export interface CardProps {
   onDismiss: (uid: string) => void;
   /** Confirmation cards only: send an affirmative/negative reply. */
   onReply?: (text: string) => void;
+  /** Hover enter/leave → Electron interactive region (click-through). */
+  onInteraction?: (inside: boolean) => void;
 }
 
 export function payloadNumber(value: unknown): number | null {

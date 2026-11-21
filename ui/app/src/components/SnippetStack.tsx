@@ -47,7 +47,12 @@ export interface SnippetStackProps {
  * `CardsModel` prepends, so `cards[0]` is the newest; `flex-col-reverse` puts
  * the newest card nearest the orb and lets older ones rise out of the top of
  * the screen. Capped at 3 visible so a burst of tool output never becomes a
- * wall of glass over the user's work.
+ * wall of glass over the user's work, and capped again at 340 px with a soft
+ * top fade so a tall card can never be clipped square against the stage edge.
+ *
+ * Each card owns its own interaction region (Electron click-through is
+ * per-HWND), so the stack only forwards `onInteraction` for Python's
+ * reading-grace timer.
  */
 export function SnippetStack({
   cards,
@@ -61,9 +66,7 @@ export function SnippetStack({
 
   return (
     <div
-      className="interactive pointer-events-auto flex w-full flex-col-reverse items-center gap-2"
-      onPointerEnter={() => onInteraction?.(true)}
-      onPointerLeave={() => onInteraction?.(false)}
+      className="interactive pointer-events-auto flex max-h-[340px] w-full flex-col-reverse items-center gap-2 overflow-hidden [mask-image:linear-gradient(180deg,transparent_0%,#000_4%)]"
       aria-live="polite"
       aria-label="FRIDAY results"
     >
@@ -77,6 +80,7 @@ export function SnippetStack({
               index={visible.indexOf(card)}
               onDismiss={onDismiss}
               onReply={onReply}
+              onInteraction={onInteraction}
             />
           );
         })}

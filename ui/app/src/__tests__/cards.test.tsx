@@ -124,8 +124,95 @@ describe("typed snippet cards", () => {
     );
     fireEvent.click(screen.getByRole("button", { name: "Approve" }));
     expect(onReply).toHaveBeenCalledWith("yes, I approve");
+  });
+
+  it("sends the exact denial phrase", () => {
+    const onReply = vi.fn();
+    render(
+      <ConfirmationCard
+        card={makeCard("confirmation", {}, "Delete 42 files?")}
+        index={0}
+        onDismiss={noop}
+        onReply={onReply}
+      />,
+    );
     fireEvent.click(screen.getByRole("button", { name: "Deny" }));
     expect(onReply).toHaveBeenCalledWith("no, cancel that");
+  });
+
+  it("locks both consent buttons after the first answer (double-click guard)", () => {
+    const onReply = vi.fn();
+    render(
+      <ConfirmationCard
+        card={makeCard("confirmation", {}, "Delete 42 files?")}
+        index={0}
+        onDismiss={noop}
+        onReply={onReply}
+      />,
+    );
+    const approve = screen.getByRole("button", { name: "Approve" });
+    fireEvent.click(approve);
+    fireEvent.click(approve);
+    fireEvent.click(screen.getByRole("button", { name: "Deny" }));
+    expect(onReply).toHaveBeenCalledTimes(1);
+    expect(onReply).toHaveBeenCalledWith("yes, I approve");
+  });
+
+  it("emits real control commands from the volume steppers", () => {
+    const onReply = vi.fn();
+    render(
+      <ControlPillCard
+        card={makeCard("control", { label: "Volume", value: 60, unit: "%" })}
+        index={0}
+        onDismiss={noop}
+        onReply={onReply}
+      />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Increase Volume" }));
+    expect(onReply).toHaveBeenLastCalledWith("set volume to 65%");
+    fireEvent.click(screen.getByRole("button", { name: "Decrease Volume" }));
+    expect(onReply).toHaveBeenLastCalledWith("set volume to 55%");
+  });
+
+  it("keeps the steppers inert without a reply channel", () => {
+    render(
+      <ControlPillCard
+        card={makeCard("control", { label: "Brightness", value: 40 })}
+        index={0}
+        onDismiss={noop}
+      />,
+    );
+    expect(screen.getByRole("button", { name: "Increase Brightness" })).toBeDisabled();
+  });
+
+  it("expands a long document answer on demand", () => {
+    render(
+      <DocumentQACard
+        card={makeCard("document", { pages: 12, excerpt: "Clause 7 ".repeat(60) })}
+        index={0}
+        onDismiss={noop}
+      />,
+    );
+    const toggle = screen.getByRole("button", { name: "Show full answer" });
+    fireEvent.click(toggle);
+    expect(screen.getByRole("button", { name: "Show less" })).toBeInTheDocument();
+  });
+
+  it("shows an hourly strip when the weather payload has hours", () => {
+    render(
+      <WeatherBriefingCard
+        card={makeCard("weather", {
+          city: "Dibrugarh",
+          temp_c: 27,
+          condition: "rain",
+          hours: [{ time: "18:00", temp_c: 26 }, { time: "21:00", temp_c: 24 }],
+        })}
+        index={0}
+        onDismiss={noop}
+      />,
+    );
+    expect(screen.getByText("18:00")).toBeInTheDocument();
+    expect(screen.getByText("26°")).toBeInTheDocument();
   });
 
   it("renders plain prose for text cards", () => {

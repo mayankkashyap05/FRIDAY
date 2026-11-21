@@ -7,6 +7,12 @@ import fragmentShaderSource from "../shaders/siriOrb.frag.glsl?raw";
 
 /** Canvas is 204×204 CSS px; the 92 px sphere is drawn by the shader. */
 export const ORB_CANVAS_SIZE = 204;
+/** Diameter of the circular hit disc that sits on the sphere. */
+export const ORB_HIT_SIZE = 118;
+
+/** The 360 ms dismissal contraction (Motion tween) plus a little slack. */
+const DISMISS_CONTRACTION_MS = 480;
+const DISMISS_CONTRACTION_REDUCED_MS = 140;
 
 const VERTEX_SHADER = `#version 300 es
 precision highp float;
@@ -24,6 +30,8 @@ const STATE_CODE: Record<AssistantState, number> = {
   MUTED: 4,
 };
 
+const TAU = Math.PI * 2;
+
 export interface SiriOrbProps {
   invoked: boolean;
   state: AssistantState;
@@ -34,6 +42,10 @@ export interface SiriOrbProps {
   /** Increment to fire the 900 ms rose chromatic slip. */
   errorSignal: number;
   reducedMotion: boolean;
+  /** True while background activities run (drives `uActing`). */
+  acting?: boolean;
+  /** Bumped whenever FRIDAY's streaming words grow during SPEAKING. */
+  speechPulse?: number;
   onActivate: () => void;
   /** Called once the dismissal contraction has finished. */
   onDismissed: () => void;
@@ -50,6 +62,7 @@ interface Uniforms {
   uAttention: WebGLUniformLocation | null;
   uError: WebGLUniformLocation | null;
   uFlash: WebGLUniformLocation | null;
+  uActing: WebGLUniformLocation | null;
   uReducedMotion: WebGLUniformLocation | null;
 }
 
@@ -86,12 +99,16 @@ function buildProgram(gl: WebGL2RenderingContext): WebGLProgram | null {
   return program;
 }
 
+const clamp01 = (value: number) => Math.max(0, Math.min(1, value));
+
 /**
  * 1:1 volumetric Siri orb.
  *
- * The render loop is *owned by `invoked`*: when the orb is dormant the
- * `requestAnimationFrame` loop is not scheduled at all, so a sleeping FRIDAY
- * costs 0 % CPU and 0 % GPU and leaves nothing on the desktop.
+ * The render loop is owned by `invoked || contracting`: a dormant orb schedules
+ * no `requestAnimationFrame` at all (0 % CPU / 0 % GPU), but the 360 ms
+ * dismissal contraction keeps painting so the orb contracts smoothly instead of
+ * freezing mid-shrink. Once the contraction completes, the loop is cancelled and
+ * `onDismissed()` fires.
  */
 export function SiriOrb({
   invoked,
@@ -102,6 +119,8 @@ export function SiriOrb({
   attention,
   errorSignal,
   reducedMotion,
+  acting = false,
+  speechPulse = 0,
   onActivate,
   onDismissed,
   onInteraction,
@@ -113,16 +132,21 @@ export function SiriOrb({
   const frameRef = useRef<number | null>(null);
   const [supported, setSupported] = useState(true);
   const [dismissed, setDismissed] = useState(false);
+  const [contracting, setContracting] = useState(false);
+  const [hovered, setHovered] = useState(false);
+  const [pressed, setPressed] = useState(false);
   // Bumped when a lost WebGL context is restored, to re-arm the loop.
   const [, setContextEpoch] = useState(0);
 
   const invokedRef = useRef(invoked);
   invokedRef.current = invoked;
+  const contractingRef = useRef(contracting);
+  contractingRef.current = contracting;
 
   const propsRef = useRef({
-    state, energy, amplitude, muted, attention, reducedMotion,
+    state, energy, amplitude, muted, attention, reducedMotion, acting,
   });
-  propsRef.current = { state, energy, amplitude, muted, attention, reducedMotion };
+  propsRef.current = { state, energy, amplitude, muted, attention, reducedMotion, acting };
 
   const smoothed = useRef({
     voice: 0,
@@ -133,6 +157,7 @@ export function SiriOrb({
     attention: 0,
     error: 0,
     flash: 0,
+    acting: 0,
     time: 0,
   });
 
@@ -188,6 +213,7 @@ export function SiriOrb({
       uAttention: gl.getUniformLocation(program, "uAttention"),
       uError: gl.getUniformLocation(program, "uError"),
       uFlash: gl.getUniformLocation(program, "uFlash"),
+      uActing: gl.getUniformLocation(program, "uActing"),
       uReducedMotion: gl.getUniformLocation(program, "uReducedMotion"),
     };
     gl.uniform2f(uniformsRef.current.uResolution, canvas.width, canvas.height);
@@ -234,15 +260,59 @@ export function SiriOrb({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [initGL]);
 
+  // ── DPI / monitor changes ─────────────────────────────────────────────────
+  // Moving the overlay between a 100 % and a 150 % display changes
+  // devicePixelRatio under a *running* canvas; the backing buffer must follow,
+  // or the sphere is resampled and soft on the new monitor.
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return undefined;
+
+    const resize = () => {
+      const dpr = Math.min(window.devicePixelRatio || 1, 3);
+      const width = Math.round(ORB_CANVAS_SIZE * dpr);
+      if (canvas.width === width && canvas.height === width) return;
+      canvas.width = width;
+      canvas.height = width;
+      const gl = glRef.current;
+      const uniforms = uniformsRef.current;
+      if (gl && uniforms) {
+        gl.viewport(0, 0, width, width);
+        gl.uniform2f(uniforms.uResolution, width, width);
+      }
+    };
+
+    let query: MediaQueryList | null = null;
+    let onDprChange: (() => void) | null = null;
+    const watchDpr = () => {
+      if (typeof window.matchMedia !== "function") return;
+      if (query && onDprChange) query.removeEventListener?.("change", onDprChange);
+      query = window.matchMedia(`(resolution: ${window.devicePixelRatio || 1}dppx)`);
+      onDprChange = () => {
+        resize();
+        watchDpr();
+      };
+      query.addEventListener?.("change", onDprChange);
+    };
+
+    resize();
+    watchDpr();
+    window.addEventListener("resize", resize);
+    return () => {
+      window.removeEventListener("resize", resize);
+      if (query && onDprChange) query.removeEventListener?.("change", onDprChange);
+    };
+  }, []);
+
   // ── summon flash + error slip triggers ───────────────────────────────────
   const lastInvoked = useRef(invoked);
   useEffect(() => {
     if (invoked && !lastInvoked.current) {
       smoothed.current.flash = reducedMotion ? 0 : 1;
-      smoothed.current.time = 0;
+      // Deliberately *not* resetting `time`: the silk keeps flowing where it
+      // left off, so re-summoning never snaps the ribbons back to frame 0.
     }
     lastInvoked.current = invoked;
-    if (!invoked) setDismissed(false);
   }, [invoked, reducedMotion]);
 
   const errorSeen = useRef(errorSignal);
@@ -253,21 +323,71 @@ export function SiriOrb({
     errorSeen.current = errorSignal;
   }, [errorSignal, reducedMotion]);
 
-  // ── the render loop (only while invoked) ─────────────────────────────────
+  // ── syllabic impulse from FRIDAY's own streaming words ───────────────────
+  const pulseSeen = useRef(speechPulse);
   useEffect(() => {
-    if (!invoked) {
+    if (speechPulse > pulseSeen.current) {
+      const props = propsRef.current;
+      if (props.state === "SPEAKING" && !props.muted && !props.reducedMotion) {
+        // A crisp pluck of the voice spring: the orb physically reacts to the
+        // word that just arrived, on top of the synthesized cadence.
+        smoothed.current.voiceVelocity = Math.min(
+          smoothed.current.voiceVelocity + 0.85,
+          3.2,
+        );
+      }
+    }
+    pulseSeen.current = speechPulse;
+  }, [speechPulse]);
+
+  // ── dismissal lifecycle ──────────────────────────────────────────────────
+  // `wasInvoked` guarantees `onDismissed` fires exactly once per summon — never
+  // on the initial dormant mount, where Python has not shown the window yet.
+  const wasInvoked = useRef(false);
+
+  const finishDismissal = useCallback(() => {
+    if (!wasInvoked.current) return;
+    wasInvoked.current = false;
+    setContracting(false);
+    setDismissed(true);
+    onDismissed();
+  }, [onDismissed]);
+
+  useEffect(() => {
+    if (invoked) {
+      wasInvoked.current = true;
+      setContracting(false);
+      setDismissed(false);
+      return undefined;
+    }
+    if (!wasInvoked.current) return undefined;
+    // Paint through the contraction, then stop. Motion's
+    // `onAnimationComplete` is the primary trigger; this timer is the
+    // guarantee that a dropped completion (reduced motion, occluded window,
+    // throttled tab) can never strand a live RAF loop.
+    setContracting(true);
+    const timer = window.setTimeout(
+      finishDismissal,
+      reducedMotion ? DISMISS_CONTRACTION_REDUCED_MS : DISMISS_CONTRACTION_MS,
+    );
+    return () => window.clearTimeout(timer);
+  }, [invoked, reducedMotion, finishDismissal]);
+
+  // ── the render loop (summoned *or* contracting) ──────────────────────────
+  useEffect(() => {
+    if (!invoked && !contracting) {
       if (frameRef.current !== null) {
         cancelAnimationFrame(frameRef.current);
         frameRef.current = null;
       }
-      return;
+      return undefined;
     }
 
     let last = performance.now();
     const tick = (now: number) => {
-      // A frame that was already queued when the orb was dismissed must never
-      // paint: the loop is the *only* thing keeping the GPU awake.
-      if (!invokedRef.current) {
+      // A frame that was already queued when the orb finished dismissing must
+      // never paint: the loop is the *only* thing keeping the GPU awake.
+      if (!invokedRef.current && !contractingRef.current) {
         frameRef.current = null;
         return;
       }
@@ -288,24 +408,46 @@ export function SiriOrb({
       const approach = (current: number, target: number, tau: number) =>
         current + (target - current) * (1 - Math.exp(-dt / tau));
 
-      // Critically damped spring for the voice level (stiffness 180,
-      // damping 26.8 ⇒ ωn≈13.4, ζ≈1). No overshoot: the ribbons must never
-      // snap past the input and look jittery on plosives.
-      const omega = 13.4164;
-      const damping = 26.8328;
-      const targetVoice = Math.max(0, Math.min(1, props.amplitude));
-      s.voiceVelocity += (omega * omega * (targetVoice - s.voice) - 2 * damping * s.voiceVelocity) * dt;
-      s.voice += s.voiceVelocity * dt;
+      // ── voice spring ─────────────────────────────────────────────────────
+      // ω = 15, ζ = 0.78: a crisp attack on consonants with a liquid release.
+      // (The old code passed ζ = 2.0 — critically damped *twice over* — which
+      // read as sluggish rubber instead of speech.)
+      const omega = 15.0;
+      const zeta = 0.78;
+      let targetVoice = clamp01(props.amplitude);
 
-      s.energy = approach(s.energy, Math.max(0, Math.min(1, props.energy)), 0.18);
+      // main.py silences mic amplitude during TTS (feedback guard), so a
+      // SPEAKING orb would otherwise sit perfectly still. A synthesized,
+      // incommensurate multi-syllable cadence gives it an organic voice:
+      // 3.7 / 6.1 / 9.4 Hz oscillators under a 0.85 Hz breath/pause envelope.
+      const speaking = props.state === "SPEAKING" && !props.muted;
+      if (speaking) {
+        const t = s.time;
+        const cadence =
+          0.5 +
+          0.34 * Math.sin(TAU * 3.7 * t) +
+          0.20 * Math.sin(TAU * 6.1 * t + 1.7) +
+          0.12 * Math.sin(TAU * 9.4 * t + 0.4);
+        const breath = 0.72 + 0.28 * Math.sin(TAU * 0.85 * t + 0.9);
+        targetVoice = Math.max(targetVoice, clamp01(cadence * breath) * 0.94);
+      }
+
+      const acceleration =
+        omega * omega * (targetVoice - s.voice) - 2 * zeta * omega * s.voiceVelocity;
+      s.voiceVelocity += acceleration * dt;
+      s.voice = Math.max(0, Math.min(1.25, s.voice + s.voiceVelocity * dt));
+
+      s.energy = approach(s.energy, clamp01(props.energy), 0.18);
       s.state = approach(s.state, STATE_CODE[props.state] ?? 0, 0.22);
-      s.muted = approach(s.muted, props.muted ? 1 : 0, 0.20);
+      s.muted = approach(s.muted, props.muted ? 1 : 0, 0.2);
       s.attention = approach(s.attention, props.attention ? 1 : 0, 0.25);
+      s.acting = approach(s.acting, props.acting ? 1 : 0, 0.22);
       s.error = Math.max(0, s.error - dt / 0.9);
       s.flash = Math.max(0, s.flash - dt / 1.1);
       s.time += dt * (props.reducedMotion ? 0.22 : 1);
 
       gl.useProgram(program);
+      gl.uniform2f(uniforms.uResolution, canvas.width, canvas.height);
       gl.uniform1f(uniforms.uTime, s.time);
       gl.uniform1f(uniforms.uVoice, s.voice);
       gl.uniform1f(uniforms.uEnergy, s.energy);
@@ -314,6 +456,7 @@ export function SiriOrb({
       gl.uniform1f(uniforms.uAttention, s.attention);
       gl.uniform1f(uniforms.uError, s.error);
       gl.uniform1f(uniforms.uFlash, s.flash);
+      gl.uniform1f(uniforms.uActing, s.acting);
       gl.uniform1f(uniforms.uReducedMotion, props.reducedMotion ? 1 : 0);
 
       gl.clear(gl.COLOR_BUFFER_BIT);
@@ -327,7 +470,7 @@ export function SiriOrb({
       if (frameRef.current !== null) cancelAnimationFrame(frameRef.current);
       frameRef.current = null;
     };
-  }, [invoked]);
+  }, [invoked, contracting]);
 
   const transition = useMemo(
     () =>
@@ -337,76 +480,84 @@ export function SiriOrb({
     [reducedMotion],
   );
 
-  // `onDismissed` must fire exactly once per summon — never on the initial
-  // dormant mount, or Python would be told the window vanished before it was
-  // ever shown.
-  const wasInvoked = useRef(false);
-  useEffect(() => {
-    if (invoked) wasInvoked.current = true;
-  }, [invoked]);
-
   const handleAnimationComplete = useCallback(() => {
-    if (!invoked && wasInvoked.current) {
-      wasInvoked.current = false;
-      setDismissed(true);
-      onDismissed();
-    }
-  }, [invoked, onDismissed]);
+    if (!invoked) finishDismissal();
+  }, [invoked, finishDismissal]);
+
+  // Tactile micro-interaction on the disc itself; kept on an inner layer so it
+  // never fights the summon/dismiss scale on the outer wrapper.
+  const innerScale = pressed ? 0.95 : hovered ? 1.045 : 1;
 
   return (
     <motion.div
       className="relative select-none"
       style={{ width: ORB_CANVAS_SIZE, height: ORB_CANVAS_SIZE }}
       initial={{ scale: 0, opacity: 0 }}
-      animate={
-        invoked
-          ? { scale: 1, opacity: 1 }
-          : { scale: 0.3, opacity: 0 }
+      animate={invoked ? { scale: 1, opacity: 1 } : { scale: 0.3, opacity: 0 }}
+      transition={
+        invoked ? transition : { duration: reducedMotion ? 0.06 : 0.36, ease: "easeIn" }
       }
-      transition={invoked ? transition : { duration: reducedMotion ? 0.06 : 0.36, ease: "easeIn" }}
       onAnimationComplete={handleAnimationComplete}
       aria-hidden={!invoked}
     >
-      {/* The interactive disc is a circle, matching the sphere's footprint. */}
-      <div
-        {...region.regionProps}
-        className={`${region.regionProps.className} absolute left-1/2 top-1/2 rounded-full`}
-        style={{
-          width: 118,
-          height: 118,
-          transform: "translate(-50%, -50%)",
-          // Non-zero alpha: Windows drops clicks on fully transparent pixels.
-          backgroundColor: "rgba(0, 0, 0, 0.01)",
-        }}
-        role="button"
-        tabIndex={-1}
-        aria-label="FRIDAY — click to type"
-        title="Click to type to FRIDAY"
-        onClick={() => {
-          if (!dismissed) onActivate();
-        }}
-      />
-      {supported ? (
-        <canvas
-          ref={canvasRef}
-          className="pointer-events-none absolute inset-0"
-          style={{ width: ORB_CANVAS_SIZE, height: ORB_CANVAS_SIZE }}
-          data-testid="siri-orb-canvas"
-        />
-      ) : (
-        // No WebGL2 (rare: remote sessions, broken drivers). A soft radial
-        // gradient keeps the identity instead of showing an empty hole.
+      <motion.div
+        className="absolute inset-0"
+        animate={{ scale: innerScale }}
+        transition={{ type: "spring", stiffness: 420, damping: 24 }}
+      >
+        {/* The interactive disc is a circle, matching the sphere's footprint. */}
         <div
-          className="pointer-events-none absolute inset-0"
-          data-testid="siri-orb-fallback"
+          {...region.regionProps}
+          onPointerEnter={() => {
+            region.regionProps.onPointerEnter();
+            setHovered(true);
+          }}
+          onPointerLeave={() => {
+            region.regionProps.onPointerLeave();
+            setHovered(false);
+            setPressed(false);
+          }}
+          onPointerDown={() => setPressed(true)}
+          onPointerUp={() => setPressed(false)}
+          onPointerCancel={() => setPressed(false)}
+          className={`${region.regionProps.className} absolute left-1/2 top-1/2 rounded-full`}
           style={{
-            background:
-              "radial-gradient(circle at 50% 48%, rgba(6,247,255,0.85) 0%, rgba(30,95,255,0.65) 26%, rgba(176,48,255,0.45) 42%, rgba(255,45,159,0.18) 55%, rgba(0,0,0,0) 72%)",
-            filter: "blur(0.5px)",
-            opacity: muted ? 0.5 : 1,
+            width: ORB_HIT_SIZE,
+            height: ORB_HIT_SIZE,
+            transform: "translate(-50%, -50%)",
+            // Non-zero alpha: Windows drops clicks on fully transparent pixels.
+            backgroundColor: "rgba(0, 0, 0, 0.01)",
+          }}
+          role="button"
+          tabIndex={-1}
+          aria-label="FRIDAY — click to type"
+          title="Click to type to FRIDAY"
+          onClick={() => {
+            if (!dismissed) onActivate();
           }}
         />
-      )}
+        {supported ? (
+          <canvas
+            ref={canvasRef}
+            className="pointer-events-none absolute inset-0"
+            style={{ width: ORB_CANVAS_SIZE, height: ORB_CANVAS_SIZE }}
+            data-testid="siri-orb-canvas"
+          />
+        ) : (
+          // No WebGL2 (rare: remote sessions, broken drivers). A soft radial
+          // gradient keeps the identity instead of showing an empty hole.
+          <div
+            className="pointer-events-none absolute inset-0"
+            data-testid="siri-orb-fallback"
+            style={{
+              background:
+                "radial-gradient(circle at 50% 48%, rgba(6,247,255,0.85) 0%, rgba(30,95,255,0.65) 26%, rgba(176,48,255,0.45) 42%, rgba(255,45,159,0.18) 55%, rgba(0,0,0,0) 72%)",
+              filter: "blur(0.5px)",
+              opacity: muted ? 0.5 : 1,
+            }}
+          />
+        )}
+      </motion.div>
     </motion.div>
   );
 }
