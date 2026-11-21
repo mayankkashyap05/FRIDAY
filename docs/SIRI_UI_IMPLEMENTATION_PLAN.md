@@ -176,9 +176,37 @@ npm run build
 python main.py
 ```
 
-`python setup.py` does both. `python scripts\verify_windows_ui.py` proves the
-whole chain on a real Windows box (toolchain → import purity → live WebSocket
-traffic → summon → clean shutdown with no orphaned `electron.exe`).
+`python setup.py` does both — including verifying that Electron's **binary**
+(not merely its npm package) is present — and
+`python scripts\verify_windows_ui.py` proves the whole chain on a real Windows
+box (toolchain → import purity → live WebSocket traffic → summon → clean
+shutdown with no orphaned `electron.exe`).
+
+### Troubleshooting the install
+
+`npm install` exits 0 even when the `electron` package's postinstall download
+fails. That leaves `node_modules/electron/dist` empty while everything looks
+installed, and FRIDAY cannot start its UI.
+
+Three guards close that hole:
+
+1. `ui/app/scripts/ensure-electron.mjs` (run as FRIDAY's `postinstall`) re-checks
+   the binary and retries the download once, then prints the repair commands
+   without failing the install.
+2. `ui.controller.ui_install_status()` / `missing_ui_help()` report which piece
+   is missing — renderer, package or binary — and print the fix that applies to
+   *that* piece (`npm rebuild electron` for a missing binary, a full
+   `npm install && npm run build` for a missing renderer).
+3. `setup.py` refuses to claim success while the binary is absent, and
+   `scripts/verify_windows_ui.py` fails the same check.
+
+Repair command, either way:
+
+```powershell
+cd ui\app
+npm rebuild electron
+npm run build
+```
 
 ## Quality gates
 

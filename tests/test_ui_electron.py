@@ -13,6 +13,7 @@ Run: ``python -m pytest tests/test_ui_electron.py -q``
 from __future__ import annotations
 
 import json
+import os
 import threading
 import time
 from pathlib import Path
@@ -627,6 +628,95 @@ def test_make_ui_fails_loudly_without_electron(monkeypatch, capsys):
     assert str(APP) in message
     combined = "".join(capsys.readouterr())
     assert "Traceback (most recent call last)" in combined
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Install diagnostics: "the package exists" is not "the binary exists"
+# ─────────────────────────────────────────────────────────────────────────────
+
+def test_electron_executable_resolves_through_the_packages_path_txt(tmp_path):
+    """The electron package names its binary in path.txt; trust that first."""
+    from ui.controller import electron_executable
+
+    pkg = tmp_path / "node_modules" / "electron"
+    dist = pkg / "dist"
+    dist.mkdir(parents=True)
+    name = "electron.exe" if os.name == "nt" else "electron"
+    binary = dist / name
+    binary.write_bytes(b"MZ")
+    (pkg / "path.txt").write_text(name + "\n", encoding="utf-8")
+
+    assert electron_executable(tmp_path) == binary
+
+
+def test_electron_executable_never_returns_the_cmd_shim(tmp_path):
+    """A batch shim would leave a zombie Electron behind and flash a console."""
+    from ui.controller import electron_executable
+
+    dist = tmp_path / "node_modules" / "electron" / "dist"
+    dist.mkdir(parents=True)
+    (dist / "electron.cmd").write_text("@echo off\r\n", encoding="utf-8")
+
+    assert electron_executable(tmp_path) is None
+
+
+def test_renderer_built_requires_both_build_artefacts(tmp_path):
+    from ui.controller import renderer_built
+
+    dist = tmp_path / "dist"
+    dist.mkdir()
+    (dist / "index.html").write_text("<html></html>", encoding="utf-8")
+    assert renderer_built(tmp_path) is False, \
+        "index.html without dist/electron/main.js cannot boot Electron"
+
+    (dist / "electron").mkdir()
+    (dist / "electron" / "main.js").write_text("// main", encoding="utf-8")
+    assert renderer_built(tmp_path) is True
+
+
+def test_install_status_separates_a_missing_binary_from_a_missing_build(tmp_path):
+    from ui.controller import ui_install_status
+
+    empty = ui_install_status(tmp_path)
+    assert empty["renderer"] is False
+    assert empty["package"] is False
+    assert empty["binary"] == ""
+
+    (tmp_path / "node_modules" / "electron" / "dist").mkdir(parents=True)
+    (tmp_path / "dist" / "electron").mkdir(parents=True)
+    (tmp_path / "dist" / "index.html").write_text("<html></html>", encoding="utf-8")
+    (tmp_path / "dist" / "electron" / "main.js").write_text("//", encoding="utf-8")
+
+    half = ui_install_status(tmp_path)
+    assert half["renderer"] is True
+    assert half["package"] is True
+    assert half["binary"] == "", "a package without its binary is still not runnable"
+    assert half["binaryExpected"].endswith(("electron.exe", "electron"))
+
+
+def test_missing_ui_help_names_the_real_repair(tmp_path):
+    """npm exits 0 even when Electron's download fails; say what to run."""
+    from ui.controller import missing_ui_help
+
+    (tmp_path / "node_modules" / "electron" / "dist").mkdir(parents=True)
+    message = missing_ui_help(tmp_path)
+
+    assert "electron binary" in message
+    assert "npm rebuild electron" in message, "the package-without-binary case needs its own fix"
+    assert str(tmp_path) in message
+    # The generic first-run commands must stay, for a fresh clone.
+    assert "npm install" in message and "npm run build" in message
+
+
+def test_setup_verifies_the_electron_binary_instead_of_trusting_npm():
+    source = (REPO / "setup.py").read_text(encoding="utf-8")
+    assert "ensure_electron_binary" in source
+    assert "rebuild" in source
+
+    package = json.loads((APP / "package.json").read_text(encoding="utf-8"))
+    assert "postinstall" in package["scripts"], \
+        "npm install must re-check the Electron binary"
+    assert (APP / "scripts" / "ensure-electron.mjs").is_file()
 
 
 # ─────────────────────────────────────────────────────────────────────────────

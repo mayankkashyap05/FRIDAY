@@ -66,18 +66,43 @@ _ELECTRON_BINARIES = (
 )
 
 
+def electron_package_dir(app_dir: Path | None = None) -> Path:
+    """``ui/app/node_modules/electron`` — where npm puts the Electron package."""
+    return Path(app_dir or APP_DIR) / "node_modules" / "electron"
+
+
+def _platform_binary_name() -> str:
+    if os.name == "nt":
+        return "electron.exe"
+    if sys.platform == "darwin":
+        return "Electron.app/Contents/MacOS/Electron"
+    return "electron"
+
+
 def electron_executable(app_dir: Path | None = None) -> Path | None:
     """Absolute path to the real Electron binary, or ``None``.
+
+    ``npm install`` succeeds even when Electron's postinstall download fails, so
+    "the package exists" is *not* the same as "the binary exists" — that gap is
+    exactly what produces a silent half-install. We therefore look for the
+    binary itself, starting with the name the package records in ``path.txt``.
 
     ``node_modules/.bin/electron.cmd`` is deliberately **not** considered: on
     Windows that is a ``cmd.exe`` batch shim, and terminating the shim leaves the
     actual Electron process running (plus a console window flash). We always
     launch the executable directly.
     """
-    root = Path(app_dir or APP_DIR)
-    dist = root / "node_modules" / "electron" / "dist"
-    for name in _ELECTRON_BINARIES:
-        candidate = dist / name
+    pkg = electron_package_dir(app_dir)
+    dist = pkg / "dist"
+    candidates: list[Path] = []
+    try:
+        hint = (pkg / "path.txt").read_text(encoding="utf-8", errors="replace").strip()
+    except OSError:
+        hint = ""
+    if hint:
+        candidates.append(dist / Path(hint.replace("\\", "/")))
+    candidates.extend(dist / name for name in _ELECTRON_BINARIES)
+    for candidate in candidates:
         try:
             if candidate.is_file():
                 return candidate
@@ -86,23 +111,108 @@ def electron_executable(app_dir: Path | None = None) -> Path | None:
     return None
 
 
+def renderer_files(app_dir: Path | None = None) -> tuple[Path, Path]:
+    """The two artefacts ``npm run build`` must leave behind."""
+    root = Path(app_dir or APP_DIR)
+    return root / "dist" / "index.html", root / "dist" / "electron" / "main.js"
+
+
 def renderer_built(app_dir: Path | None = None) -> bool:
     """Whether ``npm run build`` has produced a loadable renderer."""
-    return (Path(app_dir or APP_DIR) / "dist" / "index.html").is_file()
+    return all(path.is_file() for path in renderer_files(app_dir))
 
 
-def missing_ui_help() -> str:
-    """The exact commands a user needs to run to finish the UI install."""
-    app = APP_DIR
-    return (
-        "FRIDAY's Electron UI is not installed.\n\n"
-        "Build it once with:\n"
-        f"  cd {app}\n"
-        "  npm install\n"
-        "  npm run build\n\n"
-        "Then start FRIDAY again:\n"
-        "  python main.py\n"
-    )
+def ui_install_status(app_dir: Path | None = None) -> dict[str, Any]:
+    """Everything needed to explain *which* piece of the UI install is missing.
+
+    Deliberately path-free of side effects: it only stats files, so it is safe
+    to call from an error path and from diagnostics.
+    """
+    root = Path(app_dir or APP_DIR)
+    index, main_js = renderer_files(root)
+    pkg = electron_package_dir(root)
+    binary = electron_executable(root)
+    return {
+        "app": str(root),
+        "renderer": index.is_file() and main_js.is_file(),
+        "rendererIndex": index.is_file(),
+        "rendererMain": main_js.is_file(),
+        "package": pkg.is_dir(),
+        "binary": str(binary) if binary is not None else "",
+        "binaryExpected": str(pkg / "dist" / _platform_binary_name()),
+    }
+
+
+def missing_ui_help(app_dir: Path | None = None) -> str:
+    """The exact commands a user needs to finish (or repair) the UI install.
+
+    A missing Electron *binary* and a never-installed frontend need different
+    fixes, so the message names the failing piece instead of repeating the same
+    three commands until something works.
+    """
+    status = ui_install_status(app_dir)
+    app = status["app"]
+    binary_missing = status["package"] and not status["binary"]
+    renderer_missing = not status["renderer"]
+
+    mark = lambda ok: "✓" if ok else "✗"  # noqa: E731 - tiny local formatter
+    lines = [
+        "FRIDAY's Electron UI is not ready.",
+        "",
+        f"  app directory    {app}",
+        f"  renderer         {mark(status['renderer'])} "
+        + ("built" if status["renderer"] else "missing")
+        + "  (dist/index.html, dist/electron/main.js)",
+        f"  electron package {mark(status['package'])} "
+        + ("installed" if status["package"] else "missing")
+        + "  (node_modules/electron)",
+        f"  electron binary  {mark(bool(status['binary']))} "
+        + (status["binary"] or f"missing  ({status['binaryExpected']})"),
+        "",
+    ]
+
+    if binary_missing:
+        lines += [
+            "The `electron` package is installed but its binary was never downloaded.",
+            "npm reports success even when that postinstall step fails, so the",
+            "install looks complete while node_modules/electron/dist stays empty.",
+            "",
+            "Repair it — this re-runs the binary download:",
+            f"  cd {app}",
+            "  npm rebuild electron",
+            "",
+            "If npm still cannot reach the download server, run the installer",
+            "directly so it prints the real error:",
+            f"  node {Path(app) / 'node_modules' / 'electron' / 'install.js'}",
+            "",
+        ]
+    elif renderer_missing:
+        lines += [
+            "The renderer has not been built yet (or the build was interrupted).",
+            "",
+        ]
+    else:
+        lines += [
+            "Every piece is present but the controller still could not start it;",
+            "check the message above for the underlying error.",
+            "",
+        ]
+
+    lines += [
+        ("If a clean rebuild still does not help:" if binary_missing
+         else "Build it once with:"),
+        f"  cd {app}",
+        "  npm install",
+        "  npm run build",
+        "",
+        "Start FRIDAY again:",
+        "  python main.py",
+        "",
+        "Or verify every piece at once, from the repository root:",
+        "  python scripts\\verify_windows_ui.py",
+        "",
+    ]
+    return "\n".join(lines)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -696,7 +806,7 @@ class UiController:
     def _spawn_electron(self) -> None:
         exe = electron_executable(self.app_dir)
         if exe is None or not renderer_built(self.app_dir):
-            raise UiStartupError(missing_ui_help())
+            raise UiStartupError(missing_ui_help(self.app_dir))
 
         env = os.environ.copy()
         env[protocol.URL_ENV] = self.ws_url
@@ -726,7 +836,8 @@ class UiController:
         except Exception as exc:
             raise UiStartupError(
                 "FRIDAY could not start its Electron UI "
-                f"({type(exc).__name__}: {exc}).\n\n{missing_ui_help()}") from exc
+                f"({type(exc).__name__}: {exc}).\n\n{missing_ui_help(self.app_dir)}"
+            ) from exc
 
         threading.Thread(target=self._watch_electron, name="FridayElectronWatch",
                          daemon=True).start()
@@ -1292,6 +1403,7 @@ class UiController:
             "frames": self.frames.stats(),
             "electron": {
                 "path": str(electron_executable(self.app_dir) or ""),
+                "install": ui_install_status(self.app_dir),
                 "running": self.electron_running,
                 "pid": getattr(self._electron, "pid", None),
                 "error": self._electron_error,
@@ -1304,7 +1416,8 @@ class UiController:
 
 __all__ = [
     "UiController", "UiStartupError", "WsServer", "FramePump",
-    "electron_executable", "renderer_built", "missing_ui_help",
+    "electron_executable", "electron_package_dir", "renderer_built",
+    "renderer_files", "missing_ui_help", "ui_install_status",
     "THEMES", "THEME_NAMES", "DEFAULT_THEME", "build_theme", "APP_DIR",
     "DIST_DIR",
 ]

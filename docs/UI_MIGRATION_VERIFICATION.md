@@ -29,7 +29,7 @@ Bundle: 437 kB JS (140 kB gzip) + 36 kB CSS (7 kB gzip). `base: './'` so the
 | Command | Result |
 |---|---|
 | `python -m pytest tests/ -q` | **345 passed, 7 failed** |
-| `python -m pytest tests/test_ui_electron.py -q` | **75 passed** |
+| `python -m pytest tests/test_ui_electron.py -q` | **81 passed** |
 | `python scripts/verify_windows_ui.py --headless` | **8 passed, 0 failed** |
 
 The 7 failures are all in `tests/test_production_resilience.py` and are
@@ -46,7 +46,7 @@ running the file there). They need Windows:
 | `test_telegram_loop_exits_cleanly_if_chat_id_is_none` | same |
 
 No UI test fails. The old GUI-toolkit test file is gone;
-`tests/test_ui_electron.py` replaces it with 75 tests covering protocol, auth,
+`tests/test_ui_electron.py` replaces it with 81 tests covering protocol, auth,
 frames, dismissal, shutdown and the Phase-3 asset tree.
 
 ## 2. Phase gates
@@ -93,6 +93,19 @@ npx tsc -p tsconfig.electron.json --noEmit
 npm test
 npm run build
 ```
+
+## 3a. Install gate
+
+`npm install` exits 0 even when the `electron` package's postinstall download
+fails, so "the package is installed" and "the app can start" are different
+questions. Now:
+
+| Guard | Behaviour |
+|---|---|
+| `ui/app/scripts/ensure-electron.mjs` (postinstall) | re-checks the binary, retries the download once, prints the repair command, never fails the install |
+| `ui.controller.ui_install_status()` | stats renderer / package / binary separately; `missing_ui_help()` prints the fix for the piece that is actually missing |
+| `setup.py::ensure_electron_binary()` | runs `npm rebuild electron` (then the installer directly) and returns non-zero instead of claiming success |
+| `scripts/verify_windows_ui.py` | resolves the binary through the controller, so it cannot disagree with `python main.py` |
 
 ## 4. Known environment note
 

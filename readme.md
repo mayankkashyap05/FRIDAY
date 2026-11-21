@@ -158,6 +158,18 @@ npm install
 npm run build
 ```
 
+> **"FRIDAY's Electron UI is not ready"?**
+> `npm install` reports success even when Electron's ~120 MB binary download
+> fails, so the package can be installed while the binary is not. The app names
+> which piece is missing; repair it with:
+> ```powershell
+> cd ui\app
+> npm rebuild electron
+> npm run build
+> ```
+> Running `python setup.py` does this automatically, and
+> `python scripts\verify_windows_ui.py` proves the whole chain.
+
 ### 5. Configure Your Gemini API Key
 Open `config/api_keys.json` and insert your Gemini API key:
 ```jsonc
