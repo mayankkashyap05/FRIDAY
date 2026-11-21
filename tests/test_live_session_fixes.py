@@ -164,17 +164,10 @@ def test_watchdog_measures_silence_from_the_last_chunk_written():
         "watchdog must confirm the queue is drained before releasing")
 
 
-def test_state_machine_release_speech_always_emits(qt_app):
-    """Muted must not swallow the release: ducking is restored on transition.
-
-    Takes the shared ``qt_app`` fixture rather than constructing a
-    ``QCoreApplication`` inline: the first application created in a process
-    wins, and a plain QCoreApplication here would lock out the QGuiApplication
-    that ``test_ui_siri_qt.py`` needs for QPixmap/QML windows.
-    """
-    pytest.importorskip("PySide6")
-    from ui_siri.event_bus import UiState
-    from ui_siri.state_machine import AssistantStateMachine
+def test_state_machine_release_speech_always_emits():
+    """Muted must not swallow the release: ducking is restored on transition."""
+    from ui.event_bus import UiState
+    from ui.state_machine import AssistantStateMachine
 
     machine = AssistantStateMachine()
     seen = []
@@ -201,15 +194,10 @@ def test_state_machine_release_speech_always_emits(qt_app):
     assert len(seen) == before
 
 
-def test_ducking_is_restored_on_release_including_muted(qt_app):
-    """The user-facing symptom: other apps stayed at 25% volume.
-
-    Uses the shared ``qt_app`` fixture (see the note above): creating a bare
-    ``QCoreApplication`` here would prevent the later QGuiApplication.
-    """
-    pytest.importorskip("PySide6")
-    from ui_siri.event_bus import UiState
-    from ui_siri.state_machine import AssistantStateMachine
+def test_ducking_is_restored_on_release_including_muted():
+    """The user-facing symptom: other apps stayed at 25% volume."""
+    from ui.event_bus import UiState
+    from ui.state_machine import AssistantStateMachine
 
     class Ducker:
         def __init__(self):
@@ -251,7 +239,7 @@ def test_set_speaking_false_releases_even_when_muted():
     assert "stop_speaking()" in block, (
         "set_speaking(False) only calls _set_phase, which does nothing while "
         "muted -- the machine then stays on SPEAKING forever")
-    assert "release_speech" in (REPO / "ui_siri" / "state_machine.py").read_text(
+    assert "release_speech" in (REPO / "ui" / "state_machine.py").read_text(
         encoding="utf-8")
 
 
@@ -260,7 +248,7 @@ def test_set_speaking_false_releases_even_when_muted():
 # ─────────────────────────────────────────────────────────────────────────────
 
 def test_controller_installs_a_sigint_handler():
-    src = (REPO / "ui_siri" / "controller.py").read_text(encoding="utf-8")
+    src = (REPO / "ui" / "controller.py").read_text(encoding="utf-8")
     assert "def install_interrupt_handler" in src
     assert "signal.signal(signal.SIGINT" in src
     assert "def _on_sigint" in src
@@ -268,18 +256,18 @@ def test_controller_installs_a_sigint_handler():
 
 
 def test_sigint_handler_is_installed_before_the_event_loop():
-    """After exec() is too late: SIGINT lands inside a dispatcher timer."""
-    src = (REPO / "ui.py").read_text(encoding="utf-8")
+    """After the loop starts is too late: SIGINT lands in a dispatcher drain."""
+    src = (REPO / "ui" / "__init__.py").read_text(encoding="utf-8")
     run = src.split("def run(self) -> int:")[1]
     assert "install_interrupt_handler" in run
     install_at = run.index("install_interrupt_handler")
-    exec_at = run.index("self._app.exec()")
-    assert install_at < exec_at, (
-        "the handler must be installed before exec(), not after")
+    loop_at = run.index("self.controller.wait()")
+    assert install_at < loop_at, (
+        "the handler must be installed before the loop runs, not after")
 
 
 def test_shutdown_restores_audio_and_stops_the_tray():
-    src = (REPO / "ui_siri" / "controller.py").read_text(encoding="utf-8")
+    src = (REPO / "ui" / "controller.py").read_text(encoding="utf-8")
     block = src.split("def shutdown(self) -> None:")[1].split("def diagnostics")[0]
     assert "self.audio.stop()" in block, "ducked audio must be restored"
     assert "system_tray" in block and "stop()" in block, (
@@ -289,7 +277,7 @@ def test_shutdown_restores_audio_and_stops_the_tray():
 
 def test_shutdown_is_idempotent():
     """SIGINT, the tray Quit item and the loop's finally all call shutdown()."""
-    src = (REPO / "ui_siri" / "controller.py").read_text(encoding="utf-8")
+    src = (REPO / "ui" / "controller.py").read_text(encoding="utf-8")
     block = src.split("def shutdown(self) -> None:")[1][:400]
     assert "if self._shutdown_done:" in block
     assert "return" in block
@@ -297,7 +285,7 @@ def test_shutdown_is_idempotent():
 
 def test_sigint_handler_never_leaves_a_traceback_in_drain():
     """The handler must not re-raise: a raise from signal context escapes drain."""
-    src = (REPO / "ui_siri" / "controller.py").read_text(encoding="utf-8")
+    src = (REPO / "ui" / "controller.py").read_text(encoding="utf-8")
     block = src.split("def _on_sigint")[1].split("def request_quit")[0]
     body = "\n".join(line for line in block.splitlines()
                      if not line.strip().startswith("#"))
@@ -305,7 +293,7 @@ def test_sigint_handler_never_leaves_a_traceback_in_drain():
     assert "os._exit" in body, "a second Ctrl+C must be able to force exit"
     # And the dispatcher's own guard must tolerate BaseException subclasses that
     # do escape, rather than dying on the timer.
-    bridge = (REPO / "ui_siri" / "bridge.py").read_text(encoding="utf-8")
+    bridge = (REPO / "ui" / "bridge.py").read_text(encoding="utf-8")
     drain = bridge.split("def drain(self")[1].split("def pending")[0]
     assert "except Exception" in drain
 

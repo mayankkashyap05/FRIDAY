@@ -139,13 +139,26 @@ python -m venv .venv
 .\.venv\Scripts\activate
 ```
 
-### 3. Run One-Shot Setup
-The setup script installs pinned dependencies, prepares Playwright Chromium, and initializes default configuration templates:
+### 3. Install Node 20+ (required — the UI is Electron)
+FRIDAY's interface is an Electron + React + WebGL2 app in `ui/app`. There is no
+Tk/Qt fallback: without Node the app will refuse to start and tell you why.
+Download the LTS installer from [nodejs.org](https://nodejs.org).
+
+### 4. Run One-Shot Setup
+The setup script installs pinned Python dependencies, prepares Playwright
+Chromium, builds the UI (npm install + npm run build) and initializes default
+configuration templates:
 ```powershell
 python setup.py
 ```
+If you prefer to build the renderer by hand:
+```powershell
+cd ui\app
+npm install
+npm run build
+```
 
-### 4. Configure Your Gemini API Key
+### 5. Configure Your Gemini API Key
 Open `config/api_keys.json` and insert your Gemini API key:
 ```jsonc
 {
@@ -157,7 +170,7 @@ Open `config/api_keys.json` and insert your Gemini API key:
 ```
 *(Alternatively, set the `FRIDAY_GEMINI_API_KEY` environment variable in your shell).*
 
-### 5. Launch Friday
+### 6. Launch Friday
 ```powershell
 python main.py
 ```
