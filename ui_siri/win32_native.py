@@ -766,9 +766,31 @@ def probe_capabilities() -> Capabilities:
         # fixing, and "no reason recorded" is exactly what made it invisible.
         _reason("platform", f"not windows ({sys.platform})")
         for key in ("layered_windows", "capture_exclusion", "backdrop",
-                    "rounded_corners", "dnd"):
+                    "rounded_corners", "dnd", "dpi_aware"):
             _reason(key, f"not windows ({sys.platform})")
         return CAPS
+
+    # ── per-monitor DPI awareness ───────────────────────────────────────────
+    # The capability is "this process *can* declare per-monitor DPI awareness",
+    # i.e. which export exists -- NOT whether ``enable_per_monitor_dpi()`` has
+    # already been called. Conflating the two made the probe report False on a
+    # fully capable Windows 11 box, because the probe runs before the window
+    # exists. Preference order: Win10 1703+ (user32, per-monitor-v2),
+    # Win8.1 (shcore), Vista+ (user32 legacy system-DPI).
+    dpi_export = ""
+    if _has(user32, "SetProcessDpiAwarenessContext"):
+        dpi_export = "user32.SetProcessDpiAwarenessContext (per-monitor v2)"
+    elif _has(shcore, "SetProcessDpiAwareness"):
+        dpi_export = "shcore.SetProcessDpiAwareness (per-monitor v1)"
+    elif _has(user32, "SetProcessDPIAware"):
+        dpi_export = "user32.SetProcessDPIAware (system DPI only)"
+    CAPS.dpi_aware = _require(
+        "dpi_aware", bool(dpi_export),
+        "no DPI-awareness export found: user32 lacks "
+        "SetProcessDpiAwarenessContext and SetProcessDPIAware, and shcore "
+        "lacks SetProcessDpiAwareness")
+    if dpi_export:
+        _reason("dpi_aware", f"via {dpi_export}")
 
     # ── layered / click-through windows ─────────────────────────────────────
     # GetWindowLongPtrW/SetWindowLongPtrW on x64, the Long forms on x86. Either

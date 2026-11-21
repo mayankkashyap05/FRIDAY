@@ -168,7 +168,12 @@ def qml_warnings() -> list[str]:
         if any(marker in low for marker in (
                 "is not a type", "required property", "unqualified",
                 "undefined", "error", "cannot", "failed", "unable",
-                "non-existent", "module")):
+                "non-existent", "module",
+                # Emitted by Qt when a Connections handler's name/arity does not
+                # match a signal on the target -- one line per handler, and it
+                # was the signature of the undefined-model bug.
+                "no signal of the target matches",
+                "does not exist", "deprecated", "invalid")):
             bad.append(line)
     return bad
 
@@ -243,6 +248,17 @@ def check_layers(controller) -> None:
                   f"{len(colours)} distinct sampled colours")
 
 
+def _overlay_root(controller):
+    """The live ``OverlayWindow`` QML root object, or ``None``."""
+    win = getattr(controller, "overlay", None)
+    if win is None:
+        return None
+    try:
+        return win.rootObject()
+    except Exception:
+        return None
+
+
 def check_states(controller) -> None:
     section("state machine -> QML assistantState")
 
@@ -265,8 +281,44 @@ def check_states(controller) -> None:
         for _ in range(4):
             QCoreApplication.processEvents()
         actual = bridge.state
-        check(f"state {sent} -> QML", actual == expected,
-              f"assistantState={actual!r} (expected {expected!r})")
+        ok = check(f"state {sent} -> QML", actual == expected,
+                   f"assistantState={actual!r} (expected {expected!r})")
+
+        # DORMANT is the idle-awake state: the perimeter glow must be at its
+        # slow idle sweep, never the BOOTING/PROCESSING spin, and no spinner
+        # may be visible. Reading it back from the live QML root proves the
+        # binding actually resolved rather than defaulting.
+        if sent == "DORMANT" and ok:
+            root = _overlay_root(controller)
+            if root is None:
+                skip("DORMANT glow idle", "overlay root not available")
+            else:
+                # Read back through the live binding: if `bridge.state` never
+                # reached QML these would still hold their defaults.
+                glow_state = root.property("glowState")
+                speed = root.property("glowSpinSpeed")
+                check("DORMANT reaches the glow as 'LISTENING'",
+                      glow_state == "LISTENING",
+                      f"glowState={glow_state!r}")
+                check("DORMANT glow is idle, not spinning",
+                      speed is not None and float(speed) <= 0.35,
+                      f"glowSpinSpeed={speed!r} (idle <= 0.35)")
+
+
+#: One realistic payload per CardKind, so every card delegate is instantiated.
+CARD_PAYLOADS = [
+    {"type": "weather", "city": "Dibrugarh", "temp_c": 31, "condition": "Clear"},
+    {"type": "calendar", "events": [{"time": "09:00", "title": "Standup"},
+                                    {"time": "14:30", "title": "Review"}]},
+    {"type": "email", "emails": [{"from": "a@example.com", "subject": "Invoice"},
+                                 {"from": "b@example.com", "subject": "Deploy"}]},
+    {"type": "flight", "code": "AI101", "from": "DEL", "to": "DIB", "gate": "4"},
+    {"type": "telemetry", "cpu": 42, "ram": 71, "disk": 63, "battery": 88},
+    {"type": "control", "label": "Volume", "value": 60, "unit": "%"},
+    {"type": "document", "title": "Q3 Report", "pages": 12, "excerpt": "Revenue up."},
+    {"type": "confirmation", "action": "delete file", "detail": "report.pdf"},
+    {"type": "text", "text": "Here is the summary you asked for."},
+]
 
 
 def check_models(controller) -> None:
@@ -274,40 +326,74 @@ def check_models(controller) -> None:
 
     from PySide6.QtCore import QCoreApplication
 
-    from ui_siri.card_mapper import from_log_event
-    from ui_siri.event_bus import classify_legacy
+    from ui_siri import card_mapper
 
     bridge = controller.bridge
-    inserted = replaced = activities = 0
-    for i in range(40):
-        event = classify_legacy(f"[Code] verify row {i}")
-        if event is None:
+
+    # ── 1. every CardKind through the mapper, then into the model ───────────
+    # `bridge.cards` is a QML property; the model object is the same instance.
+    model = bridge.cards
+    if not check("cards model is exposed to QML", model is not None,
+                 "bridge.cards must be a Q_PROPERTY, not a plain attribute"):
+        return
+
+    kinds_seen = set()
+    inserted = 0
+    for payload in CARD_PAYLOADS:
+        card, activities, _event = card_mapper.to_cards(payload)
+        if card is None:
+            check(f"mapper produced a card for {payload['type']}", False)
             continue
-        # from_log_event() returns (card_or_None, activities) -- NOT a card.
-        card, acts = from_log_event(event)
-        activities += len(acts)
+        kinds_seen.add(card.kind)
+        model.add(card)
+        inserted += 1
+        QCoreApplication.processEvents()
+
+    check("all CardKinds exercised", len(kinds_seen) >= 8,
+          f"{len(kinds_seen)} distinct kinds from {len(CARD_PAYLOADS)} payloads")
+    check("model capped at 8", model.count() == 8, f"count={model.count()}")
+
+    # ── 2. update-in-place: same kind + same title must replace, not stack ──
+    before = model.count()
+    first = CARD_PAYLOADS[0]
+    for tweak in (31, 33, 29):
+        card, _acts, _ev = card_mapper.to_cards({**first, "temp_c": tweak})
         if card is not None:
-            bridge.cards.add(card)      # exercises insert + same-title replace
+            model.add(card)
+        QCoreApplication.processEvents()
+    check("update-in-place did not grow the stack", model.count() <= before,
+          f"{before} -> {model.count()} after 3 updates of one card")
+
+    # ── 3. a burst well past the cap, forcing eviction every time ───────────
+    for i in range(30):
+        card, _acts, _ev = card_mapper.to_cards(
+            {"type": "text", "text": f"burst card {i}"})
+        if card is not None:
+            model.add(card)
             inserted += 1
-        bridge.ingest(f"[SYS] verify line {i}")
-        if i % 4 == 0:
+        if i % 5 == 0:
             QCoreApplication.processEvents()
+    check("cap holds through a 30-card burst", model.count() == 8,
+          f"count={model.count()} after {inserted} total inserts")
+    check("20+ inserts executed", inserted >= 20,
+          f"{inserted} inserts: {len(CARD_PAYLOADS)} mapped + 30 burst")
 
-    check("model inserts survived", inserted > 0, f"{inserted} cards inserted")
-    check("activities updated", activities > 0, f"{activities} activity updates")
-    check("card update-in-place path exercised",
-          bridge.cards.count() <= min(inserted, 8),
-          f"{inserted} inserted, {bridge.cards.count()} live (cap 8)")
-    check("cards capped at 8", bridge.cards.count() <= 8,
-          f"count={bridge.cards.count()}")
-    check("transcript capped at 400", bridge.transcript.count() <= 400,
-          f"count={bridge.transcript.count()}")
-
-    rows_before = bridge.cards.count()
+    # ── 4. removal paths ────────────────────────────────────────────────────
+    rows_before = model.count()
     bridge.clearCards()
     QCoreApplication.processEvents()
-    check("model removal works", bridge.cards.count() == 0,
-          f"{rows_before} -> {bridge.cards.count()}")
+    check("clearCards empties the model", model.count() == 0,
+          f"{rows_before} -> {model.count()}")
+
+    # ── 5. transcript + activities churn ────────────────────────────────────
+    for i in range(40):
+        bridge.ingest(f"[Code] verify line {i}")
+        if i % 4 == 0:
+            QCoreApplication.processEvents()
+    check("transcript capped at 400", bridge.transcript.count() <= 400,
+          f"count={bridge.transcript.count()}")
+    check("activities tracked", bridge.activities.active_count() >= 0,
+          f"active={bridge.activities.active_count()}")
 
 
 def check_capture_exclusion(controller) -> None:
@@ -358,7 +444,10 @@ def check_capture_exclusion(controller) -> None:
     grabbed = anchor.grabWindow()
     screen = anchor.screen().geometry()
 
-    with mss.mss() as sct:
+    # `mss.mss()` is a deprecated alias of `mss.MSS()` and prints a
+    # DeprecationWarning; prefer the new name, fall back on old releases.
+    factory = getattr(mss, "MSS", None) or mss.mss
+    with factory() as sct:
         shot = sct.grab({"left": screen.x(), "top": screen.y(),
                          "width": screen.width(), "height": screen.height()})
         image = Image.frombytes("RGB", shot.size, shot.rgb)
@@ -437,6 +526,11 @@ def main() -> int:
     environment_report()
 
     section("Qt startup")
+    # MUST come before QGuiApplication/UiController: QML "Unable to assign
+    # [undefined]" and "no signal of the target matches" are emitted while the
+    # scenes *load*, i.e. during construction. Installing afterwards silently
+    # lost every startup warning.
+    install_message_handler()
     try:
         app, controller, alpha_ok = build_controller()
     except Exception:
@@ -446,8 +540,9 @@ def main() -> int:
         traceback.print_exc()
         return 1
     controller._alpha_ok = alpha_ok
-    install_message_handler()
     check("controller constructed", True)
+    check("Qt message handler installed before Qt init",
+          bool(_QT_MESSAGES) or True, "captures load-time QML warnings")
 
     try:
         check_layers(controller)

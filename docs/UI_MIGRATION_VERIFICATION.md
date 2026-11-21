@@ -359,3 +359,112 @@ pyproject.toml            dependency, QML package-data, legacy-ui extra
 tests/                   +188 tests across 4 new modules
 docs/UI_AUDIT_CONTRACT.md   the constraints this work was built against
 ```
+
+---
+
+## Round 3 — four runtime bugs found on the real Windows 11 box
+
+Second real-machine run: **49 passed, 2 failed**. Rounds 1–2 had already fixed
+the QML-module and capability-probe failures; this round cleared the remaining
+four. None of them were reproducible in the Linux sandbox, which has no GL
+stack, so every diagnosis below was made by inspecting the meta-object /
+source and then re-verified with a mocked-DLL or meta-object probe.
+
+### 1. `bridge.cards` / `activities` / `transcript` were invisible to QML
+
+**Symptom** (stderr on Windows):
+
+```
+LiveActivityBar.qml:54:5  QML Connections: Detected function "onRowsInserted" ...
+                          no signal of the target matches the name
+LiveActivityBar.qml:54:5  Unable to assign [undefined] to QObject*
+LiveActivityBar.qml:250:13 Unable to assign [undefined] to bool
+```
+
+**Root cause.** The three models were plain Python attributes:
+
+```python
+self.cards = CardsModel(self)      # not a Q_PROPERTY -> QML sees undefined
+```
+
+Qt builds its meta-object from `Property`/`Signal`/`Slot` declarations only, so
+`root.bridge.cards` evaluated to `undefined`. That single fact explains all four
+warnings: `SnippetStack.model` and `LiveActivityBar.model` were both undefined
+(hence the assignments of `undefined` to `QObject*`), `Connections.target` was
+undefined (hence one "no signal of the target matches" *per handler*), and
+`bar.model && ...` yielded `undefined` rather than a bool.
+
+**Consequence.** The card stack and the activity capsule had **never rendered
+anything**, in any build.
+
+**Fix.** Back the models with private attributes and expose them:
+
+```python
+@Property(QObject, constant=True)
+def cards(self) -> CardsModel: return self._cards
+```
+
+`constant=True` is correct: the model *identity* never changes, only its
+contents, and the models emit their own `rowsInserted` / `dataChanged`.
+
+Also fixed in `LiveActivityBar.qml`:
+
+* `Connections` handlers now declare the signal's parameters. Qt matches by name
+  **and arity**; a zero-argument `onRowsInserted` matches no signal on
+  `QAbstractListModel` and warns once per handler.
+* `visible: !!bar.model && bar.model.rowCount() > 0` — `&&` returns an
+  *operand*, so a null model gave `undefined` for a `bool` property.
+
+### 2. `check_models()` inserted 0 cards
+
+Same root cause plus a bad input: the verifier fed `[Code]`/`[SYS]` log lines
+through `from_log_event`, which maps those to *activities*, not cards (40
+activities, 0 cards — exactly what the Windows run reported). It now drives nine
+real payloads through the mapper, one per `CardKind`, then a 30-card burst, and
+asserts the cap, in-place replacement and `clearCards()`.
+
+### 3. `DORMANT` rendered as `BOOTING`
+
+Round 2 had aliased `DORMANT`/`SLEEPING`/`ASLEEP` → `BOOTING`, which left a
+spinner and a fast perimeter sweep on screen forever. `DORMANT` means *awake and
+idle*, so it now coerces to `LISTENING` (idle 0.35 sweep, no spinner). The
+verifier asserts the value **and** reads `glowSpinSpeed` back out of the live
+`PerimeterGlow`, because an undefined binding leaves a default in place and a
+Python-side check alone cannot catch it.
+
+### 4. `dpi_aware=False`
+
+`probe_capabilities()` never derived the flag at all; only the *action*
+`enable_per_monitor_dpi()` set it, and the probe runs before any window exists.
+It now means "the export exists", preferring
+`user32.SetProcessDpiAwarenessContext` → `shcore.SetProcessDpiAwareness` →
+`user32.SetProcessDPIAware`, and writes a `reasons["dpi_aware"]` on both the
+True and False paths.
+
+### Also in this round
+
+* `qInstallMessageHandler` now runs **before** `QGuiApplication`/`UiController`.
+  It ran after construction, so every load-time QML warning — including all of
+  the above — was emitted before the handler existed and never reached the
+  `no QML warnings during the run` check.
+* The warning filter did not match `"no signal of the target matches"`, so even
+  a captured Connections warning would not have failed the run.
+* `mss.mss()` → `mss.MSS()` (deprecated alias; emits a `DeprecationWarning`).
+* `AnchorPill.qml` advertised a `MultiEffect` frost in its own docstring that
+  was never wired up, leaving `import QtQuick.Effects` unused (the last qmllint
+  warning). The effect is now implemented, gated on `Theme.transparency`.
+
+### Gate results (Linux sandbox)
+
+| Gate | Result |
+|---|---|
+| `qmllint` all 21 QML files | **0 warnings, 0 errors** |
+| `pyflakes ui.py main.py ui_siri/ scripts/verify_windows_ui.py` | **0 undefined names** |
+| 5 UI test suites | **193 passed, 12 skipped** |
+
+### Still not verified here
+
+Qt has never booted in this sandbox (`libGL.so.1` is absent), so: no QML was
+instantiated under a real engine, and no Win32 call was executed. The fixes above
+are verified by meta-object inspection and mocked-DLL probes only; the Windows
+run of `scripts/verify_windows_ui.py` remains the authoritative check.

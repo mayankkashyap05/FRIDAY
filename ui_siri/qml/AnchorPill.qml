@@ -95,6 +95,21 @@ Item {
             }
             Behavior on border.color { ColorAnimation { duration: Theme.durShort } }
 
+            // Frosted backdrop: MultiEffect renders the body through a
+            // layer and blurs it, which is what makes the pill read as glass
+            // over a desktop wallpaper. Gated on Theme.transparency so the
+            // effect costs nothing when the user has transparency off.
+            layer.enabled: Theme.transparency
+            MultiEffect {
+                source: body
+                anchors.fill: body
+                visible: Theme.transparency
+                blurEnabled: true
+                blur: 0.6
+                blurMax: 24
+                saturation: 0.1
+            }
+
             // A single inner highlight makes it read as glass, not a flat pill.
             Rectangle {
                 anchors.fill: parent

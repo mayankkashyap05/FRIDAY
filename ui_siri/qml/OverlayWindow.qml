@@ -39,7 +39,15 @@ Item {
     // Initial: the palette handed to setInitialProperties before construction.
     Component.onCompleted: overlay.applyTheme(overlay.themeData)
 
+    // Exposed for the on-Windows verifier, which reads these back from the
+    // live scene graph to prove state -> QML actually resolved (an undefined
+    // binding still leaves the default in place, so reading `bridge.state`
+    // from Python alone cannot catch a broken binding).
+    readonly property real glowSpinSpeed: glow.spinSpeed
+    readonly property string glowState: glow.assistantState
+
     PerimeterGlow {
+        id: glow
         anchors.fill: parent
         energy: overlay.bridge ? overlay.bridge.energy : 0.3
         assistantState: overlay.bridge ? overlay.bridge.state : "LISTENING"

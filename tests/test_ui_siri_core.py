@@ -426,6 +426,57 @@ def test_probe_enables_all_capabilities_on_windows_11_26300(monkeypatch):
             f"reasons={caps.reasons}")
 
 
+def test_probe_reports_dpi_aware_on_windows_11(monkeypatch):
+    """`dpi_aware` regressed to False because the probe never derived it.
+
+    The capability means "this process can declare per-monitor DPI awareness",
+    i.e. the export exists -- not that `enable_per_monitor_dpi()` has run. The
+    probe runs long before any window exists, so gating on the action made a
+    capable Windows 11 box report False.
+    """
+    w32 = _fake_windows(monkeypatch, WIN11_26300)
+    caps = w32.probe_capabilities()
+
+    assert caps.dpi_aware is True, f"reasons={caps.reasons}"
+    assert "SetProcessDpiAwarenessContext" in caps.reasons["dpi_aware"]
+
+
+def test_probe_dpi_aware_falls_back_to_shcore_then_legacy(monkeypatch):
+    """Win8.1 and Vista hosts are still DPI-capable via older exports."""
+    # shcore.SetProcessDpiAwareness (per-monitor v1)
+    w32 = _fake_windows(
+        monkeypatch, 9600,
+        user32_exports=("GetWindowLongPtrW", "SetWindowLongPtrW"),
+    )
+    monkeypatch.setattr(w32, "shcore",
+                        type("D", (), {"SetProcessDpiAwareness": lambda *a: 0})(),
+                        raising=False)
+    assert w32.probe_capabilities().dpi_aware is True
+
+    # user32.SetProcessDPIAware (system DPI only)
+    w32 = _fake_windows(
+        monkeypatch, 6002,
+        user32_exports=("GetWindowLongPtrW", "SetWindowLongPtrW",
+                        "SetProcessDPIAware"),
+    )
+    assert w32.probe_capabilities().dpi_aware is True
+
+
+def test_probe_records_a_reason_when_dpi_aware_is_false(monkeypatch):
+    """Every False capability must explain itself; silent degradation is the bug."""
+    w32 = _fake_windows(
+        monkeypatch, WIN11_26300,
+        user32_exports=("GetWindowLongPtrW", "SetWindowLongPtrW",
+                        "SetWindowDisplayAffinity"),
+    )
+    caps = w32.probe_capabilities()
+
+    assert caps.dpi_aware is False
+    reason = caps.reasons.get("dpi_aware")
+    assert reason, f"no reason recorded; reasons={caps.reasons}"
+    assert "SetProcessDpiAwarenessContext" in reason
+
+
 def test_probe_23621_boundaries(monkeypatch):
     """Each capability gates on its own build number."""
     cases = [
@@ -505,7 +556,10 @@ def test_windows_build_reports_a_number():
     ("SPEAKING", "SPEAKING"),
     ("ERROR", "MUTED"),
     ("FAILED", "MUTED"),
-    ("DORMANT", "BOOTING"),
+    # DORMANT is awake-but-idle, not booting: BOOTING showed a spinner forever.
+    ("DORMANT", "LISTENING"),
+    ("SLEEPING", "LISTENING"),
+    ("ASLEEP", "LISTENING"),
 ])
 def test_legacy_state_strings_resolve(legacy, expected):
     """Unknown spellings degrade to LISTENING, which is how ACTING was lost."""
@@ -534,13 +588,13 @@ def test_full_lifecycle_on_the_bridge():
     bridge = UiBridge(machine, EventBus(), dispatcher)
 
     cycle = [
-        ("DORMANT", "BOOTING"),
+        ("DORMANT", "LISTENING"),
         ("LISTENING", "LISTENING"),
         ("THINKING", "THINKING"),
         ("ACTING", "PROCESSING"),
         ("SPEAKING", "SPEAKING"),
         ("ERROR", "MUTED"),
-        ("DORMANT", "BOOTING"),
+        ("DORMANT", "LISTENING"),
     ]
     seen = []
     for sent, expected in cycle:
