@@ -1,30 +1,39 @@
 import QtQuick
-import QtQuick.Effects
 
 /*
     The Siri Orb — Apple-calibre volumetric glass sphere at bottom-centre.
 
-    Visual anatomy (no shaders; pyside6-qsb is not shipped in this wheel):
+    Entirely Canvas-driven (no ShaderEffect, no MultiEffect, no graphics
+    shaders of any kind) so it renders identically on every Windows 10/11
+    machine regardless of Qt Quick Effects availability.
+
+    Visual anatomy:
 
       * outer ambient halo — soft luminous glow that floats over the desktop,
-        driven by ``orb.energy`` and ``orb.smoothAmplitude``;
-      * glass sphere — crisp circular silhouette, 1px hairline border,
-        dark translucent interior with a suspended bottom shadow;
-      * inner specular rim highlight — delicate glass glint at top-left;
-      * six iridescent fluid ribbons drifting INSIDE the sphere — each an
-        undulating rounded rectangle rotating around the centre, pulsing with
-        voice amplitude; where ribbons intersect at the centre, alpha
-        accumulates into luminous white-hot peaks;
-      * every state interpolates through energy/amplitude/state colour —
-        never a snap; strictly clipped to the circular glass edge.
+        a multi-stop radial gradient fading to full transparency well inside
+        the Canvas padding (zero hard outer edge);
+      * glass sphere — deep translucent sapphire-indigo core (~88% opacity,
+        NEVER pitch black), crisp 1px inner glass rim highlight, delicate
+        upper-left crescent sheen;
+      * six iridescent fluid ribbons inside the sphere, drawn with
+        ``globalCompositeOperation = "lighter"`` (additive) so every overlap
+        and crest blooms into pure white-hot Siri silk;
+      * white-hot intersection peak at the centre where ribbons cross;
+      * every ribbon is strictly clipped to the circular glass edge — nothing
+        ever bleeds outside the silhouette;
+      * state colours (cyan listening / violet thinking / rose attention /
+        muted) and smoothed mic amplitude drive organic ribbon motion;
+      * elastic OutElastic spring bloom on summon, InCubic contraction on
+        dismiss; dormant = opacity 0 / timer stopped = 0% CPU, 0% footprint.
 
-    Colours (Apple Siri palette):
+    Colours (Apple Siri palette, from Theme):
       pri  : cyan/aqua      (listening)
-      acc2 : violet         (thinking/processing)
-      acc  : magenta/rose   (attention/confirmation)
-      mutcol: rose          (muted)
-      irid_*: ribbon hues   (cyan → blue → magenta → violet → white-hot)
+      mid  : sapphire/cobalt
+      acc  : magenta/rose   (attention)
+      acc2 : iridescent violet (thinking)
+      iridE: white-hot (intersection peaks)
 */
+
 Item {
     id: orb
 
@@ -55,274 +64,224 @@ Item {
     readonly property color stateColor: orb.attention ? Theme.acc
                                   : orb.muted ? Theme.mutcol
                                   : orb.thinking ? Theme.acc2
+                                  : orb.speaking ? Theme.pri
                                   : Theme.pri
 
-    property var ribbonHues: [Theme.iridA, Theme.iridB, Theme.iridC,
-                              Theme.iridD, Theme.iridE, Theme.iridA]
+    // ── ribbon hues that drift inside the orb (cyan → blue → magenta → violet → white-hot) ──
+    property var ribbonHues: [Theme.pri, Theme.mid, Theme.acc, Theme.acc2,
+                              Theme.pri, Theme.mid]
 
     // ──────────────────────────────────────────────────────────────────────
-    // Ribbon drive — continuous rotation + smoothed mic amplitude
+    // Ribbon drive — smoothed mic amplitude + continuous phase
     // ──────────────────────────────────────────────────────────────────────
-    property real phase
-    NumberAnimation on phase {
-        running: Theme.motion > 0
-        loops: Animation.Infinite
-        from: 0
-        to: 1
-        duration: 3500
-    }
-
-    // Smoothed amplitude: removes stepping from the 30 Hz mic feed so ribbons
-    // expand/ripple organically instead of jumping.
     property real smoothAmplitude: 0.0
     Behavior on smoothAmplitude { NumberAnimation { duration: 80 } }
 
     onAmplitudeChanged: orb.smoothAmplitude = orb.amplitude
 
-    // ──────────────────────────────────────────────────────────────────────
-    // Outer ambient halo — floats directly over the desktop
-    // ──────────────────────────────────────────────────────────────────────
-    Item {
-        id: halo
-        width: orb.orbSize * 2.4
-        height: halo.width
-        anchors.centerIn: parent
-        opacity: (0.08 + 0.55 * orb.energy + 0.35 * orb.smoothAmplitude)
-                 * (orb.muted ? 0.30 : 1)
-        Behavior on opacity { NumberAnimation { duration: Theme.durMed } }
-
-        Rectangle {
-            anchors.fill: parent
-            radius: parent.width / 2
-            gradient: Gradient {
-                GradientStop { position: 0.0
-                               color: Theme.withAlpha(orb.stateColor, 0.55) }
-                GradientStop { position: 0.5
-                               color: Theme.withAlpha(orb.stateColor, 0.10) }
-                GradientStop { position: 1.0; color: "transparent" }
-            }
-        }
-        MultiEffect {
-            id: haloBlur
-            source: halo
-            visible: Theme.transparency
-            blurEnabled: true
-            blur: 20
-            blurMax: 60
-            saturation: 0.0
-        }
+    property real phase: 0
+    NumberAnimation on phase {
+        running: orb.opacity > 0.01 && Theme.motion > 0
+        loops: Animation.Infinite
+        from: 0
+        to: 1
+        duration: 3000
     }
 
-    // ──────────────────────────────────────────────────────────────────────
-    // Six iridescent fluid ribbons inside the sphere.
-    // Each ribbon rotates around centre, undulates in scale/length, and
-    // expands toward the rim with voice amplitude. Everything stays inside
-    // the circular glass edge — nothing protrudes.
-    // ──────────────────────────────────────────────────────────────────────
-    Item {
-        id: ribbons
-        anchors.centerIn: parent
-        width: orb.orbSize * 0.92
-        height: ribbons.width
-
-        // ── ribbon 1 ──
-        Rectangle {
-            width: orb.orbSize * (0.38 + 0.42 * orb.smoothAmplitude)
-            height: orb.orbSize * (0.05 + 0.03 * Math.sin(orb.phase * 4))
-            radius: height / 2
-            x: (ribbons.width - width) / 2
-            y: (ribbons.height - height) / 2
-            transformOrigin: Item.Center
-            rotation: orb.phase * 120
-            scale: 0.55 + 0.45 * Math.abs(Math.sin(orb.phase * 3))
-            opacity: (0.35 + 0.5 * orb.energy + 0.4 * orb.smoothAmplitude)
-                     * (orb.muted ? 0.4 : 1) * (orb.attention ? 1.15 : 1)
-            gradient: Gradient {
-                GradientStop { position: 0.0
-                               color: Theme.withAlpha(orb.ribbonHues[0], 0.85) }
-                GradientStop { position: 0.5
-                               color: Theme.withAlpha("#FFFFFF", 0.65) }
-                GradientStop { position: 1.0
-                               color: Theme.withAlpha(orb.ribbonHues[0], 0.85) }
-            }
-        }
-
-        // ── ribbon 2 ──
-        Rectangle {
-            width: orb.orbSize * (0.38 + 0.42 * orb.smoothAmplitude)
-            height: orb.orbSize * (0.05 + 0.03 * Math.sin(orb.phase * 4 + 1))
-            radius: height / 2
-            x: (ribbons.width - width) / 2
-            y: (ribbons.height - height) / 2
-            transformOrigin: Item.Center
-            rotation: 60 + orb.phase * 120
-            scale: 0.55 + 0.45 * Math.abs(Math.sin(orb.phase * 3 + 1))
-            opacity: (0.35 + 0.5 * orb.energy + 0.4 * orb.smoothAmplitude)
-                     * (orb.muted ? 0.4 : 1) * (orb.attention ? 1.15 : 1)
-            gradient: Gradient {
-                GradientStop { position: 0.0
-                               color: Theme.withAlpha(orb.ribbonHues[1], 0.85) }
-                GradientStop { position: 0.5
-                               color: Theme.withAlpha("#FFFFFF", 0.65) }
-                GradientStop { position: 1.0
-                               color: Theme.withAlpha(orb.ribbonHues[1], 0.85) }
-            }
-        }
-
-        // ── ribbon 3 ──
-        Rectangle {
-            width: orb.orbSize * (0.38 + 0.42 * orb.smoothAmplitude)
-            height: orb.orbSize * (0.05 + 0.03 * Math.sin(orb.phase * 4 + 2))
-            radius: height / 2
-            x: (ribbons.width - width) / 2
-            y: (ribbons.height - height) / 2
-            transformOrigin: Item.Center
-            rotation: 120 + orb.phase * 120
-            scale: 0.55 + 0.45 * Math.abs(Math.sin(orb.phase * 3 + 2))
-            opacity: (0.35 + 0.5 * orb.energy + 0.4 * orb.smoothAmplitude)
-                     * (orb.muted ? 0.4 : 1) * (orb.attention ? 1.15 : 1)
-            gradient: Gradient {
-                GradientStop { position: 0.0
-                               color: Theme.withAlpha(orb.ribbonHues[2], 0.85) }
-                GradientStop { position: 0.5
-                               color: Theme.withAlpha("#FFFFFF", 0.65) }
-                GradientStop { position: 1.0
-                               color: Theme.withAlpha(orb.ribbonHues[2], 0.85) }
-            }
-        }
-
-        // ── ribbon 4 ──
-        Rectangle {
-            width: orb.orbSize * (0.38 + 0.42 * orb.smoothAmplitude)
-            height: orb.orbSize * (0.05 + 0.03 * Math.sin(orb.phase * 4 + 3))
-            radius: height / 2
-            x: (ribbons.width - width) / 2
-            y: (ribbons.height - height) / 2
-            transformOrigin: Item.Center
-            rotation: 180 + orb.phase * 120
-            scale: 0.55 + 0.45 * Math.abs(Math.sin(orb.phase * 3 + 3))
-            opacity: (0.35 + 0.5 * orb.energy + 0.4 * orb.smoothAmplitude)
-                     * (orb.muted ? 0.4 : 1) * (orb.attention ? 1.15 : 1)
-            gradient: Gradient {
-                GradientStop { position: 0.0
-                               color: Theme.withAlpha(orb.ribbonHues[3], 0.85) }
-                GradientStop { position: 0.5
-                               color: Theme.withAlpha("#FFFFFF", 0.65) }
-                GradientStop { position: 1.0
-                               color: Theme.withAlpha(orb.ribbonHues[3], 0.85) }
-            }
-        }
-
-        // ── ribbon 5 ──
-        Rectangle {
-            width: orb.orbSize * (0.38 + 0.42 * orb.smoothAmplitude)
-            height: orb.orbSize * (0.05 + 0.03 * Math.sin(orb.phase * 4 + 4))
-            radius: height / 2
-            x: (ribbons.width - width) / 2
-            y: (ribbons.height - height) / 2
-            transformOrigin: Item.Center
-            rotation: 240 + orb.phase * 120
-            scale: 0.55 + 0.45 * Math.abs(Math.sin(orb.phase * 3 + 4))
-            opacity: (0.35 + 0.5 * orb.energy + 0.4 * orb.smoothAmplitude)
-                     * (orb.muted ? 0.4 : 1) * (orb.attention ? 1.15 : 1)
-            gradient: Gradient {
-                GradientStop { position: 0.0
-                               color: Theme.withAlpha(orb.ribbonHues[4], 0.85) }
-                GradientStop { position: 0.5
-                               color: Theme.withAlpha("#FFFFFF", 0.65) }
-                GradientStop { position: 1.0
-                               color: Theme.withAlpha(orb.ribbonHues[4], 0.85) }
-            }
-        }
-
-        // ── ribbon 6 ──
-        Rectangle {
-            width: orb.orbSize * (0.38 + 0.42 * orb.smoothAmplitude)
-            height: orb.orbSize * (0.05 + 0.03 * Math.sin(orb.phase * 4 + 5))
-            radius: height / 2
-            x: (ribbons.width - width) / 2
-            y: (ribbons.height - height) / 2
-            transformOrigin: Item.Center
-            rotation: 300 + orb.phase * 120
-            scale: 0.55 + 0.45 * Math.abs(Math.sin(orb.phase * 3 + 5))
-            opacity: (0.35 + 0.5 * orb.energy + 0.4 * orb.smoothAmplitude)
-                     * (orb.muted ? 0.4 : 1) * (orb.attention ? 1.15 : 1)
-            gradient: Gradient {
-                GradientStop { position: 0.0
-                               color: Theme.withAlpha(orb.ribbonHues[5], 0.85) }
-                GradientStop { position: 0.5
-                               color: Theme.withAlpha("#FFFFFF", 0.65) }
-                GradientStop { position: 1.0
-                               color: Theme.withAlpha(orb.ribbonHues[5], 0.85) }
-            }
-        }
-
-        // White-hot intersection peaks at the centre where ribbons cross.
-        Rectangle {
-            width: orb.orbSize * 0.14
-            height: orb.orbSize * 0.14
-            radius: width / 2
-            x: (ribbons.width - width) / 2
-            y: (ribbons.height - height) / 2
-            color: "#FFFFFF"
-            opacity: 0.45 * Math.abs(Math.sin(orb.phase * 6))
-                     * (0.5 + 0.5 * orb.smoothAmplitude)
-        }
-    }
+    // Repaint the Canvas whenever the animated inputs change so the ribbons
+    // flow silky-smooth at the Canvas timer's 60 FPS.
+    onSmoothAmplitudeChanged: canvas.requestPaint()
+    onPhaseChanged: canvas.requestPaint()
+    onEnergyChanged: canvas.requestPaint()
+    onStateColorChanged: canvas.requestPaint()
 
     // ──────────────────────────────────────────────────────────────────────
-    // Glass sphere overlay — silhouette, depth, rim highlight
-    // (drawn over the ribbons so they read as suspended inside the glass)
+    // Canvas — true pixel-accurate circular clipping, radial gradients,
+    // curved Bezier fluid waves, and real additive ("lighter") blending.
     // ──────────────────────────────────────────────────────────────────────
-    Item {
-        id: sphere
-        anchors.centerIn: parent
-        width: orb.orbSize
-        height: orb.orbSize
+    Canvas {
+        id: canvas
+        anchors.fill: parent
+        renderTarget: Canvas.FramebufferObject
+        antialiasing: true
 
-        Rectangle {
-            id: glass
-            anchors.fill: parent
-            radius: width / 2
-            border.width: 1
-            border.color: Theme.withAlpha(Theme.textStrong, 0.12)
-            gradient: Gradient {
-                GradientStop { position: 0.0
-                               color: Theme.withAlpha("#111A24", 0.85) }
-                GradientStop { position: 0.5
-                               color: Theme.withAlpha("#0B141C", 0.92) }
-                GradientStop { position: 1.0
-                               color: Theme.withAlpha("#070B10", 0.98) }
+        property real paintTime: 0
+
+        // 60+ FPS repaint loop — runs ONLY while the orb is visible
+        // (opacity > 0.01). Dormant = timer stopped = 0% CPU.
+        Timer {
+            id: paintTimer
+            interval: 16
+            running: orb.opacity > 0.01
+            repeat: true
+            triggeredOnStart: true
+            onTriggered: {
+                canvas.paintTime += 0.016
+                canvas.requestPaint()
             }
         }
 
-        // Delicate inner specular rim highlight (top-left glass glint).
-        Rectangle {
-            width: parent.width * 0.90
-            height: parent.height * 0.28
-            x: parent.width * 0.05
-            y: parent.height * 0.04
-            radius: height / 2
-            rotation: -20
-            gradient: Gradient {
-                GradientStop { position: 0.0
-                               color: Theme.withAlpha(Theme.textStrong, 0.65) }
-                GradientStop { position: 0.5
-                               color: Theme.withAlpha(Theme.textStrong, 0.05) }
-                GradientStop { position: 1.0; color: "transparent" }
-            }
-            opacity: 0.50 + 0.25 * orb.energy
-        }
+        onPaint: {
+            var ctx = getContext("2d")
+            var w = canvas.width
+            var h = canvas.height
+            var cx = w / 2
+            var cy = h / 2
+            var r = Math.min(w, h) / 2 * 0.90   // sphere radius inside canvas
 
-        // Suspended-depth shadow (bottom inside the glass).
-        Rectangle {
-            width: parent.width * 0.82
-            height: parent.height * 0.30
-            x: parent.width * 0.09
-            y: parent.height * 0.62
-            radius: height / 2
-            color: "#000000"
-            opacity: (0.14 + 0.12 * orb.energy) * Theme.glass
+            var amp = orb.smoothAmplitude
+            var energy = orb.energy
+            var color = orb.stateColor
+            var muted = orb.muted
+            var muteFactor = muted ? 0.4 : 1
+
+            // ── QML color → CSS "rgba(r,g,b,a)" helper ──────────────────
+            function toCss(c, a) {
+                return "rgba(" + c.r + ", " + c.g + ", " + c.b + ", " + a + ")"
+            }
+
+            // ────────────────────────────────────────────────────────────
+            // 1. Outer ambient halo — OUTSIDE the circle clip.
+            //    Multi-stop radial gradient from r*0.7 to r*1.6, fading to
+            //    fully transparent well inside the canvas padding.
+            // ────────────────────────────────────────────────────────────
+            var haloRad = r * 1.6
+            var haloGrad = ctx.createRadialGradient(cx, cy, r * 0.7,
+                                                    cx, cy, haloRad)
+            haloGrad.addColorStop(0.0,
+                toCss(color, 0.25 * energy * muteFactor))
+            haloGrad.addColorStop(0.45,
+                toCss(color, 0.06 * energy * muteFactor))
+            haloGrad.addColorStop(1.0, toCss(color, 0.0))
+            ctx.fillStyle = haloGrad
+            ctx.fillRect(0, 0, w, h)
+
+            // ────────────────────────────────────────────────────────────
+            // 2. Clip everything to the glass sphere's silhouette.
+            //    Nothing may ever bleed outside this circle.
+            // ────────────────────────────────────────────────────────────
+            ctx.save()
+            ctx.beginPath()
+            ctx.arc(cx, cy, r, 0, Math.PI * 2)
+            ctx.clip()
+
+            // ────────────────────────────────────────────────────────────
+            // 3. Deep translucent glass core — sapphire-indigo, ~88% opacity,
+            //    NEVER pitch black.
+            // ────────────────────────────────────────────────────────────
+            var glassGrad = ctx.createRadialGradient(cx, cy, 0, cx, cy, r)
+            glassGrad.addColorStop(0.0, "rgba(22, 18, 59, 0.88)")
+            glassGrad.addColorStop(0.5, "rgba(14, 26, 74, 0.92)")
+            glassGrad.addColorStop(1.0, "rgba(30, 15, 61, 0.88)")
+            ctx.fillStyle = glassGrad
+            ctx.fillRect(0, 0, w, h)
+
+            // ────────────────────────────────────────────────────────────
+            // 4. Iridescent fluid ribbons — additive "lighter" compositing.
+            //    Six overlapping undulating loops in Apple Siri hues; where
+            //    they cross, alpha accumulates into white-hot peaks.
+            // ────────────────────────────────────────────────────────────
+            ctx.globalCompositeOperation = "lighter"
+
+            var ribbonCount = 6
+            var twoPi = Math.PI * 2
+
+            for (var i = 0; i < ribbonCount; i++) {
+                var baseAngle = i * (twoPi / ribbonCount)
+                var swirl = canvas.paintTime * 0.5
+                var angle = baseAngle + swirl + i * 0.4
+
+                // Voice energy pushes ribbons toward the rim.
+                var reach = 0.30 + 0.50 * amp + 0.20 *
+                            Math.sin(canvas.paintTime * 2.0 + i)
+                if (reach > 0.95)
+                    reach = 0.95
+
+                var waveAmp = 0.08 + 0.10 * amp
+                var waveFreq = 3.0 + i * 0.5
+
+                ctx.save()
+                ctx.translate(cx, cy)
+                ctx.rotate(angle)
+
+                ctx.beginPath()
+                ctx.moveTo(0, 0)
+
+                // Outbound curved ribbon edge.
+                ctx.bezierCurveTo(
+                    r * 0.15, -r * 0.04,
+                    r * reach * 0.5,
+                        -r * 0.02 +
+                        Math.sin(canvas.paintTime * waveFreq + i) * r * 0.06,
+                    r * reach,
+                        Math.sin(canvas.paintTime * waveFreq + i * 1.3) *
+                        r * 0.10)
+
+                // Inbound edge — offset curve back toward centre.
+                ctx.bezierCurveTo(
+                    r * reach * 0.55,
+                        Math.sin(canvas.paintTime * waveFreq + i) * r * 0.08,
+                    r * 0.25, r * 0.06,
+                    r * 0.10, r * 0.02)
+
+                ctx.bezierCurveTo(r * 0.02, 0, 0, 0, 0, 0)
+                ctx.closePath()
+
+                var grad = ctx.createLinearGradient(0, -r * 0.15, 0, r * 0.15)
+                grad.addColorStop(0.0,
+                    toCss(orb.ribbonHues[i], 0.5 * muteFactor))
+                grad.addColorStop(0.35,
+                    toCss("#FFFFFF", 0.8 * muteFactor))
+                grad.addColorStop(0.65,
+                    toCss("#FFFFFF", 0.8 * muteFactor))
+                grad.addColorStop(1.0,
+                    toCss(orb.ribbonHues[i], 0.4 * muteFactor))
+                ctx.fillStyle = grad
+                ctx.fill()
+
+                ctx.restore()
+            }
+
+            // ────────────────────────────────────────────────────────────
+            // 5. White-hot intersection peak at centre (source-over).
+            // ────────────────────────────────────────────────────────────
+            ctx.globalCompositeOperation = "source-over"
+            var peakOp = (0.5 + 0.5 * Math.sin(canvas.paintTime * 8)) *
+                         (0.6 + 0.4 * amp) * muteFactor
+            var peakGrad = ctx.createRadialGradient(cx, cy, 0, cx, cy,
+                                                    r * 0.14)
+            peakGrad.addColorStop(0.0, toCss("#FFFFFF", peakOp))
+            peakGrad.addColorStop(1.0, toCss("#FFFFFF", 0.0))
+            ctx.fillStyle = peakGrad
+            ctx.beginPath()
+            ctx.arc(cx, cy, r * 0.14, 0, Math.PI * 2)
+            ctx.fill()
+
+            // ────────────────────────────────────────────────────────────
+            // 6. Glass rim highlight — crisp 1.5px inner edge stroke.
+            // ────────────────────────────────────────────────────────────
+            ctx.strokeStyle = toCss("#FFFFFF", 0.25 * muteFactor)
+            ctx.lineWidth = 1.5
+            ctx.beginPath()
+            ctx.arc(cx, cy, r * 0.93, 0, Math.PI * 2)
+            ctx.stroke()
+
+            // ────────────────────────────────────────────────────────────
+            // 7. Inner crescent sheen — upper-left, soft gradient to 0 alpha.
+            //    NEVER a flat opaque grey pill.
+            // ────────────────────────────────────────────────────────────
+            var sheenGrad = ctx.createRadialGradient(
+                cx - r * 0.30, cy - r * 0.30, 0,
+                cx - r * 0.30, cy - r * 0.30, r * 0.45)
+            sheenGrad.addColorStop(0.0, toCss("#FFFFFF", 0.18 * muteFactor))
+            sheenGrad.addColorStop(0.5, toCss("#FFFFFF", 0.02 * muteFactor))
+            sheenGrad.addColorStop(1.0, toCss("#FFFFFF", 0.0))
+            ctx.fillStyle = sheenGrad
+            ctx.beginPath()
+            ctx.arc(cx - r * 0.30, cy - r * 0.30, r * 0.45, 0, Math.PI * 2)
+            ctx.fill()
+
+            ctx.restore()
         }
     }
 

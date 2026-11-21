@@ -94,10 +94,12 @@ class _LayerWindow(QQuickView):
 
     def __init__(self, qml_file: str, *, click_through: bool,
                  capture_excluded: bool, focusable: bool, dark: bool = True,
+                 dwm_naked: bool = False,
                  initial_properties: dict[str, Any] | None = None,
                  parent=None) -> None:
         super().__init__(parent)
         self._dark = bool(dark)
+        self._dwm_naked = bool(dwm_naked)
         self.setColor(QColor(0, 0, 0, 0))
         self.setFlags(Qt.WindowType.FramelessWindowHint
                       | Qt.WindowType.WindowStaysOnTopHint
@@ -168,11 +170,15 @@ class _LayerWindow(QQuickView):
             w32.exclude_from_capture(hwnd, True)
         # `dark` follows the OS theme; rounded corners are skipped for the
         # click-through overlay (DWM refuses on layered tool windows).
-        # NOTE: SiriWindow must NOT get a DWM system backdrop (Mica/Acrylic)
-        # — that paints a grey rounded rectangle over the whole window,
-        # destroying the 100% transparent "orb floating on desktop" look.
-        # Only apply dark mode + rounded corners, never backdrop.
-        if not self._click_through:
+        #
+        # SiriWindow is created with dwm_naked=True: we do NOT apply any DWM
+        # polish (no dark mode, no rounded corners, no backdrop). Instead we
+        # explicitly set DWMWCP_DONOTROUND + DWMWA_COLOR_NONE so Windows 11
+        # draws ZERO visible border, shadow, or rounded-rectangle outline
+        # around the transparent HWND — even when the orb is dormant.
+        if self._dwm_naked:
+            w32.apply_dwm_naked(hwnd)
+        elif not self._click_through:
             w32.apply_dwm_polish_no_backdrop(hwnd, dark=self._dark,
                                              rounded=True)
 
@@ -376,7 +382,7 @@ class UiController(QObject):
             self.siri = _LayerWindow(
                 "SiriWindow.qml", click_through=False,
                 capture_excluded=False, focusable=False,
-                dark=self._system_dark,
+                dark=self._system_dark, dwm_naked=True,
                 initial_properties={"bridge": self.bridge,
                                     "reducedMotion": self.reduced_motion,
                                     "themeData": self.theme})
