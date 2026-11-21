@@ -28,8 +28,12 @@ Item {
 
     implicitWidth: Math.round(240 * Theme.uiScale)
     implicitHeight: expanded ? body.height + 16 : Math.round(30 * Theme.uiScale)
-    visible: hasWork || expanded
-    opacity: hasWork ? 1.0 : 0.0
+    // `agentCount` mirrors `activeCount` but re-evaluates on row churn, so the
+    // bindings below stay *bindings*. An imperative `bar.visible = ...` in a
+    // signal handler would silently break them after the first insert.
+    property int agentCount: 0
+    visible: agentCount > 0 || expanded
+    opacity: agentCount > 0 ? 1.0 : 0.0
     Behavior on opacity { NumberAnimation { duration: Theme.durShort } }
     Behavior on implicitHeight {
         NumberAnimation {
@@ -51,14 +55,27 @@ Item {
     }
 
     // Keeps `hasWork` fresh when rows change.
+    //
+    // Each handler MUST declare the signal's parameters. Qt matches handlers by
+    // name *and* arity: a zero-argument `onRowsInserted` matches no signal on
+    // QAbstractListModel and prints
+    //   'Detected function "onRowsInserted" ... no signal of the target matches'
+    // on every startup. (A handler on a signal that does not exist also never
+    // fires, so the bar simply never updated -- the warning was the only clue.)
     Connections {
         target: bar.model
-        function onRowsInserted() { bar.refresh() }
-        function onRowsRemoved() { bar.refresh() }
-        function onDataChanged() { bar.refresh() }
+
+        function onRowsInserted(parent, first, last) { bar.refresh() }
+        function onRowsRemoved(parent, first, last) { bar.refresh() }
+        function onDataChanged(topLeft, bottomRight, roles) { bar.refresh() }
         function onModelReset() { bar.refresh() }
     }
-    function refresh() { bar.visible = bar.hasWork || bar.expanded }
+
+    // Re-reads the count into `agentCount`; the visual properties bind to that
+    // rather than being assigned here.
+    function refresh() { bar.agentCount = bar.countActive() }
+
+    Component.onCompleted: bar.refresh()
 
     // ── shell ───────────────────────────────────────────────────────────────
     Rectangle {
@@ -247,7 +264,10 @@ Item {
 
         // hairline progress for the first active row
         Rectangle {
-            visible: bar.model && bar.model.rowCount() > 0
+            // `&&` yields the *operand*, not a bool, so when `model` is
+            // null/undefined this evaluated to undefined and Qt printed
+            // "Unable to assign [undefined] to bool". `!!` forces a bool.
+            visible: !!bar.model && bar.model.rowCount() > 0
             anchors.left: parent.left
             anchors.right: parent.right
             anchors.bottom: parent.bottom

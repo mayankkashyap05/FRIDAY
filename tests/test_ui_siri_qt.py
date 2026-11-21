@@ -602,3 +602,107 @@ def test_controller_loads_windows_by_file_url_not_module():
         "NOT loadFromModule", "").replace("loadFromModule() would", "")
     # initial properties must precede the source, or required props are unset
     assert source.index("setInitialProperties") < source.index("self.setSource(")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Regressions: QML could not see the models (they were plain attributes)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def test_models_are_real_qml_properties(app):
+    """The three models must be Q_PROPERTYs, not plain Python attributes.
+
+    A plain attribute is invisible to QML: ``root.bridge.cards`` evaluates to
+    ``undefined``, which made ``SnippetStack.model`` undefined, made every
+    ``Connections`` handler warn "no signal of the target matches", and left
+    the card stack and activity capsule permanently empty. Nothing else in the
+    suite caught it, because Python-side access worked fine.
+    """
+    from ui_siri.bridge import UiBridge, UiDispatcher
+    from ui_siri.event_bus import EventBus
+    from ui_siri.state_machine import AssistantStateMachine
+
+    bridge = UiBridge(AssistantStateMachine(), EventBus(), UiDispatcher())
+    meta = bridge.metaObject()
+    declared = {str(meta.property(i).name()) for i in range(meta.propertyCount())}
+
+    for name in ("cards", "activities", "transcript"):
+        assert name in declared, (
+            f"{name!r} is not a Q_PROPERTY, so QML reads it as undefined")
+        assert getattr(bridge, name) is not None
+    assert bridge.cards is bridge._cards
+    assert bridge.activities is bridge._activities
+    assert bridge.transcript is bridge._transcript
+
+
+def test_connections_handlers_declare_signal_arguments():
+    """``Connections`` handlers must match the signal's arity.
+
+    A zero-argument ``function onRowsInserted()`` matches no signal on
+    QAbstractListModel and prints a warning per handler at startup.
+    """
+    qml = (QML_DIR / "LiveActivityBar.qml").read_text(encoding="utf-8")
+    for handler in ("onRowsInserted(parent, first, last)",
+                    "onRowsRemoved(parent, first, last)",
+                    "onDataChanged(topLeft, bottomRight, roles)"):
+        assert handler in qml, f"LiveActivityBar.qml is missing {handler!r}"
+
+
+def test_live_activity_bar_guards_a_null_model():
+    """Line 250 feeds ``model && model.rowCount()`` to a bool property."""
+    qml = (QML_DIR / "LiveActivityBar.qml").read_text(encoding="utf-8")
+    assert "!!bar.model" in qml, (
+        "the hairline progress visible: binding must coerce to bool")
+
+
+def test_live_activity_bar_never_assigns_its_bindings_imperatively():
+    """`bar.visible = ...` in a signal handler destroys the binding."""
+    raw = (QML_DIR / "LiveActivityBar.qml").read_text(encoding="utf-8")
+    assert "function refresh() { bar.agentCount = bar.countActive() }" in raw
+    assert "visible: agentCount > 0 || expanded" in raw
+    # Strip comments first: the file's own explanatory prose mentions the
+    # anti-pattern it warns against.
+    code = "\n".join(line.split("//")[0] for line in raw.splitlines())
+    for broken in ("bar.visible =", "bar.opacity ="):
+        assert broken not in code, (
+            f"{broken!r} breaks a declarative binding after the first row change")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Regression: DORMANT must be idle, not booting
+# ─────────────────────────────────────────────────────────────────────────────
+
+def test_dormant_is_and_listening_never_booting():
+    """DORMANT means "awake and idle", so it renders LISTENING.
+
+    It used to coerce to BOOTING, which left a spinner on screen forever.
+    """
+    from ui_siri.event_bus import UiState
+
+    for legacy in ("DORMANT", "SLEEPING", "ASLEEP"):
+        assert UiState.coerce(legacy) is UiState.LISTENING, legacy
+
+
+def test_dormant_cycle_ends_idle(app):
+    """Walk the full lifecycle and land back on an idle LISTENING."""
+    from ui_siri.bridge import UiBridge, UiDispatcher
+    from ui_siri.event_bus import EventBus, UiState
+    from ui_siri.state_machine import AssistantStateMachine
+
+    machine = AssistantStateMachine()
+    bridge = UiBridge(machine, EventBus(), UiDispatcher())
+
+    for sent, expected in (("LISTENING", "LISTENING"), ("THINKING", "THINKING"),
+                           ("SPEAKING", "SPEAKING"), ("ERROR", "MUTED"),
+                           ("DORMANT", "LISTENING")):
+        machine.coerce_legacy(sent)
+        assert bridge.state == expected, f"{sent} -> {bridge.state!r}"
+    assert machine.state is UiState.LISTENING
+
+
+def test_perimeter_glow_idles_when_not_working():
+    """The glow's spin must collapse to idle for LISTENING and MUTED."""
+    qml = (QML_DIR / "PerimeterGlow.qml").read_text(encoding="utf-8")
+    assert 'root.assistantState === "THINKING" ? 1.1 : 0.35' in qml, (
+        "idle states must fall through to the slow 0.35 sweep")
+    assert "glowSpinSpeed" in (QML_DIR / "OverlayWindow.qml").read_text(
+        encoding="utf-8"), "OverlayWindow must expose the glow for the verifier"

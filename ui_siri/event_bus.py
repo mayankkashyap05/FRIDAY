@@ -71,9 +71,13 @@ class UiState(str, Enum):
             "INITIALISING": cls.BOOTING,
             "INITIALIZING": cls.BOOTING,
             "CONNECTING": cls.BOOTING,
-            "DORMANT": cls.BOOTING,
-            "SLEEPING": cls.BOOTING,
-            "ASLEEP": cls.BOOTING,
+            # DORMANT is the *idle, awake* state -- FRIDAY is running and
+            # listening, it is just not doing anything. Mapping it to BOOTING
+            # (as an earlier revision did) rendered a spinner and a spinning
+            # perimeter glow forever. It must land on LISTENING.
+            "DORMANT": cls.LISTENING,
+            "SLEEPING": cls.LISTENING,
+            "ASLEEP": cls.LISTENING,
             "ERROR": cls.MUTED,
             "FAILED": cls.MUTED,
             "OFFLINE": cls.MUTED,

@@ -425,9 +425,13 @@ class UiBridge(QObject):
         # so they must stay QObject-owned children of the bridge: that pins
         # their C++ lifetime to the QQmlEngine thread and keeps the models alive
         # as long as the QML that references them.
-        self.cards = CardsModel(self)
-        self.activities = ActivityModel(self)
-        self.transcript = TranscriptModel(self)
+        #
+        # NOTE the leading underscore: reading them back through the name from
+        # inside the @Property getters below would recurse. QML reaches them via
+        # the `cards` / `activities` / `transcript` properties further down.
+        self._cards = CardsModel(self)
+        self._activities = ActivityModel(self)
+        self._transcript = TranscriptModel(self)
 
         # ── vision / arcade / effects scalars ────────────────────────────────
         self._vision_signal = "Awaiting camera input"
@@ -475,7 +479,7 @@ class UiBridge(QObject):
         """Single entry point for *any* backend content. GUI thread only."""
         card, activities, event = card_mapper.to_cards(payload)
         if event is not None:
-            self.transcript.add(event)
+            self._transcript.add(event)
             self._last_event = event.text[:120]
             implied = derive_state_for_log(event)
             if implied is not None and not self._muted:
@@ -487,10 +491,10 @@ class UiBridge(QObject):
                         UiState.LISTENING, UiState.THINKING, UiState.PROCESSING):
                     self._state.start_speaking()
         if card is not None:
-            self.cards.add(card)
+            self._cards.add(card)
             self.cardsChanged.emit()
         for activity in activities:
-            self.activities.upsert(activity)
+            self._activities.upsert(activity)
         if activities:
             self.activityChanged.emit()
 
@@ -648,13 +652,30 @@ class UiBridge(QObject):
     def theme(self) -> dict:
         return self._theme
 
+    # ── list models (QML: SnippetStack.model / LiveActivityBar.model) ───────
+    # These MUST be Q_PROPERTYs. As plain Python attributes they were invisible
+    # to QML, so `model:` received undefined and both surfaces stayed empty
+    # while Qt printed "Unable to assign [undefined] to QObject*".
+
+    @Property(QObject, constant=True)
+    def cards(self) -> "CardsModel":
+        return self._cards
+
+    @Property(QObject, constant=True)
+    def activities(self) -> "ActivityModel":
+        return self._activities
+
+    @Property(QObject, constant=True)
+    def transcript(self) -> "TranscriptModel":
+        return self._transcript
+
     @Property(int, notify=cardsChanged)
     def cardCount(self) -> int:
-        return self.cards.count()
+        return self._cards.count()
 
     @Property(int, notify=activityChanged)
     def activeActivities(self) -> int:
-        return self.activities.active_count()
+        return self._activities.active_count()
 
     # ── slots: user intents ──────────────────────────────────────────────────
     def submitText(self, text: str) -> None:
@@ -662,7 +683,7 @@ class UiBridge(QObject):
         if not text:
             return
         self._state.on_user_input(text)
-        self.transcript.add(classify_legacy(f"You: {text}"))
+        self._transcript.add(classify_legacy(f"You: {text}"))
         self.inputRequested.emit(text, "text")
 
     def toggleMute(self) -> None:
@@ -701,15 +722,15 @@ class UiBridge(QObject):
         self.inspectorChanged.emit()
 
     def dismissCard(self, uid: str) -> None:
-        if self.cards.remove(uid):
+        if self._cards.remove(uid):
             self.cardsChanged.emit()
 
     def clearCards(self) -> None:
-        self.cards.clear()
+        self._cards.clear()
         self.cardsChanged.emit()
 
     def clearTranscript(self) -> None:
-        self.transcript.clear()
+        self._transcript.clear()
 
     def dismissToast(self) -> None:
         self._toast = {"text": "", "severity": "info"}
@@ -810,10 +831,10 @@ class UiBridge(QObject):
 
     def expire_content(self) -> None:
         now = time.time()
-        gone = self.cards.expire(now)
+        gone = self._cards.expire(now)
         if gone:
             self.cardsChanged.emit()
-        if self.activities.prune():
+        if self._activities.prune():
             self.activityChanged.emit()
 
     # ── diagnostics ──────────────────────────────────────────────────────────
@@ -821,9 +842,9 @@ class UiBridge(QObject):
         return {
             "state": self._state.snapshot(),
             "dispatcher": self._dispatcher.stats(),
-            "cards": self.cards.count(),
-            "activities": self.activities.count(),
-            "transcript": self.transcript.count(),
+            "cards": self._cards.count(),
+            "activities": self._activities.count(),
+            "transcript": self._transcript.count(),
             "theme": self._theme.get("name", "?"),
             "vision": self._vision_mode,
             "arcadeOpen": self._arcade_open,

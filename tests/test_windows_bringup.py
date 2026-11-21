@@ -231,13 +231,23 @@ def test_card_mapper_return_arity_is_documented():
     assert isinstance(triple, tuple) and len(triple) == 3, triple
 
 
-def test_verifier_unpacks_from_log_event_correctly():
-    """Guards the exact line that crashed on Windows."""
+def test_verifier_never_assigns_a_mapper_tuple_to_a_bare_name():
+    """Guards the class of bug that crashed check_models() on Windows.
+
+    `card = from_log_event(...)` bound a (card, activities) tuple to `card` and
+    blew up on the next attribute access. The verifier now feeds real payloads
+    through `to_cards()`, which returns a 3-tuple, so the guard is that every
+    mapper call in the file is unpacked.
+    """
+    import re
+
     source = (REPO / "scripts" / "verify_windows_ui.py").read_text(encoding="utf-8")
-    assert "card, acts = from_log_event(event)" in source, \
-        "the verifier must unpack (card, activities) from from_log_event()"
-    assert "card = from_log_event(" not in source, \
-        "assigning the tuple to `card` is the bug that crashed check_models()"
+    for name in ("from_log_event", "to_cards", "from_envelope"):
+        # A bare `name = mapper(...)` binds the tuple itself.
+        bad = re.findall(rf"^\s*\w+\s*=\s*{name}\(", source, re.MULTILINE)
+        assert not bad, f"{name}() returns a tuple and must be unpacked, got {bad}"
+    assert "card_mapper.to_cards(" in source, \
+        "check_models() must feed real payloads through the mapper"
 
 
 def test_verifier_asserts_windows11_capabilities():
