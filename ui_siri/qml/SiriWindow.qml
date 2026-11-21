@@ -3,23 +3,22 @@ import QtQuick.Effects
 import "cards"
 
 /*
-    SiriWindow — the transient Siri stage.
+    SiriWindow — the transient Siri stage at bottom-centre.
 
-    It exists only while Siri is invoked. When dormant (idle) the native
-    window is hidden entirely — zero desktop footprint, nothing clickable,
-    nothing intercepting the mouse. On invocation it pops into view with the
-    orb's elastic spring bloom; on dismissal it contracts and fades back to
-    invisibility.
+    The window itself is 100% transparent (no background, no rectangle). Only
+    the Siri Orb, floating snippet cards and the Type-to-Siri pill are
+    visible — everything else is click-through, invisible, zero footprint.
 
-    Composition
-    -----------
-      SiriOrb        (centred stage)
-      SnippetStack   (floating glass cards beneath the orb)
-      TypeToSiriPill (frosted typing field — appears only on explicit typing)
-      SetupCard      (first-run onboarding — only before the API key exists)
+    When dormant (invoked = false) the orb is scale 0 / opacity 0 and the
+    native window can be hidden entirely by the controller.
 
-    The window never steals focus, never dims the desktop, and is
-    click-through outside the orb and active cards.
+    Composition (bottom-centre column):
+      TypeToSiriPill   (bottom, only when typing)
+      SiriOrb          (centrepiece — glass sphere + iridescent ribbons)
+      SnippetStack     (floating glass cards above the orb)
+
+    The window never steals focus (WS_EX_NOACTIVATE), never dims the desktop,
+    and is click-through outside the orb and active cards.
 */
 Item {
     id: root
@@ -62,14 +61,14 @@ Item {
         } else {
             orb.dismissing = true
             // Let the contraction finish before the controller hides the
-            // native window (dismissalAnimation runs ~430 ms).
+            // native window (dismissalAnimation runs ~400 ms).
             dismissalTimer.start()
         }
     }
 
     Timer {
         id: dismissalTimer
-        interval: 500
+        interval: 450
         repeat: false
         onTriggered: {
             if (!root.invoked)
@@ -87,12 +86,31 @@ Item {
         }
     }
 
-    // ── stage ─────────────────────────────────────────────────────────────
+    // ── stage ── bottom-centre column ─────────────────────────────────────
     Column {
         id: stage
-        anchors.centerIn: parent
-        spacing: Math.round(14 * Theme.uiScale)
+        anchors.horizontalCenter: parent.horizontalCenter
+        anchors.bottom: parent.bottom
+        anchors.bottomMargin: Math.round(48 * Theme.uiScale)
+        spacing: Math.round(10 * Theme.uiScale)
 
+        // ── Type-to-Siri pill (bottom-most, only when explicitly typing) ──
+        TypeToSiriPill {
+            id: typePill
+            visible: root.typing
+            opacity: root.typing ? 1 : 0
+            Behavior on opacity { NumberAnimation { duration: Theme.durShort } }
+            bridge: root.bridge
+            reducedMotion: root.reducedMotion
+
+            onSubmitted: (text) => {
+                root.typing = false
+                if (root.bridge) root.bridge.submitText(text)
+            }
+            onCanceled: () => { root.typing = false }
+        }
+
+        // ── Siri Orb ── glass sphere + iridescent ribbons ──
         SiriOrb {
             id: orb
             visible: !root.bridge || !root.bridge.setupVisible
@@ -101,23 +119,9 @@ Item {
             muted: root.bridge ? root.bridge.muted : false
             amplitude: root.micAmplitude
             attention: root.attention
-
-            // Click the orb to enter Type-to-Siri; click again to leave it.
-            MouseArea {
-                id: orbTouch
-                anchors.fill: parent
-                hoverEnabled: true
-                cursorShape: Qt.PointingHandCursor
-                onClicked: {
-                    if (!root.typing && (!root.bridge || !root.bridge.setupVisible)) {
-                        root.typing = true
-                    } else {
-                        root.typing = false
-                    }
-                }
-            }
         }
 
+        // ── SnippetStack ── floating glass response cards above the orb ──
         SnippetStack {
             id: stack
             visible: !root.bridge || !root.bridge.setupVisible
@@ -134,6 +138,7 @@ Item {
             }
         }
 
+        // ── SetupCard ── first-run onboarding (only before API key exists) ──
         SetupCard {
             id: setup
             visible: root.bridge ? root.bridge.setupVisible : false
@@ -142,25 +147,6 @@ Item {
             reducedMotion: root.reducedMotion
             onSubmit: (key) => root.apiKeySubmitted(key)
         }
-    }
-
-    // Type-to-Siri pill — only while explicitly typing.
-    TypeToSiriPill {
-        id: typePill
-        anchors.horizontalCenter: parent.horizontalCenter
-        anchors.bottom: parent.bottom
-        anchors.bottomMargin: Math.round(24 * Theme.uiScale)
-        visible: root.typing
-        opacity: root.typing ? 1 : 0
-        Behavior on opacity { NumberAnimation { duration: Theme.durShort } }
-        bridge: root.bridge
-        reducedMotion: root.reducedMotion
-
-        onSubmitted: (text) => {
-            root.typing = false
-            if (root.bridge) root.bridge.submitText(text)
-        }
-        onCanceled: () => { root.typing = false }
     }
 
     property bool typing: false
