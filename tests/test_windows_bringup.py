@@ -90,7 +90,7 @@ def test_matcher_prefers_the_new_module(monkeypatch):
 
 
 def test_matcher_falls_back_to_the_old_module(monkeypatch):
-    monkeypatch.delitem(sys.modules, "actions.kaizumi_wake", raising=False)
+    monkeypatch.setitem(sys.modules, "actions.kaizumi_wake", None)
     module = types.ModuleType("actions.friday_wake")
     module._matcher = object()
     monkeypatch.setitem(sys.modules, "actions.friday_wake", module)
@@ -108,7 +108,7 @@ def test_matcher_survives_a_module_that_raises_on_attribute_access(monkeypatch):
 
     bad.__getattr__ = _boom
     monkeypatch.setitem(sys.modules, "actions.friday_wake", bad)
-    monkeypatch.delitem(sys.modules, "actions.kaizumi_wake", raising=False)
+    monkeypatch.setitem(sys.modules, "actions.kaizumi_wake", None)
     assert _load_matcher_fn()() is None
 
 

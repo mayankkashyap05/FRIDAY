@@ -18,6 +18,7 @@ the live Gemini API:
 from __future__ import annotations
 
 import ast
+import os
 import sys
 from pathlib import Path
 
@@ -47,8 +48,24 @@ MODEL_CALLERS = [
 
 
 def _py_files():
-    return [p for p in REPO.rglob("*.py")
-            if ".git" not in p.parts and "tests" not in p.parts]
+    excluded_dirs = {".git", "tests", ".venv", "venv", "node_modules", "__pycache__"}
+    files = []
+    for root, dirs, names in os.walk(REPO):
+        dirs[:] = [name for name in dirs if name not in excluded_dirs]
+        files.extend(Path(root) / name for name in names if name.endswith(".py"))
+    return files
+
+
+def test_py_files_excludes_non_project_directories(tmp_path, monkeypatch):
+    monkeypatch.setattr(sys.modules[__name__], "REPO", tmp_path)
+    included = [tmp_path / "main.py", tmp_path / "src" / "venv_helper.py"]
+    excluded = [tmp_path / name / "nested" / "installed.py"
+                for name in (".git", "tests", ".venv", "venv", "node_modules", "__pycache__")]
+    for path in included + excluded:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("gemini-2.5-flash-lite", encoding="utf-8")
+
+    assert set(_py_files()) == set(included)
 
 
 def test_no_live_code_references_the_retired_lite_model():
