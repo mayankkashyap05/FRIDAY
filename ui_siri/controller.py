@@ -337,10 +337,15 @@ class UiController(QObject):
         the worst case: the app runs, shows nothing, and looks hung.
         """
         found: list[tuple[str, str, int, int, str]] = []
+        seen: set[int] = set()
+        # ``anchor`` is a pure alias of ``siri`` (same _LayerWindow object),
+        # so deduplicate by identity to avoid reporting the same load error
+        # twice (once for [siri], once for [anchor]).
         for layer, win in (("siri", self.siri), ("anchor", self.anchor),
                            ("inspector", self.inspector)):
-            if win is None:
+            if win is None or id(win) in seen:
                 continue
+            seen.add(id(win))
             for url, line, column, message in getattr(win, "load_errors", []) or []:
                 found.append((layer, url, line, column, message))
         return found
