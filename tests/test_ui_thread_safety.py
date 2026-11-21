@@ -215,3 +215,35 @@ def test_timer_interval_is_only_touched_on_the_gui_thread():
     assert "emit" not in source, (
         "call() must not emit a Signal; concurrent emits abort PySide6"
     )
+
+
+# ── live-frame plumbing (regression: preview froze on frame one) ────────────
+
+def test_frame_revision_is_a_working_qml_property(bridge, app):
+    """QML appends `frameRevision` to image provider URLs.
+
+    Without this the inspector's camera preview is decoded once and never
+    refreshed, because QQuickImageProvider URLs are revision-based.
+    """
+    assert bridge.frameRevision == 0
+
+    seen = []
+    bridge.framesChanged.connect(lambda: seen.append(bridge.frameRevision))
+
+    bridge.notify_frames()
+    bridge.notify_frames()
+
+    assert bridge.frameRevision == 2
+    assert seen == [1, 2], "each batch must notify QML exactly once"
+
+
+def test_push_frame_notifies_from_a_producer_thread(bridge, app):
+    """Frames arrive on the backend thread; the revision bump must not."""
+    dispatcher = bridge.dispatcher
+    thread = threading.Thread(target=dispatcher.call, args=(bridge.notify_frames,))
+    thread.start()
+    thread.join()
+
+    assert bridge.frameRevision == 0, "a producer thread must not touch the bridge"
+    _pump(dispatcher, app)
+    assert bridge.frameRevision == 1

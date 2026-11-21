@@ -388,6 +388,9 @@ class UiBridge(QObject):
 
     # ── scalar change notifications ──────────────────────────────────────────
     stateChanged = Signal()
+    #: A new camera or arcade frame landed; the inspector must re-request the
+    #: image URL because QQuickImageProvider URLs are revision-based.
+    framesChanged = Signal()
     connectionChanged = Signal()
     personaChanged = Signal()
     visionChanged = Signal()
@@ -441,6 +444,8 @@ class UiBridge(QObject):
         self._toast = {"text": "", "severity": "info"}
         self._inspector_open = False
         self._inspector_tab = ""
+        #: Bumped per frame batch; QML appends it to image provider URLs.
+        self._frame_revision = 0
         self._setup_visible = False
         self._last_event = ""
         self._input_echo = ""
@@ -671,6 +676,20 @@ class UiBridge(QObject):
 
     def bargeIn(self) -> None:
         self._state.barge_in("ui")
+
+    def notify_frames(self) -> None:
+        """Called when new frame(s) are available.
+
+        The revision only has to *change*: QML appends it to the provider URL,
+        which makes QQuickImageProvider re-read the stream. Bumping per batch
+        keeps it to one decode per batch rather than one per frame.
+        """
+        self._frame_revision += 1
+        self.framesChanged.emit()
+
+    @Property(int, notify=framesChanged)
+    def frameRevision(self) -> int:
+        return self._frame_revision
 
     def openInspector(self, tab: str = "") -> None:
         self._inspector_open = True

@@ -574,8 +574,20 @@ class UiController(QObject):
 
     # ── frame ingestion (thread-safe) ────────────────────────────────────────
     def push_frame(self, stream: str, frame: Any) -> bool:
-        """Store the newest camera/arcade frame. Callable from any thread."""
-        return self.images.push(stream, frame)
+        """Store the newest camera/arcade frame. Callable from any thread.
+
+        The pixels go into the provider lock-free from the caller's thread; the
+        QML-facing revision bump *must* happen on the GUI thread, so it is
+        routed through the dispatcher. A 30 fps stream therefore costs one
+        queued callable per frame, not a signal per frame.
+        """
+        ok = self.images.push(stream, frame)
+        if ok and (stream == "vision" or stream == "arcade"):
+            try:
+                self.dispatcher.call(self.bridge.notify_frames)
+            except Exception:
+                pass
+        return ok
 
     def frame_url(self, stream: str) -> str:
         return self.images.url(stream)

@@ -15,7 +15,7 @@ the migration, and — just as importantly — what could not be.
 
 ```
 python -m pytest tests/ -q
-221 passed, 12 skipped, 11 failed
+223 passed, 12 skipped, 11 failed
 ```
 
 All 11 failures are pre-existing and confined to modules with **no UI
@@ -34,7 +34,7 @@ The UI-relevant suites are fully green:
 tests/test_ui_siri_core.py       51 passed
 tests/test_ui_contract.py        55 passed, 1 skipped   (Tk absent)
 tests/test_ui_siri_qt.py         16 passed, 11 skipped  (QtGui absent)
-tests/test_ui_thread_safety.py   10 passed
+tests/test_ui_thread_safety.py   12 passed
 tests/test_p0_security.py        20 passed
 ```
 
@@ -147,6 +147,7 @@ bindings):
 | `property real x: 0` + `NumberAnimation on x` | `PerimeterGlow`, `AnchorPill`, `BaseGlassCard` | duplicate-binding warning; animation silently wins |
 | `modelData` in a JS-array `Repeater` delegate | `ScreenEffects`, `TelemetryCard`, `ControlPillCard`, `InspectorDrawer` | `Unqualified access`; fragile scope resolution |
 | Stale `card.acts` after a rename | `ControlPillCard` | actions row would render blank |
+| Image provider URL never re-requested | `InspectorDrawer` | camera preview froze on frame one |
 | No-op arithmetic in a delegate position | `ScreenEffects` | harmless, but misleading |
 
 The lint test carries **no exemption list** — a new warning anywhere fails CI.

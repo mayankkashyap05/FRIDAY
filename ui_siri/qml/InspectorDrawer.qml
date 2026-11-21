@@ -176,10 +176,16 @@ Rectangle {
                         fillMode: Image.PreserveAspectFit
                         cache: false
                         asynchronous: true
-                        // The image provider bumps `revision`; sourceSize keeps
-                        // decode cost proportional to the visible area.
-                        source: drawer.props && drawer.props.cameraSource
-                                ? drawer.props.cameraSource : ""
+                        // QQuickImageProvider URLs are revision-based, so the
+                        // source must be rebuilt every time a frame lands or
+                        // the preview freezes on the first one. `framesChanged`
+                        // is bound here, not polled.
+                        source: {
+                            if (!drawer.props || !drawer.props.cameraSource)
+                                return ""
+                            const rev = drawer.bridge ? drawer.bridge.frameRevision : 0
+                            return drawer.props.cameraSource + "&f=" + rev
+                        }
                         visible: status === Image.Ready
 
                         BusyIndicator {
@@ -278,8 +284,12 @@ Rectangle {
                         fillMode: Image.PreserveAspectFit
                         cache: false
                         asynchronous: true
-                        source: drawer.props && drawer.props.arcadeSource
-                                ? drawer.props.arcadeSource : ""
+                        source: {
+                            if (!drawer.props || !drawer.props.arcadeSource)
+                                return ""
+                            const rev = drawer.bridge ? drawer.bridge.frameRevision : 0
+                            return drawer.props.arcadeSource + "&f=" + rev
+                        }
                     }
 
                     // HUD
