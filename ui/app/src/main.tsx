@@ -22,6 +22,10 @@ function readRoute(): { kind: "stage" | "inspector"; tab: string } {
   return { kind: "stage", tab: "camera" };
 }
 
+// In Electron the page must stay fully transparent; in a plain browser (the dev
+// bench) a dark desktop stand-in makes the glass and the halo legible.
+if (!window.fridayAPI) document.documentElement.dataset.shell = "browser";
+
 const route = readRoute();
 const container = document.getElementById("root");
 if (!container) throw new Error("#root is missing from index.html");

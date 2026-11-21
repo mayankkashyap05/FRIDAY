@@ -66,6 +66,13 @@
   html {
     background-color: transparent !important;
   }
+
+  /* Dev bench only (no Electron preload): stand in for the desktop. */
+  html[data-shell="browser"] {
+    background:
+      radial-gradient(1200px 700px at 50% 110%, #1d2430 0%, #0b0c10 58%, #06070a 100%)
+      !important;
+  }
 }
 
 @layer components {

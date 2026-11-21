@@ -128,6 +128,31 @@ export function StageApp() {
   }, [connected, live.ready]);
   const useDev = devFallback && !connected && !live.ready;
 
+  // The bench opens on a summoned orb — otherwise a fresh browser preview is
+  // just an empty transparent page.
+  useEffect(() => {
+    if (!useDev) return;
+    devDispatch({
+      t: "state",
+      state: "LISTENING",
+      statusLabel: "LISTENING",
+      invoked: true,
+      energy: 0.42,
+    });
+    devDispatch({
+      t: "activities",
+      items: [
+        { aid: "dev-1", title: "Warming the renderer", kind: "task", detail: "",
+          progress: 0.35, active: true, ts: Date.now() / 1000 },
+      ],
+      activeCount: 1,
+    });
+    devDispatch({
+      t: "live_transcript",
+      text: "Click the orb to type, or use the dev bench.",
+    });
+  }, [useDev]);
+
   const send = socket.send;
   useThemeVars(ui.theme);
 

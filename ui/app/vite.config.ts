@@ -15,6 +15,9 @@ export default defineConfig({
     host: "0.0.0.0",
     port: 5173,
     strictPort: true,
+    // The dev bench is meant to be opened through a proxied preview host as
+    // well as localhost; only the dev server is ever reachable this way.
+    allowedHosts: [".e2b.app", "localhost", "127.0.0.1"],
   },
   build: {
     outDir: "dist",
