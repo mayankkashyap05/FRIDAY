@@ -164,12 +164,15 @@ def test_watchdog_measures_silence_from_the_last_chunk_written():
         "watchdog must confirm the queue is drained before releasing")
 
 
-def test_state_machine_release_speech_always_emits():
-    """Muted must not swallow the release: ducking is restored on transition."""
-    pytest.importorskip("PySide6")
-    from PySide6.QtCore import QCoreApplication
+def test_state_machine_release_speech_always_emits(qt_app):
+    """Muted must not swallow the release: ducking is restored on transition.
 
-    QCoreApplication.instance() or QCoreApplication([])
+    Takes the shared ``qt_app`` fixture rather than constructing a
+    ``QCoreApplication`` inline: the first application created in a process
+    wins, and a plain QCoreApplication here would lock out the QGuiApplication
+    that ``test_ui_siri_qt.py`` needs for QPixmap/QML windows.
+    """
+    pytest.importorskip("PySide6")
     from ui_siri.event_bus import UiState
     from ui_siri.state_machine import AssistantStateMachine
 
@@ -198,12 +201,13 @@ def test_state_machine_release_speech_always_emits():
     assert len(seen) == before
 
 
-def test_ducking_is_restored_on_release_including_muted():
-    """The user-facing symptom: other apps stayed at 25% volume."""
-    pytest.importorskip("PySide6")
-    from PySide6.QtCore import QCoreApplication
+def test_ducking_is_restored_on_release_including_muted(qt_app):
+    """The user-facing symptom: other apps stayed at 25% volume.
 
-    QCoreApplication.instance() or QCoreApplication([])
+    Uses the shared ``qt_app`` fixture (see the note above): creating a bare
+    ``QCoreApplication`` here would prevent the later QGuiApplication.
+    """
+    pytest.importorskip("PySide6")
     from ui_siri.event_bus import UiState
     from ui_siri.state_machine import AssistantStateMachine
 
