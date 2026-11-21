@@ -2,10 +2,12 @@ import QtQuick
 import QtQuick.Effects
 
 /*
-    Type-to-Siri pill — a minimal frosted-glass text field that appears *only*
+    Type-to-Siri pill — compact frosted-glass text field that appears *only*
     when the user explicitly triggers typing (clicking the orb), glides out,
     and retracts cleanly once submitted. It never clutters voice-only
     interactions.
+
+    Positioned at the bottom of the Siri stage column, just below the orb.
 */
 Item {
     id: pill
@@ -18,20 +20,20 @@ Item {
 
     property string text: ""
 
-    readonly property real pillWidth: Math.round(340 * Theme.uiScale)
-    readonly property real pillHeight: Math.round(44 * Theme.uiScale)
+    readonly property real pillWidth: Math.round(300 * Theme.uiScale)
+    readonly property real pillHeight: Math.round(40 * Theme.uiScale)
 
     implicitWidth: pillWidth
     implicitHeight: pillHeight
 
-    // Frosted glass surface.
+    // Frosted glass surface — pill-shaped.
     Rectangle {
         id: surface
         anchors.fill: parent
         radius: pill.pillHeight / 2
         color: Theme.withAlpha(Theme.panel, Theme.surfaceAlpha)
         border.width: 1
-        border.color: Theme.withAlpha(Theme.pri, input.activeFocus ? 0.6 : 0.3)
+        border.color: Theme.withAlpha(Theme.pri, input.activeFocus ? 0.55 : 0.25)
 
         Rectangle {
             anchors.fill: parent
@@ -55,10 +57,10 @@ Item {
     // Leading microphone glyph.
     Text {
         anchors.left: parent.left
-        anchors.leftMargin: Math.round(14 * Theme.uiScale)
+        anchors.leftMargin: Math.round(12 * Theme.uiScale)
         anchors.verticalCenter: parent.verticalCenter
         text: "🎤"
-        font.pixelSize: Math.round(18 * Theme.uiScale)
+        font.pixelSize: Math.round(17 * Theme.uiScale)
         opacity: 0.85
     }
 
@@ -68,7 +70,7 @@ Item {
         anchors.right: parent.right
         anchors.rightMargin: Math.round(10 * Theme.uiScale)
         anchors.verticalCenter: parent.verticalCenter
-        width: pill.pillWidth - Math.round(70 * Theme.uiScale)
+        width: pill.pillWidth - Math.round(62 * Theme.uiScale)
         color: Theme.text
         selectionColor: Theme.withAlpha(Theme.pri, 0.5)
         selectedTextColor: Theme.bg
@@ -100,5 +102,5 @@ Item {
         font.family: input.font.family
     }
 
-    Item { id: prev; width: Math.round(44 * Theme.uiScale); height: width }
+    Item { id: prev; width: Math.round(40 * Theme.uiScale); height: width }
 }

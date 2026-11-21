@@ -452,6 +452,41 @@ def apply_dwm_polish(window: Any, dark: bool = True, rounded: bool = True) -> di
     return result
 
 
+def apply_dwm_polish_no_backdrop(window: Any, dark: bool = True,
+                                 rounded: bool = True) -> dict:
+    """DWM polish WITHOUT system backdrop.
+
+    SiriWindow must never get DWMWA_SYSTEMBACKDROP_TYPE (Mica/Acrylic) —
+    that paints a grey rounded rectangle over the whole window, destroying
+    the 100% transparent "orb floating on desktop" look. Only dark mode and
+    rounded corners are applied.
+    """
+    result = {"dark": False, "rounded": False, "backdrop": False}
+    hwnd = _hwnd(window)
+    if not hwnd or not CAPS.dwmapi:
+        return result
+    try:
+        value = ctypes.c_int(1 if dark else 0)
+        result["dark"] = dwmapi.DwmSetWindowAttribute(
+            hwnd, DWMWA_USE_IMMERSIVE_DARK_MODE,
+            ctypes.byref(value), ctypes.sizeof(value)) == 0
+        if result["dark"]:
+            CAPS.dark_mode = dark
+    except Exception:
+        pass
+    try:
+        pref = ctypes.c_int(DWMWCP_ROUND if rounded else 1)
+        result["rounded"] = dwmapi.DwmSetWindowAttribute(
+            hwnd, DWMWA_WINDOW_CORNER_PREFERENCE,
+            ctypes.byref(pref), ctypes.sizeof(pref)) == 0
+        if result["rounded"]:
+            CAPS.rounded_corners = rounded
+    except Exception:
+        pass
+    # NOTE: deliberately do NOT set DWMWA_SYSTEMBACKDROP_TYPE here.
+    return result
+
+
 def enable_alpha_buffer() -> bool:
     """Ask Qt for an alpha channel on every window by default.
 

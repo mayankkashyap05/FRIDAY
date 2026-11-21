@@ -102,8 +102,7 @@ def to_qimage(frame: Any) -> QImage | None:
                 img = QImage(arr.data, w, h, arr.strides[0], fmt)
                 return img.copy()
             if arr.ndim == 3 and arr.shape[2] >= 3:
-                arr = np.ascontiguousarray(arr[:, :, 2::-1] if arr.shape[2] == 3
-                                           else arr[:, :, [2, 1, 0]])
+                arr = np.ascontiguousarray(arr)
                 h, w, _ = arr.shape
                 img = QImage(arr.data, w, h, arr.strides[0],
                              QImage.Format.Format_RGB888)

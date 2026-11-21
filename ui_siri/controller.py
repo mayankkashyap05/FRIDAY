@@ -168,8 +168,13 @@ class _LayerWindow(QQuickView):
             w32.exclude_from_capture(hwnd, True)
         # `dark` follows the OS theme; rounded corners are skipped for the
         # click-through overlay (DWM refuses on layered tool windows).
-        w32.apply_dwm_polish(hwnd, dark=self._dark,
-                             rounded=not self._click_through)
+        # NOTE: SiriWindow must NOT get a DWM system backdrop (Mica/Acrylic)
+        # — that paints a grey rounded rectangle over the whole window,
+        # destroying the 100% transparent "orb floating on desktop" look.
+        # Only apply dark mode + rounded corners, never backdrop.
+        if not self._click_through:
+            w32.apply_dwm_polish_no_backdrop(hwnd, dark=self._dark,
+                                             rounded=True)
 
     def set_click_through(self, enabled: bool) -> None:
         self._click_through = enabled
@@ -548,12 +553,13 @@ class UiController(QObject):
                 return
             avail: QRect = screen.availableGeometry()
 
-            # macOS Siri placement: top-right of the available screen geometry,
-            # never wall-to-wall and never covering the user's focus of attention.
-            stage_w = int(560 * self._scale)
-            stage_h = int(460 * self._scale)
-            x = avail.x() + (avail.width() - stage_w) - int(20 * self._scale)
-            y = avail.y() + int(avail.height() * 0.07)
+            # Apple Siri placement: bottom-centre of the available screen
+            # geometry, floating just above the taskbar with clean bottom
+            # margin — never wall-to-wall, never covering the user's focus.
+            stage_w = int(420 * self._scale)
+            stage_h = int(340 * self._scale)
+            x = avail.x() + (avail.width() - stage_w) // 2
+            y = avail.y() + (avail.height() - stage_h) - int(70 * self._scale)
             self.siri.setGeometry(QRect(x, y, stage_w, stage_h))
             if not self.siri.isVisible() and not self._hidden:
                 self.siri.show()
@@ -634,10 +640,13 @@ class UiController(QObject):
         self.bridge.closeInspector()
 
     def focus_input(self) -> None:
-        """Expand the pill and put the caret in the text field."""
-        if self.anchor is not None:
-            self.anchor.show()
-            self.anchor.requestActivate()
+        """Expand the pill and put the caret in the text field.
+
+        The Siri window carries ``Qt.WindowDoesNotAcceptFocus`` so voice
+        summoning never steals focus. When the user explicitly clicks to type,
+        we only need to give the input item keyboard focus — the window itself
+        must stay non-activating (no ``requestActivate()``).
+        """
         try:
             root = self.anchor.rootObject() if self.anchor else None
             if root is not None:

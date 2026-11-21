@@ -26,6 +26,12 @@ pytest.importorskip("PySide6", reason="PySide6 not installed")
 
 from PySide6.QtCore import QCoreApplication, QSize, Qt  # noqa: E402
 
+# QGuiApplication is only needed for GUI tests (FRIDAY_GUI_TESTS=1). Importing
+# it unconditionally would fail on headless boxes that lack libGL.so.1.
+def _qgui_application():
+    from PySide6.QtGui import QGuiApplication
+    return QGuiApplication
+
 # QtGui/QtQuick need the platform's GL/DBus/xkb libraries. Headless CI boxes
 # (including the sandbox this change was developed in) frequently lack them, so
 # the GUI-dependent half of this module is skipped rather than failed. The
@@ -171,9 +177,13 @@ def test_only_qt6_compatible_qml_modules():
 # Image provider
 # ─────────────────────────────────────────────────────────────────────────────
 
-@pytest.fixture(scope="module")
+@pytest.fixture
 def app():
-    application = QCoreApplication.instance() or QCoreApplication(sys.argv[:1])
+    """QGuiApplication for GUI tests — only created when QtGui is available."""
+    if not _QT_GUI_OK:
+        pytest.skip(f"QtGui unavailable ({_QT_GUI_ERROR})")
+    QGuiApplication = _qgui_application()
+    application = QGuiApplication.instance() or QGuiApplication(sys.argv[:1])
     yield application
 
 
@@ -370,7 +380,7 @@ def test_bridge_diagnostics_shape(app):
 @gui_stack
 def test_controller_boots_and_shuts_down():
     from PySide6.QtCore import QTimer
-    from PySide6.QtGui import QGuiApplication
+    QGuiApplication = _qgui_application()
 
     application = QGuiApplication.instance() or QGuiApplication(sys.argv[:1])
     from ui_siri.controller import UiController
