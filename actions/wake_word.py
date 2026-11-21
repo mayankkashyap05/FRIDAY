@@ -5,8 +5,9 @@
 # from the microphone in the background. When detected, Friday un-mutes /
 # signals that it's listening without needing keyboard or button presses.
 
-import time
+import importlib
 import threading
+import time
 from pathlib import Path
 
 import numpy as np
@@ -187,12 +188,34 @@ class WakeWordService:
 _service = WakeWordService()
 
 
+def _load_matcher():
+    """Return the custom "Hey Friday" matcher, or ``None``.
+
+    The module is ``actions.kaizumi_wake`` (it still carries the original
+    ``actions/friday_wake.py`` header comment, which is why the old import name
+    lingered). It pulls in ``onnxruntime`` plus a local ONNX model, so it can
+    legitimately be absent — and the tray thread must never die for that. The
+    old name is tried second so an older checkout keeps working.
+    """
+    for module_name in ("actions.kaizumi_wake", "actions.friday_wake"):
+        try:
+            module = importlib.import_module(module_name)
+            # Attribute access stays inside the guard: a module-level lazy
+            # import (onnxruntime, torch) can raise here, not at import time.
+            matcher = getattr(module, "_matcher", None)
+        except Exception:          # ImportError, OSError, onnxruntime load errors
+            continue
+        if matcher is not None:
+            return matcher
+    return None
+
+
 def _pick_engine():
     """Return the wake-word engine that should be active right now."""
-    from actions.friday_wake import _matcher
+    matcher = _load_matcher()
     try:
-        if _matcher.available:
-            return "friday", _matcher
+        if matcher is not None and matcher.available:
+            return "friday", matcher
     except Exception:
         pass
     return "friday", _service
@@ -209,12 +232,19 @@ def wake_word(
     params = parameters or {}
     action = str(params.get("action", "status")).lower().strip()
 
-    from actions.friday_wake import _matcher
+    _matcher = _load_matcher()
 
     if action in ("record", "record_wake_word"):
+        if _matcher is None:
+            return ("Custom wake-word recording is unavailable: "
+                    "actions.kaizumi_wake could not be imported (needs "
+                    "onnxruntime + a trained model).")
         n = int(params.get("clips") or params.get("count") or 5)
         return _matcher.record(n_clips=n)
     if action in ("train", "train_wake_word", "train_model"):
+        if _matcher is None:
+            return ("Custom wake-word training is unavailable: "
+                    "actions.kaizumi_wake could not be imported.")
         return _matcher.train(
             steps=int(params.get("steps") or params.get("epochs") or 900),
         )
@@ -222,7 +252,8 @@ def wake_word(
     engine_name, engine = _pick_engine()
 
     if action == "start":
-        if engine is _matcher and not engine._on_detect and _service._on_detect:
+        if _matcher is not None and engine is _matcher \
+                and not engine._on_detect and _service._on_detect:
             # reuse the callback main.py already wired on the friday engine
             engine.configure(on_detect=_service._on_detect)
         return engine.start()

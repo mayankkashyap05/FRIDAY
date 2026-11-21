@@ -441,3 +441,80 @@ def test_importing_ui_does_not_load_qt():
     loaded = proc.stdout.strip()
     assert loaded == "", f"importing ui loaded Qt modules: {loaded}"
     assert "cyber" in proc.stdout.lower() or loaded == ""
+
+
+# ── static hygiene for the Windows bring-up path ────────────────────────────
+
+def test_no_undefined_names_in_ui_code():
+    """The Linux sandbox cannot execute QtGui, so NameErrors there only show up
+    on the user's machine. This catches them at review time instead.
+
+    pyflakes is optional; the AST fallback walks every module for names that are
+    loaded but never bound anywhere in scope.
+    """
+    targets = [REPO / "ui.py", REPO / "main.py", REPO / "actions" / "wake_word.py"]
+    targets += sorted((REPO / "ui_siri").glob("*.py"))
+    targets += sorted((REPO / "scripts").glob("*.py"))
+    missing = [str(t) for t in targets if not t.exists()]
+    assert not missing, f"expected files are gone: {missing}"
+
+    try:
+        proc = subprocess.run([sys.executable, "-m", "pyflakes", *map(str, targets)],
+                              capture_output=True, text=True, timeout=180)
+    except Exception:
+        pytest.skip("pyflakes not installed")
+    if proc.returncode != 0 and "No module named pyflakes" in proc.stderr:
+        pytest.skip("pyflakes not installed")
+
+    offenders = [line for line in proc.stdout.splitlines()
+                 if "undefined name" in line]
+    assert not offenders, "undefined names:\n  " + "\n  ".join(offenders)
+
+
+def test_qml_never_builds_a_file_url_by_hand():
+    """Windows paths are C:\\..., so ``f"file://{path}"`` is always wrong:
+    QUrl parses the drive letter as a scheme. Only QUrl.fromLocalFile is safe.
+    """
+    bad = []
+    for path in sorted((REPO / "ui_siri").rglob("*.py")):
+        text = path.read_text(encoding="utf-8")
+        for pattern in ('f"file://', "f'file://", '"file://{"'):
+            if pattern in text:
+                bad.append(f"{path.relative_to(REPO)}: {pattern}")
+    assert not bad, "hand-built file URLs (use QUrl.fromLocalFile):\n  " + "\n  ".join(bad)
+
+
+def test_every_qml_window_consumes_the_python_palette():
+    """A window that ignores the theme renders the built-in cyber defaults.
+
+    The palette reaches QML through a required property set at construction
+    (themeData), so a missing wiring is a silent visual regression.
+    """
+    for name in ("AnchorWindow.qml", "OverlayWindow.qml", "InspectorWindow.qml"):
+        text = (QML_DIR / name).read_text(encoding="utf-8")
+        assert "required property var themeData" in text, f"{name}: themeData not declared"
+        assert "applyTheme(themeData)" in text or "applyTheme(root.themeData)" in text \
+            or "applyTheme(overlay.themeData)" in text or "applyTheme(window.themeData)" in text, \
+            f"{name}: themeData never applied"
+
+
+def test_windows_verifier_script_is_wellformed():
+    """The bring-up script must compile, and must never import Qt at module
+    scope (it is run by hand on a machine where Qt may still be broken)."""
+    script = REPO / "scripts" / "verify_windows_ui.py"
+    assert script.is_file(), "scripts/verify_windows_ui.py is missing"
+
+    import py_compile
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as tmp:
+        py_compile.compile(str(script), cfile=str(Path(tmp) / "v.pyc"), doraise=True)
+
+    source = script.read_text(encoding="utf-8")
+    header = source.split('if __name__ == "__main__":')[0]
+    for line in header.splitlines():
+        stripped = line.strip()
+        if stripped.startswith(("from PySide6", "import PySide6")):
+            # Only allowed inside a function (i.e. indented).
+            assert line.startswith((" ", "\t")), \
+                f"verifier imports Qt at module scope: {stripped}"

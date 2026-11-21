@@ -15,7 +15,7 @@ the migration, and — just as importantly — what could not be.
 
 ```
 python -m pytest tests/ -q
-223 passed, 12 skipped, 11 failed
+241 passed, 12 skipped, 11 failed
 ```
 
 All 11 failures are pre-existing and confined to modules with **no UI
@@ -33,8 +33,9 @@ The UI-relevant suites are fully green:
 ```
 tests/test_ui_siri_core.py       51 passed
 tests/test_ui_contract.py        55 passed, 1 skipped   (Tk absent)
-tests/test_ui_siri_qt.py         16 passed, 11 skipped  (QtGui absent)
+tests/test_ui_siri_qt.py         20 passed, 11 skipped  (QtGui absent)
 tests/test_ui_thread_safety.py   12 passed
+tests/test_windows_bringup.py    14 passed  (Windows first-run regressions)
 tests/test_p0_security.py        20 passed
 ```
 
@@ -185,6 +186,74 @@ if *both* implementations fail.
 | Dead `from actions.friday_wake import _matcher` | removed |
 | Hardcoded `C:/Windows/Fonts/segoeuib.ttf` | font stack with fallbacks |
 | API key requested via a Tk modal (app looks hung without it) | `SetupCard` in the event stream + `ui.submit_api_key()` |
+
+---
+
+## Windows 11 first-run fixes (PySide6 6.11.3 / Python 3.13)
+
+Three runtime errors reported from a real Windows 11 run, plus the latent
+failures found while auditing the same paths.
+
+### Reported
+
+| # | Error | Root cause | Fix |
+| --- | --- | --- | --- |
+| 1 | `name 'qml_dir' is not defined` — entire overlay lost, silent Tk fallback | `_register_singleton()` still used the lowercase variable from before the `themes.py` split, which exports `QML_DIR`. The `NameError` escaped `UiController.__init__`, so no window was ever created. | Uses `QML_DIR / "Theme.qml"`, `.resolve()`d, through `QUrl.fromLocalFile`. |
+| 2 | `ModuleNotFoundError: actions.friday_wake` crashed `TrayThread` | The module was renamed to `actions/kaizumi_wake.py` (it still carries the old header comment, which is why the name lingered) but two call sites kept importing the old name. | `_load_matcher()` imports `kaizumi_wake` first, falls back to the old name, and treats *every* failure — including a lazy `import onnxruntime` that raises at attribute-access time — as "no custom matcher". `TrayThread` can no longer die. |
+| 3 | `NameError: name 're' is not defined` after every tool call | `main.py` used `re.findall` twice with no `import re`. | Added; also switched `asyncio.get_event_loop()` (deprecated 3.12+) to `get_running_loop()` in all three places. |
+
+### Found by auditing the same path (would have been the next three crashes)
+
+- **`vision_gesture` was never bound.** `main.py:1885` called it bare, so every
+  *face-verified* tool call (`face_verify=True`) raised `NameError` and the
+  security gate failed open into "identity verification failed". Now imported
+  lazily, like every other action module.
+- **Theme never reached QML.** The controller set a `fridayTheme` context
+  property and emitted `reloadTheme`, but no QML read either — the overlay would
+  always have rendered the built-in cyber defaults, and `cycle_theme()` would
+  have changed nothing on screen. Now pushed as a `themeData` required property
+  at construction (via `setInitialProperties`) and live via `bridge.theme`.
+- **Required properties were set *after* construction.** `set_root_property()`
+  ran after `setSource()`, which is too late: QML warns "Required property ...
+  was not initialized" and bindings on those properties never re-evaluate. Now
+  `setInitialProperties()` + `loadFromModule()`.
+- **No alpha buffer.** `QQuickWindow.setDefaultAlphaBuffer(True)` was never
+  called, so every `setColor(QColor(0,0,0,0))` was ignored and the overlay would
+  have painted as an opaque black rectangle. Now called before `QGuiApplication`.
+- **No Win32 `argtypes`.** Every call defaulted to C `int` (32-bit). On 64-bit
+  Windows an HWND/HMONITOR is pointer-sized, so pointers were silently truncated.
+  A 12-entry signature table now types every function (`HWND`, `HMONITOR`,
+  `c_ssize_t` for `LONG_PTR`, `c_size_t` for `UINT_PTR`), and
+  `SetWindowLongPtrW`/`GetWindowLongPtrW` are preferred over the 32-bit forms.
+- **QML load errors were invisible.** `errors()` output was joined into one line
+  and the inspector's status was never checked at all. Errors now print
+  `url:line:column: message`, are exposed via `UiController.qml_errors()`, and
+  `make_ui()` treats a load error as a startup failure under `FRIDAY_STRICT_UI=1`.
+- **`_resize_anchor` silently did nothing.** It called
+  `float(root.property("contentHeight"))`, but `contentHeight` is a QML
+  *function*, so `property()` returned a bound-method wrapper and `float()`
+  raised inside a bare `except`. The snippet stack would have been clipped to the
+  initial window height.
+
+### New escape hatch
+
+`FRIDAY_STRICT_UI=1` re-raises instead of falling back to Tk, and prints the full
+traceback. Default behaviour is unchanged (fall back), but it now logs a
+complete traceback to stderr and to the app log instead of just `str(exc)`.
+
+### Verification script
+
+`scripts/verify_windows_ui.py` — run it on the Windows machine:
+
+```
+python scripts/verify_windows_ui.py
+```
+
+No Tk fallback, every QML warning is a failure, exit code 0 only if everything
+passes. It prints the OS build, Python/PySide6/Qt versions and
+`win32_native.probe()`, then walks the six lifecycle states, churns
+`QAbstractListModel` rows, checks capture exclusion with a real `mss` screenshot,
+and opens/closes the inspector.
 
 ---
 

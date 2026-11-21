@@ -66,12 +66,20 @@ _singleton_ready = False
 
 
 def _register_singleton() -> None:
-    """Register Theme.qml as a QML singleton under ``ui_siri.qml``."""
+    """Register Theme.qml as a QML singleton under ``ui_siri.qml``.
+
+    Both registration AND the matching ``import ui_siri.qml`` are required:
+    the explicit ``qmlRegisterSingletonType`` above makes ``Theme`` resolvable
+    from the module, and the import is what actually pulls the module in. A
+    ``qmldir`` alone does not make ``Theme`` a global name.
+    """
     global _singleton_ready
     if _singleton_ready:
         return
 
-    qmlRegisterSingletonType(QUrl.fromLocalFile(os.path.join(qml_dir, "Theme.qml")),
+    # QUrl.fromLocalFile, never an f-string: a Windows path is C:\... and a
+    # hand-built file:// URL would not survive the backslashes or the drive colon.
+    qmlRegisterSingletonType(QUrl.fromLocalFile(str((QML_DIR / "Theme.qml").resolve())),
                              QML_MODULE, 1, 0, "Theme")
     _singleton_ready = True
 
@@ -85,6 +93,7 @@ class _LayerWindow(QQuickView):
 
     def __init__(self, qml_file: str, *, click_through: bool,
                  capture_excluded: bool, focusable: bool, dark: bool = True,
+                 initial_properties: dict[str, Any] | None = None,
                  parent=None) -> None:
         super().__init__(parent)
         self._dark = bool(dark)
@@ -103,14 +112,31 @@ class _LayerWindow(QQuickView):
 
         self.statusChanged.connect(self._on_status)
         self.load_error = ""
-        self.setSource(QUrl.fromLocalFile(str(QML_DIR / qml_file)))
+        self.load_errors: list[tuple[str, int, int, str]] = []
+
+        # `required property` bindings must exist BEFORE the component is
+        # instantiated: setting them afterwards means Qt warns "Required
+        # property ... was not initialized" and, for a `var` holding an object,
+        # the QML that binds to it never re-evaluates. setInitialProperties +
+        # loadFromModule is the supported order.
+        self.setResizeMode(QQuickView.ResizeMode.SizeRootObjectToView)
+        if initial_properties:
+            self.setInitialProperties(initial_properties)
+        self.loadFromModule(QML_MODULE, Path(qml_file).stem)
 
     # ── lifecycle ────────────────────────────────────────────────────────────
     def _on_status(self, status) -> None:
         if status == QQuickView.Status.Error:
-            errs = "; ".join(e.toString() for e in self.errors())
-            self.load_error = errs
-            print(f"[Controller] ⚠️ {self._qml_file} failed to load: {errs}")
+            # Newlines kept on purpose: a QML error is multi-line (message,
+            # file, line, column) and joining it into one line is how the
+            # original "silently broken window" bug hid.
+            details = "\n".join(
+                f"    {e.url().toString()}:{e.line()}:{e.column()}: {e.description()}"
+                for e in self.errors()) or "    (no detail reported by Qt)"
+            self.load_error = details
+            self.load_errors = [(e.url().toString(), e.line(), e.column(),
+                                 e.description()) for e in self.errors()]
+            print(f"[Controller] ⚠️ {self._qml_file} failed to load:\n{details}")
 
     def showEvent(self, event) -> None:  # noqa: N802
         super().showEvent(event)
@@ -217,8 +243,10 @@ class UiController(QObject):
         # `ui_siri.qml` is the module uri declared in ui_siri/qml/qmldir, so
         # the import root is the repository (or bundle) directory — QML_DIR's
         # parent — NOT QML_DIR itself.
-        self.engine.addImportPath(str(QML_DIR.parent))
-        self.engine.addImportPath(str(QML_DIR))
+        # resolved() paths only: Qt compares import paths literally, and a
+        # relative or symlinked path silently fails to match on Windows.
+        self.engine.addImportPath(str(QML_DIR.parent.resolve()))
+        self.engine.addImportPath(str(QML_DIR.resolve()))
         _register_singleton()
         self.engine.rootContext().setContextProperty("fridayTheme", self.theme)
 
@@ -275,6 +303,21 @@ class UiController(QObject):
         self.bridge.apply_theme(self.theme)
         self.reloadTheme.emit(self.theme)
 
+    def qml_errors(self) -> list[tuple[str, str, int, int, str]]:
+        """Every window that failed to load: (layer, url, line, column, message).
+
+        ``make_ui()`` treats a non-empty result as a startup failure when
+        FRIDAY_STRICT_UI=1, and logs it unconditionally otherwise. A window
+        that failed to load but still "exists" is the worst case: the app runs,
+        shows nothing, and looks hung.
+        """
+        found: list[tuple[str, str, int, int, str]] = []
+        for layer, win in (("overlay", self.overlay), ("anchor", self.anchor),
+                           ("inspector", self.inspector)):
+            for url, line, column, message in getattr(win, "load_errors", []) or []:
+                found.append((layer, url, line, column, message))
+        return found
+
     # ── construction ─────────────────────────────────────────────────────────
     def _detect_scale(self) -> float:
         try:
@@ -292,9 +335,10 @@ class UiController(QObject):
             self.overlay = _LayerWindow(
                 "OverlayWindow.qml", click_through=True,
                 capture_excluded=capture_excluded, focusable=False,
-                dark=self._system_dark)
-            self.overlay.set_root_property("bridge", self.bridge)
-            self.overlay.set_root_property("reducedMotion", self.reduced_motion)
+                dark=self._system_dark,
+                initial_properties={"bridge": self.bridge,
+                                    "reducedMotion": self.reduced_motion,
+                                    "themeData": self.theme})
             self.overlay.visibilityChanged.connect(self._sync_overlay_geometry)
         except Exception as exc:
             print(f"[Controller] ⚠️ overlay window unavailable: {exc}")
@@ -304,10 +348,11 @@ class UiController(QObject):
             self.anchor = _LayerWindow(
                 "AnchorWindow.qml", click_through=False,
                 capture_excluded=capture_excluded, focusable=True,
-                dark=self._system_dark)
-            self.anchor.set_root_property("bridge", self.bridge)
-            self.anchor.set_root_property("reducedMotion", self.reduced_motion)
-            self.anchor.set_root_property("setupVisible", self._setup_visible)
+                dark=self._system_dark,
+                initial_properties={"bridge": self.bridge,
+                                    "reducedMotion": self.reduced_motion,
+                                    "setupVisible": self._setup_visible,
+                                    "themeData": self.theme})
             root = self.anchor.rootObject()
             if root is not None:
                 for signal_name, handler in (("contentHeightChanged", self._resize_anchor),
@@ -318,8 +363,11 @@ class UiController(QObject):
                         pass
             self.bridge.setupChanged.connect(self._sync_setup_visibility)
             if self.anchor.load_error:
-                print("[Controller] ⚠️ degrading: anchor QML did not load")
-                self.anchor = None
+                # Keep the window object so qml_errors() can report it; just
+                # stop treating it as usable.
+                print("[Controller] ⚠️ anchor QML did not load; the ambient "
+                      "overlay cannot be shown")
+                self.anchor.hide()
                 self._degraded = True
         except Exception as exc:
             print(f"[Controller] ⚠️ anchor window unavailable: {exc}")
@@ -336,11 +384,18 @@ class UiController(QObject):
         try:
             self.inspector = _LayerWindow(
                 "InspectorWindow.qml", click_through=False,
-                capture_excluded=False, focusable=True, dark=self._system_dark)
-            self.inspector.set_root_property("bridge", self.bridge)
-            self.inspector.set_root_property("reducedMotion", self.reduced_motion)
-            self.inspector.set_root_property("props", self._inspector_props())
-            self.inspector.hide()
+                capture_excluded=False, focusable=True, dark=self._system_dark,
+                initial_properties={"bridge": self.bridge,
+                                    "reducedMotion": self.reduced_motion,
+                                    "themeData": self.theme,
+                                    "props": self._inspector_props()})
+            if self.inspector.load_error:
+                print("[Controller] ⚠️ inspector QML did not load; "
+                      "the Inspector will be unavailable")
+                self.inspector.close()
+                self.inspector = None
+            else:
+                self.inspector.hide()
         except Exception as exc:
             print(f"[Controller] ⚠️ inspector unavailable: {exc}")
             self.inspector = None
@@ -487,10 +542,11 @@ class UiController(QObject):
         if root is None:
             return
         try:
-            content = float(root.property("contentHeight") or 0)
-            if content <= 0:
-                # contentHeight is a method on the QML root, not a property.
-                content = float(root.contentHeight())
+            # `contentHeight` is a QML *function* on the root. property() hands
+            # back a bound-method wrapper (never 0), so float() on it raises and
+            # the whole resize silently no-ops — the stack would then be clipped
+            # by the fixed initial height. Call it directly.
+            content = float(root.contentHeight())
             wanted = int(max(110 * self._scale, content + 24 * self._scale))
             current = self.anchor.height()
             if wanted > current + 6:
@@ -563,7 +619,10 @@ class UiController(QObject):
         self.theme = build_theme(name, light=not self.system_dark,
                                  reduced_motion=self.reduced_motion,
                                  transparency=self.transparency, scale=self._scale)
-        self.bridge.apply_theme(self.theme)
+        self.bridge.apply_theme(self.theme)   # QML is bound to bridge.theme
+        for win in (self.overlay, self.anchor, self.inspector):
+            if win is not None:
+                win.set_root_property("themeData", self.theme)
         self.reloadTheme.emit(self.theme)
 
     def cycle_theme(self) -> str:

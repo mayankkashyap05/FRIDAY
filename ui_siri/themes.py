@@ -84,9 +84,13 @@ def build_theme(
 
 
 def qml_url(relative: str) -> str:
-    """Absolute file URL for a QML asset (works under ``sys.frozen`` only when
-    the ``qml`` directory ships next to the executable)."""
-    return str(QML_DIR / relative)
+    """Absolute ``QUrl.fromLocalFile``-ready path for a QML asset.
+
+    Returns a *resolved* absolute path. Callers must still pass it through
+    ``QUrl.fromLocalFile`` -- a hand-built ``file://`` string breaks on Windows,
+    where the path is ``C:\\...`` and the drive colon is parsed as a scheme.
+    """
+    return str((QML_DIR / relative).resolve())
 
 
 __all__ = [

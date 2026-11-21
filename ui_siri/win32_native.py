@@ -180,26 +180,122 @@ def _hwnd(window: Any) -> int:
         return 0
 
 
+# ── ctypes signatures ────────────────────────────────────────────────────────
+# ctypes defaults every argument to C ``int`` (32-bit). On 64-bit Windows an
+# HWND, HMONITOR or HANDLE is pointer-sized, so passing one as a Python int
+# silently *truncates* it -- the call then fails, or worse, addresses a
+# different window. Every function we use therefore gets explicit argtypes and
+# restypes. Everything here is best-effort: on a non-Windows host, or if a
+# symbol is missing on an older build, we simply skip it.
+
+_LRESULT = ctypes.c_ssize_t          # LONG_PTR: 64-bit on 64-bit Windows
+_UINT_PTR = ctypes.c_size_t
+
+#: (library attribute name, function name, argtypes, restype)
+_SIGNATURES: tuple[tuple[str, str, tuple, Any], ...] = (
+    # window styles
+    ("user32", "GetWindowLongW", (wintypes.HWND, ctypes.c_int), ctypes.c_long),
+    ("user32", "SetWindowLongW", (wintypes.HWND, ctypes.c_int, ctypes.c_long),
+     ctypes.c_long),
+    ("user32", "SetWindowPos",
+     (wintypes.HWND, wintypes.HWND, ctypes.c_int, ctypes.c_int,
+      ctypes.c_int, ctypes.c_int, _UINT_PTR), wintypes.BOOL),
+    # capture exclusion
+    ("user32", "SetWindowDisplayAffinity", (wintypes.HWND, wintypes.DWORD),
+     wintypes.BOOL),
+    # theme / DPI / notification state
+    ("user32", "SystemParametersInfoW",
+     (wintypes.UINT, wintypes.UINT, ctypes.c_void_p, wintypes.UINT),
+     wintypes.BOOL),
+    ("user32", "SetProcessDPIAware", (), wintypes.BOOL),
+    ("user32", "SetProcessDpiAwarenessContext", (ctypes.c_void_p,),
+     wintypes.BOOL),
+    ("user32", "GetMonitorInfoW", (wintypes.HMONITOR, ctypes.c_void_p),
+     wintypes.BOOL),
+    ("user32", "EnumDisplayMonitors",
+     (wintypes.HDC, ctypes.c_void_p, ctypes.c_void_p, _LRESULT), wintypes.BOOL),
+    ("shcore", "SetProcessDpiAwareness", (ctypes.c_int,), ctypes.c_long),
+    ("shell32", "SHQueryUserNotificationState", (ctypes.c_void_p,),
+     ctypes.c_long),
+    # DwmSetWindowAttribute(HWND, DWORD, LPCVOID, DWORD) -> HRESULT
+    ("dwmapi", "DwmSetWindowAttribute",
+     (wintypes.HWND, wintypes.DWORD, ctypes.c_void_p, wintypes.DWORD),
+     ctypes.c_long),
+)
+
+
+def _declare_signatures() -> list[str]:
+    """Apply :data:`_SIGNATURES`. Returns the names that could not be bound."""
+    failed: list[str] = []
+    for lib_name, func_name, argtypes, restype in _SIGNATURES:
+        lib = globals().get(lib_name)
+        if lib is None:
+            continue
+        try:
+            func = getattr(lib, func_name)
+        except Exception:
+            # Absent on this Windows build -- callers already guard for that.
+            continue
+        try:
+            func.argtypes = argtypes
+            func.restype = restype
+        except Exception as exc:  # pragma: no cover - defensive
+            failed.append(f"{func_name}: {exc}")
+    return failed
+
+
+if IS_WINDOWS:  # pragma: no cover - Windows-only
+    _SIG_FAILURES = _declare_signatures()
+    if _SIG_FAILURES:
+        CAPS.reasons["signatures"] = "; ".join(_SIG_FAILURES)
+else:  # pragma: no cover - non-Windows
+    _SIG_FAILURES: list[str] = []
+
+
 # ── Style helpers ────────────────────────────────────────────────────────────
 
 def get_ex_style(hwnd: int) -> int:
+    """Read GWL_EXSTYLE.
+
+    ``GetWindowLongW`` returns a 32-bit ``LONG``, which is correct for styles on
+    every architecture -- but the *call* still needs HWND typed as a pointer,
+    which :func:`_declare_signatures` handles. We prefer ``GetWindowLongPtrW``
+    when present so the intent is explicit, then mask to the low 32 bits.
+    """
     if not CAPS.user32 or not hwnd:
         return 0
-    try:
-        return int(user32.GetWindowLongW(hwnd, GWL_EXSTYLE)) & 0xFFFFFFFF
-    except Exception:
-        return 0
+    for name in ("GetWindowLongPtrW", "GetWindowLongW"):
+        fn = getattr(user32, name, None)
+        if fn is None:
+            continue
+        try:
+            return int(fn(hwnd, GWL_EXSTYLE)) & 0xFFFFFFFF
+        except Exception:
+            continue
+    return 0
 
 
 def set_ex_style(hwnd: int, style: int) -> bool:
+    """Write GWL_EXSTYLE.
+
+    Prefers ``SetWindowLongPtrW`` (pointer-sized value) and falls back to
+    ``SetWindowLongW``. The value is passed as a bare Python int with a declared
+    argtype, never ``ctypes.c_long(...)``: on x64 the ctypes default would
+    already be 32-bit, so wrapping it only hides the truncation.
+    """
     if not CAPS.user32 or not hwnd:
         return False
-    try:
-        user32.SetWindowLongW(hwnd, GWL_EXSTYLE, ctypes.c_long(style))
-        return True
-    except Exception as exc:
-        _warn_once("exstyle", f"SetWindowLongW failed: {exc}")
-        return False
+    for name in ("SetWindowLongPtrW", "SetWindowLongW"):
+        fn = getattr(user32, name, None)
+        if fn is None:
+            continue
+        try:
+            fn(hwnd, GWL_EXSTYLE, int(style))
+            return True
+        except Exception:
+            continue
+    _warn_once("exstyle", "SetWindowLong(Ptr)W failed for WS_EX styles")
+    return False
 
 
 def make_click_through(window: Any, enabled: bool = True) -> bool:
@@ -310,6 +406,24 @@ def apply_dwm_polish(window: Any, dark: bool = True, rounded: bool = True) -> di
     except Exception:
         pass
     return result
+
+
+def enable_alpha_buffer() -> bool:
+    """Ask Qt for an alpha channel on every window by default.
+
+    MUST be called before the ``QGuiApplication`` is constructed: Qt reads this
+    flag once, when it creates the platform windows. Without it every
+    ``setColor(QColor(0,0,0,0))`` is ignored and the ambient overlay renders as
+    an opaque black rectangle — which looks exactly like "the UI is broken".
+    """
+    try:
+        from PySide6.QtQuick import QQuickWindow
+
+        QQuickWindow.setDefaultAlphaBuffer(True)
+        return True
+    except Exception as exc:
+        _warn_once("alpha", f"transparent windows unavailable ({exc})")
+        return False
 
 
 def enable_per_monitor_dpi() -> bool:

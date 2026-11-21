@@ -1,3 +1,4 @@
+import QtQml
 import QtQuick
 
 /*
@@ -12,6 +13,31 @@ Item {
 
     required property var bridge
     required property bool reducedMotion
+    // Palette pushed from Python at construction (setInitialProperties).
+    required property var themeData
+
+    // The palette is owned by Python (it mirrors the legacy THEMES table and
+    // honours the OS light/dark, reduced-motion and transparency settings).
+    // `bridge.theme` is a notifying QVariantMap property, so binding to it
+    // keeps the singleton in sync across live theme cycles — and it is a typed
+    // object member, so the analyser can resolve it.
+    Binding {
+        target: Theme
+        property: "uiScale"
+        value: overlay.bridge !== null && overlay.bridge !== undefined
+               ? overlay.bridge.theme.uiScale || 1.0 : 1.0
+        when: overlay.bridge !== null && overlay.bridge !== undefined
+    }
+
+    function applyTheme(data) {
+        Theme.apply(data)
+    }
+
+    // Live: `bridge.theme` notifies on every apply_theme()/cycle_theme().
+    onBridgeChanged: if (overlay.bridge) overlay.applyTheme(overlay.bridge.theme)
+
+    // Initial: the palette handed to setInitialProperties before construction.
+    Component.onCompleted: overlay.applyTheme(overlay.themeData)
 
     PerimeterGlow {
         anchors.fill: parent
