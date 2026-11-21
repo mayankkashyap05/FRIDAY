@@ -45,13 +45,56 @@ Rectangle {
     signal command(string text)
     signal openExternal(string url)
 
-    color: Theme.glass > 0 ? Theme.withAlpha(Theme.bg, 0.86) : Theme.bg
+    // One material across the product: the same panel glass, hairline specular
+    // border and top-edge rim the snippet cards and the pill use. The drawer is
+    // a *tool*, so it is allowed to sit a little more opaque (it carries dense
+    // text), but it must never look like a different application.
+    color: Theme.glass > 0 ? Theme.withAlpha(Theme.panel, 0.90) : Theme.panel
     radius: Theme.radiusCard
     border.width: 1
-    border.color: Theme.withAlpha(Theme.mid, 0.5)
+    border.color: Theme.glassBorder
 
     implicitWidth: Math.round(720 * Theme.uiScale)
     implicitHeight: Math.round(520 * Theme.uiScale)
+
+    // Glass thickness: one hairline across the top edge, fading at the corners.
+    Rectangle {
+        visible: Theme.glass > 0
+        width: parent.width - 2 * parent.radius * 0.55
+        height: 1
+        x: (parent.width - width) / 2
+        y: 1
+        gradient: Gradient {
+            orientation: Gradient.Horizontal
+            GradientStop { position: 0.0; color: "transparent" }
+            GradientStop {
+                position: 0.18
+                color: Theme.withAlpha(Theme.glassInnerRim, 0.95 * Theme.glass)
+            }
+            GradientStop {
+                position: 0.82
+                color: Theme.withAlpha(Theme.glassInnerRim, 0.95 * Theme.glass)
+            }
+            GradientStop { position: 1.0; color: "transparent" }
+        }
+    }
+
+    // Soft clipped sheen down from the header, never a grey slab.
+    Rectangle {
+        visible: Theme.glass > 0
+        anchors.left: parent.left
+        anchors.right: parent.right
+        anchors.top: parent.top
+        height: parent.height * 0.34
+        radius: parent.radius
+        gradient: Gradient {
+            GradientStop {
+                position: 0.0
+                color: Theme.withAlpha(Theme.glassSpecular, 0.06 * Theme.glass)
+            }
+            GradientStop { position: 1.0; color: "transparent" }
+        }
+    }
 
     // ── header ──────────────────────────────────────────────────────────────
     Rectangle {
@@ -136,7 +179,13 @@ Rectangle {
             anchors.left: parent.left
             anchors.right: parent.right
             height: 1
-            color: Theme.withAlpha(Theme.mid, 0.35)
+            gradient: Gradient {
+                orientation: Gradient.Horizontal
+                GradientStop { position: 0.0; color: "transparent" }
+                GradientStop { position: 0.5
+                               color: Theme.withAlpha(Theme.glassInnerRim, 0.7) }
+                GradientStop { position: 1.0; color: "transparent" }
+            }
         }
     }
 
@@ -164,9 +213,9 @@ Rectangle {
                     Layout.fillWidth: true
                     Layout.fillHeight: true
                     radius: Theme.radiusCard
-                    color: "#050a0e"
+                    color: Theme.withAlpha(Theme.dimmer, 0.55)
                     border.width: 1
-                    border.color: Theme.withAlpha(Theme.pri, 0.28)
+                    border.color: Theme.withAlpha(Theme.glassInnerRim, 0.6)
                     clip: true
 
                     Image {

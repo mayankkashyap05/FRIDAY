@@ -2,56 +2,74 @@ pragma ComponentBehavior: Bound
 import QtQuick
 import ".."
 
-/*      Up to four events; the next one is highlighted and time-aligned.
-    Derived from BaseGlassCard: inherits the glass surface, severity rail,
-    spring entrance and TTL hairline. Only the payload-specific body is new.
+/*
+    Up to four calendar events: the next one is highlighted, every row is
+    time-aligned, and the times use tabular digits so the column never shifts.
+
+    Derived from BaseGlassCard: inherits the glass surface, severity accent,
+    spring entrance and TTL hairline. Only the payload body is new.
 */
 BaseGlassCard {
     id: card
 
     required property var payload
 
-    // Convenience alias so bodies read `card.p.temp_c` instead of
-    // `card.payload.temp_c` (and tolerate a null payload).
     readonly property var p: payload !== undefined && payload !== null ? payload : ({})
-    // Set by whichever card type needs the front-row highlight; keeps
-    // delegates from capturing `index` implicitly.
-    property int ctxIndex: 0
-    readonly property real titleHeight: Math.round(18 * Theme.uiScale)
 
-    implicitHeight: Math.round(130 * Theme.uiScale)
-    // ── payload-specific body ───────────────────────────────────────────────
+    customBody: true
+    contentBodyHeight: body.implicitHeight
+
+    readonly property int eventCount: p.events !== undefined && p.events.length
+                                      ? Math.min(4, p.events.length) : 0
+
     Column {
-        anchors.top: parent.top
-        anchors.topMargin: Math.round(28 * Theme.uiScale)
-        spacing: 5
+        id: body
+        x: card.contentLeft
+        y: card.contentTop
+        width: card.contentWidth
+        spacing: Math.round(6 * Theme.uiScale)
+
         Repeater {
-            model: card.p.events !== undefined ? Math.min(4, card.p.events.length) : 0
-            delegate: Row {
+            model: card.eventCount
+            delegate: Item {
+                id: row
                 required property int index
                 readonly property var ev: card.p.events[index]
-                spacing: 8
+                readonly property bool next: index === 0
+                width: body.width
+                height: Math.round(17 * Theme.uiScale)
+
+                // "Next up" marker: a small filled dot, not a rail.
                 Rectangle {
-                    width: Math.round(3 * Theme.uiScale)
-                    height: Math.round(12 * Theme.uiScale)
-                    radius: width / 2
                     anchors.verticalCenter: parent.verticalCenter
-                    color: card.ctxIndex === 0 ? Theme.acc2 : Theme.withAlpha(Theme.pri, 0.5)
+                    width: Math.round(5 * Theme.uiScale)
+                    height: width
+                    radius: width / 2
+                    color: row.next ? card.tone : Theme.withAlpha(Theme.textOnGlass, 0.22)
                 }
+
                 Text {
-                    text: parent.ev && parent.ev.time !== undefined ? parent.ev.time : ""
-                    color: Theme.withAlpha(Theme.text, 0.95)
-                    font.pixelSize: Theme.fontXS
-                    font.bold: true
-                    width: Math.round(46 * Theme.uiScale)
+                    id: timeText
+                    anchors.left: parent.left
+                    anchors.leftMargin: Math.round(13 * Theme.uiScale)
+                    anchors.verticalCenter: parent.verticalCenter
+                    text: row.ev && row.ev.time !== undefined ? row.ev.time : ""
+                    color: row.next ? Theme.textOnGlass
+                                    : Theme.withAlpha(Theme.textOnGlass, 0.6)
+                    font: card.numFont(Theme.fontXS, row.next)
+                    width: Math.round(48 * Theme.uiScale)
                 }
+
                 Text {
-                    text: parent.ev ? (parent.ev.title || parent.ev.summary || "") : ""
-                    color: card.ctxIndex === 0 ? Theme.onGlass
-                                       : Theme.withAlpha(Theme.text, 0.75)
+                    anchors.left: timeText.right
+                    anchors.right: parent.right
+                    anchors.verticalCenter: parent.verticalCenter
+                    text: row.ev ? (row.ev.title || row.ev.summary || "") : ""
+                    color: row.next ? Theme.textOnGlass
+                                    : Theme.withAlpha(Theme.textOnGlass, 0.66)
                     font.pixelSize: Theme.fontS
+                    font.family: Theme.fontText
                     elide: Text.ElideRight
-                    width: Math.round(200 * Theme.uiScale)
                 }
             }
         }

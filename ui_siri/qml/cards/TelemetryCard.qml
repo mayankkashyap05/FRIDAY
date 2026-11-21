@@ -5,21 +5,17 @@ import ".."
 /*
     System vitals as horizontal gauges — instantly readable at a glance.
 
-    Derived from BaseGlassCard: inherits the glass surface, severity rail,
-    spring entrance and TTL hairline. Only the payload-specific body is new.
+    Derived from BaseGlassCard: inherits the glass surface, severity accent,
+    spring entrance and TTL hairline. Only the payload body is new.
 */
 BaseGlassCard {
     id: card
 
     required property var payload
 
-    // Convenience alias so bodies read `card.p.cpu` instead of
-    // `card.payload.cpu` (and tolerate a null payload).
     readonly property var p: payload !== undefined && payload !== null ? payload : ({})
 
-    readonly property real titleHeight: Math.round(18 * Theme.uiScale)
-
-    implicitHeight: Math.round(140 * Theme.uiScale)
+    customBody: true
 
     // Fixed catalogue of vitals. `key` is the payload field, so a missing
     // metric (e.g. no battery on a desktop) simply hides its row.
@@ -36,20 +32,26 @@ BaseGlassCard {
         return p[key] !== undefined && p[key] !== null ? p[key] : -1
     }
 
-    // ── payload-specific body ───────────────────────────────────────────────
+    readonly property int shownCount: {
+        var n = 0
+        for (var i = 0; i < metrics.length; ++i)
+            if (metricValue(i) >= 0) n += 1
+        return n
+    }
+
+    contentBodyHeight: body.implicitHeight
+
     Column {
-        anchors.top: parent.top
-        anchors.topMargin: Math.round(28 * Theme.uiScale)
-        spacing: 6
-        width: parent.width - Math.round(8 * Theme.uiScale)
+        id: body
+        x: card.contentLeft
+        y: card.contentTop
+        width: card.contentWidth
+        spacing: Math.round(7 * Theme.uiScale)
 
         Repeater {
-            // A plain integer model with card-level lookups inside the delegate:
-            // every value is resolved through `card`, so the delegate never has
-            // to reason about an untyped JS-array model.
             model: card.metrics.length
 
-            delegate: Row {
+            delegate: Item {
                 id: metricRow
                 required property int index
 
@@ -58,39 +60,51 @@ BaseGlassCard {
                 readonly property real frac: Math.max(0, Math.min(1, value / 100))
 
                 visible: value >= 0
-                spacing: 8
+                height: visible ? Math.round(15 * Theme.uiScale) : 0
                 width: parent.width
 
                 Text {
+                    id: metricLabel
+                    anchors.verticalCenter: parent.verticalCenter
                     text: metricRow.label
-                    color: Theme.withAlpha(Theme.mid, 1)
+                    color: Theme.withAlpha(Theme.textOnGlass, 0.5)
                     font.pixelSize: Theme.fontXS
-                    width: Math.round(34 * Theme.uiScale)
                     font.bold: true
+                    font.family: Theme.fontText
+                    font.letterSpacing: 0.6
+                    width: Math.round(38 * Theme.uiScale)
                 }
 
                 Rectangle {
-                    width: parent.width - Math.round(92 * Theme.uiScale)
-                    height: Math.round(6 * Theme.uiScale)
-                    radius: height / 2
+                    id: track
                     anchors.verticalCenter: parent.verticalCenter
-                    color: Theme.withAlpha(Theme.dim, 0.55)
+                    anchors.left: metricLabel.right
+                    anchors.right: metricValue.left
+                    anchors.rightMargin: Math.round(10 * Theme.uiScale)
+                    height: Math.round(4 * Theme.uiScale)
+                    radius: height / 2
+                    color: Theme.withAlpha(Theme.textOnGlass, 0.10)
 
                     Rectangle {
-                        width: parent.width * metricRow.frac
+                        width: Math.max(0, track.width * metricRow.frac)
                         height: parent.height
                         radius: height / 2
-                        color: metricRow.frac > 0.85 ? Theme.red
-                             : metricRow.frac > 0.65 ? Theme.acc2 : Theme.green
+                        color: metricRow.frac > 0.88 ? Theme.railError
+                             : metricRow.frac > 0.70 ? Theme.railWarn
+                             : card.tone
+                        opacity: 0.9
                         Behavior on width { NumberAnimation { duration: Theme.durMed } }
                     }
                 }
 
                 Text {
+                    id: metricValue
+                    anchors.right: parent.right
+                    anchors.verticalCenter: parent.verticalCenter
                     text: metricRow.value >= 0 ? Math.round(metricRow.value) + "%" : ""
-                    color: Theme.onGlass
-                    font.pixelSize: Theme.fontXS
-                    width: Math.round(34 * Theme.uiScale)
+                    color: Theme.textOnGlass
+                    font: card.numFont(Theme.fontXS)
+                    width: Math.round(36 * Theme.uiScale)
                     horizontalAlignment: Text.AlignRight
                 }
             }

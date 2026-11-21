@@ -23,8 +23,12 @@ Item {
 
     signal cancel(string aid)
 
-    readonly property int activeCount: countActive()
-    readonly property bool hasWork: activeCount > 0
+    // `countActive()` walks the model, so it is only ever called from
+    // `refresh()`; every binding reads `agentCount`, the reactive mirror.
+    // (Calling the function inside a binding looks fine but never updates:
+    // a JS function call creates no dependency on the model's rows.)
+    readonly property int activeCount: agentCount
+    readonly property bool hasWork: agentCount > 0
 
     implicitWidth: Math.round(240 * Theme.uiScale)
     implicitHeight: expanded ? body.height + 16 : Math.round(30 * Theme.uiScale)
@@ -33,6 +37,9 @@ Item {
     // signal handler would silently break them after the first insert.
     property int agentCount: 0
     visible: agentCount > 0 || expanded
+    // Zero height and zero hit area while asleep, so the column above the orb
+    // carries no invisible band and no click-stealing region.
+    height: visible ? implicitHeight : 0
     opacity: agentCount > 0 ? 1.0 : 0.0
     Behavior on opacity { NumberAnimation { duration: Theme.durShort } }
     Behavior on implicitHeight {
@@ -75,17 +82,31 @@ Item {
     // rather than being assigned here.
     function refresh() { bar.agentCount = bar.countActive() }
 
-    Component.onCompleted: bar.refresh()
+    // The model is assigned by the stage *before* any rows exist, so the first
+    // count has to happen on assignment as well as on row churn.
+    onModelChanged: refresh()
+    Component.onCompleted: refresh()
 
     // ── shell ───────────────────────────────────────────────────────────────
     Rectangle {
         id: shell
         anchors.fill: parent
         radius: height / 2
-        color: Theme.glass > 0 ? Theme.withAlpha(Theme.hdr, 0.82) : Theme.hdr
+        color: Theme.glass > 0 ? Theme.withAlpha(Theme.panel, Theme.surfaceAlpha)
+                               : Theme.panel
         border.width: 1
-        border.color: Theme.withAlpha(Theme.pri, bar.expanded ? 0.5 : 0.28)
+        border.color: bar.expanded ? Theme.glassBorderHover : Theme.glassBorder
         Behavior on border.color { ColorAnimation { duration: Theme.durShort } }
+
+        // Inner rim: the second hairline that makes the capsule read as glass.
+        Rectangle {
+            anchors.fill: parent
+            anchors.margins: 1
+            radius: parent.radius - 1
+            color: "transparent"
+            border.width: 1
+            border.color: Theme.glassInnerRim
+        }
 
         // Specular top edge
         Rectangle {
@@ -93,10 +114,12 @@ Item {
             height: parent.height / 2
             x: 1; y: 1
             radius: parent.radius
-            opacity: 0.10 * Theme.glass
+            opacity: 0.14 * Theme.glass
             gradient: Gradient {
-                GradientStop { position: 0.0
-                               color: Theme.withAlpha(Theme.textStrong, 0.6) }
+                GradientStop {
+                    position: 0.0
+                    color: Theme.withAlpha(Theme.glassSpecular, 1.0)
+                }
                 GradientStop { position: 1.0; color: "transparent" }
             }
         }
@@ -126,7 +149,7 @@ Item {
                 radius: width / 2
                 color: "transparent"
                 border.width: 2
-                border.color: Theme.withAlpha(Theme.dim, 0.9)
+                border.color: Theme.withAlpha(Theme.dim, 0.55)
             }
             Rectangle {
                 anchors.centerIn: parent
@@ -155,9 +178,9 @@ Item {
         Text {
             anchors.verticalCenter: parent.verticalCenter
             width: parent.width - Math.round(60 * Theme.uiScale)
-            text: bar.activeCount > 0
-                  ? bar.summary()
-                  : qsTr("Idle")
+            // While asleep the collapsed row is not painted at all, so the
+            // placeholder is never seen; it only keeps the binding typed.
+            text: bar.agentCount > 0 ? bar.summary() : qsTr("Idle")
             color: Theme.withAlpha(Theme.text, 0.9)
             font.pixelSize: Theme.fontXS
             font.family: "Segoe UI Variable Text, Segoe UI, sans-serif"
@@ -166,8 +189,8 @@ Item {
 
         Text {
             anchors.verticalCenter: parent.verticalCenter
-            visible: bar.activeCount > 1
-            text: "+" + (bar.activeCount - 1)
+            visible: bar.agentCount > 1
+            text: "+" + (bar.agentCount - 1)
             color: Theme.pri
             font.pixelSize: Theme.fontXS
             font.bold: true
@@ -178,7 +201,8 @@ Item {
         if (!model || model.rowCount() === 0)
             return ""
         var idx = model.index(0, 0)
-        return String(model.data(idx, Qt.UserRole + 2) || "")   // "title"
+        // Qt.UserRole + 1 + index-of("title") in ActivityModel.ROLES.
+        return String(model.data(idx, Qt.UserRole + 1 + roleIndex("title")) || "")
     }
 
     // ── expanded rows ───────────────────────────────────────────────────────
@@ -273,7 +297,7 @@ Item {
             anchors.bottom: parent.bottom
             height: Math.round(2 * Theme.uiScale)
             radius: height / 2
-            color: Theme.withAlpha(Theme.dim, 0.5)
+            color: Theme.withAlpha(Theme.dim, 0.42)
             Rectangle {
                 readonly property real frac: {
                     if (!bar.model || bar.model.rowCount() === 0) return 0
@@ -284,7 +308,7 @@ Item {
                 width: parent.width * frac
                 height: parent.height
                 radius: height / 2
-                color: Theme.acc
+                color: Theme.pri
                 visible: frac > 0
                 Behavior on width { NumberAnimation { duration: Theme.durMed } }
             }

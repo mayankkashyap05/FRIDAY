@@ -252,7 +252,8 @@ class UiController(QObject):
         self.system_dark = w32.system_dark_mode()
         self._dnd = False
         self._monitors = w32.enumerate_monitors()
-        self._scale = self._detect_scale()
+        self._dpi = self._detect_scale()
+        self._scale = self._design_scale(self._dpi)
         self._system_dark = self.system_dark
 
         self._theme_name = theme_name if theme_name in THEMES else "cyber"
@@ -292,6 +293,13 @@ class UiController(QObject):
         self._hidden = bool(start_hidden)
         self._pill_expanded = False
         self._setup_visible = False
+        # Last applied stage rect; re-positioning identical geometry every
+        # layout pass would make Qt re-upload the whole transparent surface.
+        self._stage_geometry: QRect | None = None
+        # Input footprint: the stage is click-through until the pointer is over
+        # something interactive (or the user is typing).
+        self._siri_interactive = False
+        self._pointer_inside = False
         # Pending invoked state applied once the Siri QML has finished loading
         # (set_root_property silently fails if rootObject() is None before load).
         self._pending_invoked = False
@@ -337,12 +345,13 @@ class UiController(QObject):
         # grace period. Any new card, activity, or interaction resets it.
         self._dismissTimer = QTimer(self)
         self._dismissTimer.setSingleShot(True)
-        self._dismissTimer.setInterval(4000)
-        self._dismissTimer.timeout.connect(self.hide)
-        self._dismissalGraceMs = 4000
+        self._dismissalGraceMs = 5000
+        self._dismissTimer.setInterval(self._dismissalGraceMs)
+        self._dismissTimer.timeout.connect(self._on_dismiss_due)
 
         self.bridge.cardsChanged.connect(self._reschedule_dismissal)
         self.bridge.activityChanged.connect(self._reschedule_dismissal)
+        self.state.add_listener(self._on_state_for_grace)
 
     def qml_errors(self) -> list[tuple[str, str, int, int, str]]:
         """Every window that failed to load: (layer, url, line, column, message).
@@ -367,15 +376,37 @@ class UiController(QObject):
 
     # ── construction ─────────────────────────────────────────────────────────
     def _detect_scale(self) -> float:
+        """Device pixel ratio of the primary screen (clamped)."""
         try:
             screen = self.app.primaryScreen()
             if screen is not None:
                 dpr = float(screen.devicePixelRatio())
                 # Clamp: 2.0+ would make the pill enormous on 4K at 200%.
-                return max(0.85, min(1.6, dpr))
+                return max(0.85, min(2.0, dpr))
         except Exception:
             pass
         return 1.0
+
+    def _design_scale(self, dpi: float) -> float:
+        """QML design points -> screen-absolute pixels.
+
+        Qt maps QML coordinates to physical pixels through the window's DPR,
+        and it *keeps* that ratio at 125 % / 150 % / 175 % scaling (it rounds
+        the ratio to a nice fraction and renders the frame buffer at the device
+        resolution). So a `88 * uiScale` orb is drawn at 1.5 * 88 = 132 physical
+        pixels at 150 % scaling — physically *smaller* than at 100 % and, more
+        importantly, not the size the design intends.
+
+        Dividing the design multiplier by the DPR cancels Qt's mapping exactly:
+        the final physical size is `uiScale * DPR` = the design point value,
+        so the orb is the same physical size on every display and is rasterised
+        at the native device resolution (crisp, never upscaled).
+        """
+        try:
+            dpi = float(dpi) or 1.0
+        except (TypeError, ValueError):
+            dpi = 1.0
+        return max(0.6, min(1.25, 1.0 / dpi))
 
     def _create_windows(self, capture_excluded: bool) -> None:
         try:
@@ -392,6 +423,11 @@ class UiController(QObject):
             if root is not None:
                 root.apiKeySubmitted.connect(self._on_api_key_submitted)
                 root.dismissed.connect(self.windowDismissed)
+                # Every explicit interaction (hover, click, card reply) pushes
+                # the reading grace back, so Siri never dissolves under the
+                # user's cursor.
+                root.interaction.connect(self.on_interaction)
+                root.typingChanged.connect(self._on_typing_changed)
             # Re-apply pending invoked state once the QML finishes loading.
             self.siri.statusChanged.connect(self._on_siri_status_changed)
             if self.siri.load_error:
@@ -560,23 +596,79 @@ class UiController(QObject):
             avail: QRect = screen.availableGeometry()
 
             # Apple Siri placement: bottom-centre of the available screen
-            # geometry, floating just above the taskbar with clean bottom
-            # margin — never wall-to-wall, never covering the user's focus.
-            stage_w = int(420 * self._scale)
-            stage_h = int(340 * self._scale)
-            x = avail.x() + (avail.width() - stage_w) // 2
-            y = avail.y() + (avail.height() - stage_h) - int(70 * self._scale)
-            self.siri.setGeometry(QRect(x, y, stage_w, stage_h))
+            # geometry, centred horizontally with a clean margin above the
+            # taskbar — never wall-to-wall, never covering the user's focus.
+            #
+            # The width is *maximised* rather than fixed, and that is a
+            # rendering decision, not a layout one: the stage reaches from
+            # screen edge to screen edge so the cards' feathered edge shadow
+            # can never be clipped by the window boundary. The window itself
+            # stays 100 % transparent and only the small centre column paints,
+            # so nothing of it is visible or hit-testable.
+            g = screen.geometry()
+            x = g.x()
+            stage_w = max(int(420 * self._scale), g.width())
+            # Tall enough for the three-card stack plus orb, transcript, live
+            # activity capsule and the typing pill. A shorter window clips the
+            # top card mid-glyph, which is the one thing the stack must never
+            # do; the height is capped to the available desktop so it can never
+            # spill under a taskbar on a short screen.
+            stage_h = min(int(620 * self._scale), max(int(320 * self._scale),
+                                                      avail.height() - int(24 * self._scale)))
+            x = g.x() + (g.width() - stage_w) // 2
+            y = avail.y() + avail.height() - stage_h - int(12 * self._scale)
+            geometry = QRect(x, y, stage_w, stage_h)
+            if geometry != self._stage_geometry:
+                self._stage_geometry = geometry
+                self.siri.setGeometry(geometry)
             if not self.siri.isVisible() and not self._hidden:
                 self.siri.show()
         except Exception as exc:
             print(f"[Controller] ⚠️ layout failed: {exc}")
 
+    # ── input footprint ──────────────────────────────────────────────────────
+    def _update_click_through(self, force_interactive: bool = False) -> None:
+        """Make the transparent stage click-through unless something is live.
+
+        The stage window is screen-wide so its feathered card shadows cannot be
+        clipped; while Siri is dormant or showing only the orb there is nothing
+        to click, so the window must pass every mouse event to the desktop
+        underneath instead of swallowing it over an invisible band.
+        """
+        if self.siri is None:
+            return
+        interactive = bool(force_interactive) or self._pointer_inside
+        if self._siri_interactive == interactive:
+            return
+        self._siri_interactive = interactive
+        self.siri.set_click_through(not interactive)
+
+    def on_interaction(self) -> None:
+        """An explicit interaction happened: refresh the grace + hit-testing."""
+        try:
+            root = self.anchor.rootObject() if self.anchor is not None else None
+            self._pointer_inside = bool(root.property("pointerInside")) \
+                if root is not None else False
+            typing = bool(root.property("typing")) if root is not None else False
+        except Exception:
+            self._pointer_inside, typing = False, False
+        self._update_click_through(force_interactive=typing)
+        self._reschedule_dismissal()
+
     # ── public window ops (tray / hotkeys / invocation / dismissal) ────────
     def show(self) -> None:
         """Show the Siri stage (invocation). The orb springs into view."""
+        was_hidden = self._hidden
         self._hidden = False
         self._cancel_dismissal()
+        if was_hidden:
+            # The invocation earcon is fired on the rising edge only, so the
+            # acoustic cue stays locked to the visual bloom instead of
+            # re-triggering every time a state re-asserts visibility.
+            try:
+                self.audio.play("wake")
+            except Exception:
+                pass
         if self.siri is not None:
             self.siri.show()
             if not self.siri.set_root_property("invoked", True):
@@ -584,12 +676,16 @@ class UiController(QObject):
                 # it finishes loading via _on_siri_status_changed.
                 self._pending_invoked = True
             self._layout_windows()
+            self._update_click_through()
 
     def hide(self) -> None:
         """Dismiss Siri: the orb contracts and fades, then the window hides."""
         self._hidden = True
         self._cancel_dismissal()
+        self._pointer_inside = False
+        self._update_click_through(force_interactive=False)
         if self.siri is not None:
+            self.siri.set_root_property("typing", False)
             self.siri.set_root_property("invoked", False)
 
     @Slot()
@@ -602,6 +698,14 @@ class UiController(QObject):
         except Exception:
             invoked = False
         if not invoked and self.siri.isVisible():
+            if not self._hidden:
+                # The user pressed Escape: the dismissal cue belongs here,
+                # after the contraction, not on the teardown path.
+                self._hidden = True
+                try:
+                    self.audio.play("done")
+                except Exception:
+                    pass
             self.siri.hide()
 
     def invoke(self) -> None:
@@ -618,22 +722,59 @@ class UiController(QObject):
         else:
             self.hide()
 
+    def _busy(self) -> bool:
+        """True while something must keep Siri on screen.
+
+        Reading a response, an unresolved confirmation, a live background job,
+        an open typing pill or a pointer resting on the stage all suspend
+        auto-dismissal. The grace resumes the moment the user stops.
+        """
+        st = self.state.state
+        if st is not UiState.LISTENING or self.state.muted:
+            return True
+        if self.bridge.cardCount > 0 or self.bridge.activeActivities > 0:
+            return True
+        if self._pointer_inside:
+            return True
+        try:
+            root = self.anchor.rootObject() if self.anchor is not None else None
+            if root is not None and bool(root.property("typing")):
+                return True
+            if root is not None and bool(root.property("pointerInside")):
+                return True
+        except Exception:
+            pass
+        return False
+
     def _reschedule_dismissal(self) -> None:
         """Restart the auto-dismiss grace, or start it when Siri is idle.
 
-        Dismissal only arms when Siri is back in LISTENING with no cards and
-        no live activities — a response being read, a pending confirmation, or
-        an active background job keeps the stage on screen.
+        Dismissal only arms when nothing above is holding the stage open, so a
+        response being read, a pending confirmation, an active background job,
+        an open typing pill or a hovered card never vanishes under the user.
         """
         self._dismissTimer.stop()
-        st = self.state.state
-        if (st is UiState.LISTENING and not self.state.muted
-                and self.bridge.cardCount == 0
-                and self.bridge.activeActivities == 0):
+        if self._hidden or self.siri is None:
+            return
+        if not self._busy():
             self._dismissTimer.start()
 
     def _cancel_dismissal(self) -> None:
         self._dismissTimer.stop()
+
+    def _on_dismiss_due(self) -> None:
+        """Grace elapsed: dismiss, unless the user came back first."""
+        if not self._busy():
+            self.hide()
+
+    def _on_state_for_grace(self, _tr) -> None:
+        """State transitions re-arm or cancel the grace immediately.
+
+        ``_on_state`` already schedules the *show*; this listener only keeps
+        the dismissal timer honest so leaving SPEAKING arms the grace without
+        waiting for the next card/activity change.
+        """
+        self._reschedule_dismissal()
 
     @property
     def visible(self) -> bool:
@@ -646,27 +787,44 @@ class UiController(QObject):
         self.bridge.closeInspector()
 
     def focus_input(self) -> None:
-        """Expand the pill and put the caret in the text field.
+        """Open the Type-to-Siri pill and put the caret in its field.
 
         The Siri window carries ``Qt.WindowDoesNotAcceptFocus`` so voice
-        summoning never steals focus. When the user explicitly clicks to type,
-        we only need to give the input item keyboard focus — the window itself
-        must stay non-activating (no ``requestActivate()``).
+        summoning never steals focus. When the user explicitly asks to type we
+        only hand keyboard focus to the field item itself: the window stays
+        non-activating (no ``requestActivate()``), which is exactly how Apple's
+        type-to-Siri behaves over a foreground app.
         """
+        self.show()
         try:
             root = self.anchor.rootObject() if self.anchor else None
             if root is not None:
-                item = root.findChild(QQuickItem, "input")
+                root.setProperty("typing", True)
+                item = root.findChild(QQuickItem, "siriInput")
                 if item is not None:
                     item.forceActiveFocus()
         except Exception:
             pass
+
+    def _on_typing_changed(self) -> None:
+        """While the user types, Siri is interactive: never click-through."""
+        try:
+            typing = bool(self.anchor.rootObject().property("typing")) \
+                if self.anchor is not None and self.anchor.rootObject() else False
+        except Exception:
+            typing = False
+        self._update_click_through(force_interactive=typing)
+        self._reschedule_dismissal()
 
     # ── theme ────────────────────────────────────────────────────────────────
     def apply_theme(self, name: str) -> None:
         if name not in THEMES:
             return
         self._theme_name = name
+        # Re-derive the design scale: the system DPI can change while the app
+        # runs (moving the window between monitors, or a display-scale change).
+        self._dpi = self._detect_scale()
+        self._scale = self._design_scale(self._dpi)
         self.theme = build_theme(name, light=not self.system_dark,
                                  reduced_motion=self.reduced_motion,
                                  transparency=self.transparency, scale=self._scale)
@@ -873,6 +1031,7 @@ class UiController(QObject):
         return {
             "theme": self._theme_name,
             "scale": self._scale,
+            "dpi": self._dpi,
             "reducedMotion": self.reduced_motion,
             "transparency": self.transparency,
             "dark": self.system_dark,

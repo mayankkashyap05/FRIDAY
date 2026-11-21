@@ -11,8 +11,14 @@ import QtQuick
 
     The worker thread blocks in `wait_for_api_key()` until a key lands, so this
     is the only thing standing between the user and a working FRIDAY.
+
+    The surface is the *same* material as every snippet card — topic glass,
+    one hairline specular border, a top-edge rim highlight and a soft feathered
+    shadow — so onboarding never looks like a different application. The only
+    thing that is special here is the attention pulse on the border, which is
+    calm and aqua, never an alarm.
 */
-Rectangle {
+Item {
     id: setup
 
     required property bool reducedMotion
@@ -20,19 +26,63 @@ Rectangle {
     signal dismiss()
 
     implicitWidth: Math.round(360 * Theme.uiScale)
-    implicitHeight: content.height + Theme.pad * 2
+    implicitHeight: shell.height
 
-    radius: Theme.radiusCard
-    color: Theme.glass > 0 ? Theme.withAlpha(Theme.panel, 0.97) : Theme.panel
-    border.width: 1
-    border.color: Theme.withAlpha(Theme.pri, 0.55)
+    // Feathered shadow, filled-only (a zero-width stroke paints a grey ring).
+    Repeater {
+        model: Theme.glass > 0 ? 2 : 0
+        delegate: Rectangle {
+            required property int index
+            z: -2
+            anchors.centerIn: shell
+            width: shell.width + (10 + index * 12) * Theme.uiScale
+            height: shell.height + (10 + index * 12) * Theme.uiScale
+            radius: shell.radius + (5 + index * 6) * Theme.uiScale
+            color: Theme.shadowColor
+            opacity: (0.30 - index * 0.13) * Theme.glass
+        }
+    }
 
-    // gentle attention pulse on the border only
-    SequentialAnimation on border.color {
-        running: !setup.reducedMotion
-        loops: Animation.Infinite
-        ColorAnimation { to: Theme.withAlpha(Theme.pri, 0.25); duration: 1600 }
-        ColorAnimation { to: Theme.withAlpha(Theme.pri, 0.65); duration: 1600 }
+    Rectangle {
+        id: shell
+        anchors.left: parent.left
+        anchors.right: parent.right
+        anchors.top: parent.top
+        height: content.height + Theme.pad * 2
+        radius: Theme.radiusCard
+        color: Theme.glass > 0 ? Theme.withAlpha(Theme.panel, 0.92) : Theme.panel
+        border.width: 1
+        border.color: Theme.withAlpha(Theme.pri, 0.42)
+
+        // gentle attention pulse on the border only
+        SequentialAnimation on border.color {
+            running: !setup.reducedMotion
+            loops: Animation.Infinite
+            ColorAnimation { to: Theme.withAlpha(Theme.pri, 0.20); duration: 1800 }
+            ColorAnimation { to: Theme.withAlpha(Theme.pri, 0.52); duration: 1800 }
+        }
+
+        // Top-edge glass thickness, identical to BaseGlassCard.
+        Rectangle {
+            visible: Theme.glass > 0
+            width: parent.width - 2 * parent.radius * 0.55
+            height: 1
+            x: (parent.width - width) / 2
+            y: 1
+            gradient: Gradient {
+                orientation: Gradient.Horizontal
+                GradientStop { position: 0.0; color: "transparent" }
+                GradientStop {
+                    position: 0.22
+                    color: Theme.withAlpha(Theme.glassInnerRim, 0.95 * Theme.glass)
+                }
+                GradientStop {
+                    position: 0.78
+                    color: Theme.withAlpha(Theme.glassInnerRim, 0.95 * Theme.glass)
+                }
+                GradientStop { position: 1.0; color: "transparent" }
+            }
+        }
     }
 
     property bool revealed: false
@@ -46,25 +96,19 @@ Rectangle {
         id: content
         anchors.left: parent.left
         anchors.right: parent.right
-        anchors.verticalCenter: parent.verticalCenter
+        anchors.top: parent.top
         anchors.margins: Theme.pad
         spacing: 8
 
         Row {
             spacing: 7
             Text {
-                text: "◈"
-                color: Theme.pri
-                font.pixelSize: Theme.fontL
-            }
-            Text {
                 anchors.verticalCenter: parent.verticalCenter
-                text: qsTr("INITIALISATION REQUIRED")
-                color: Theme.pri
-                font.pixelSize: Theme.fontS
+                text: qsTr("Set up FRIDAY")
+                color: Theme.textOnGlass
+                font.pixelSize: Theme.fontM
                 font.bold: true
-                font.letterSpacing: 1.1
-                font.family: "Segoe UI Variable Display, Segoe UI, sans-serif"
+                font.family: Theme.fontDisplay
             }
         }
 
@@ -73,8 +117,9 @@ Rectangle {
             text: qsTr("Paste your Gemini API key to boot FRIDAY. It is stored "
                        + "locally in config/api_keys.json and never leaves "
                        + "your machine except to call Google.")
-            color: Theme.glass > 0 ? Theme.withAlpha(Theme.text, 0.85) : Theme.onGlass
+            color: Theme.withAlpha(Theme.textOnGlass, 0.62)
             font.pixelSize: Theme.fontXS
+            font.family: Theme.fontText
             wrapMode: Text.WordWrap
             lineHeight: 1.2
         }
@@ -140,16 +185,17 @@ Rectangle {
                 height: Math.round(34 * Theme.uiScale)
                 radius: height / 2
                 property bool pressed: setup.submitPressed
-                color: pressed ? Theme.withAlpha(Theme.pri, 0.34)
-                               : Theme.withAlpha(Theme.pri, 0.18)
+                color: pressed ? Theme.withAlpha(Theme.pri, 0.38)
+                               : Theme.withAlpha(Theme.pri, 0.22)
                 border.width: 1
                 border.color: Theme.withAlpha(Theme.pri, 0.6)
                 Text {
                     anchors.centerIn: parent
-                    text: qsTr("▸  INITIALISE SYSTEMS")
-                    color: Theme.pri
-                    font.pixelSize: Theme.fontXS
+                    text: qsTr("Continue")
+                    color: Theme.textOnGlass
+                    font.pixelSize: Theme.fontS
                     font.bold: true
+                    font.family: Theme.fontText
                 }
                 MouseArea {
                     anchors.fill: parent
@@ -163,7 +209,7 @@ Rectangle {
             Text {
                 anchors.verticalCenter: parent.verticalCenter
                 text: qsTr("or set FRIDAY_GEMINI_API_KEY")
-                color: Theme.withAlpha(Theme.dim, 1)
+                color: Theme.withAlpha(Theme.textOnGlass, 0.35)
                 font.pixelSize: Theme.fontXS - 1
             }
         }
