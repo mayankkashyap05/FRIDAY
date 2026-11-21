@@ -50,7 +50,7 @@ Friday operates on a decoupled, asynchronous event loop powered by Python `async
 ```mermaid
 flowchart TD
     subgraph UserInterface["Desktop Presentation"]
-        UI["Tkinter Canvas Engine<br>(High-DPI / Cyber Themes)"]
+        UI["Siri · Qt Quick<br>(glass orb · spring bloom · idle = zero footprint)"]
         Tray["System Tray & Global Hotkeys<br>(F4 Mute / F5 Theme)"]
     end
 

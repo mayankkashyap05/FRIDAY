@@ -1,14 +1,12 @@
 module ui_siri.qml
 
 singleton Theme 1.0 Theme.qml
-AnchorPill 1.0 AnchorPill.qml
-AnchorWindow 1.0 AnchorWindow.qml
-InspectorDrawer 1.0 InspectorDrawer.qml
-InspectorWindow 1.0 InspectorWindow.qml
+SiriOrb 1.0 SiriOrb.qml
+SiriWindow 1.0 SiriWindow.qml
+TypeToSiriPill 1.0 TypeToSiriPill.qml
 LiveActivityBar 1.0 LiveActivityBar.qml
-OverlayWindow 1.0 OverlayWindow.qml
-PerimeterGlow 1.0 PerimeterGlow.qml
-ScreenEffects 1.0 ScreenEffects.qml
 SetupCard 1.0 SetupCard.qml
 SnippetStack 1.0 SnippetStack.qml
+InspectorDrawer 1.0 InspectorDrawer.qml
+InspectorWindow 1.0 InspectorWindow.qml
 cards 1.0 cards/

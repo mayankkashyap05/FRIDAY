@@ -1,21 +1,11 @@
 """FRIDAY — public UI facade.
 
 This module is the **only** entry point ``main.py`` and ``actions/`` may import.
-It preserves, byte for byte in behaviour, every attribute and method the legacy
-Tk implementation exposed (see ``docs/UI_AUDIT_CONTRACT.md`` §3), while
-delegating the actual pixels to the ambient Qt Quick interface in
-:mod:`ui_siri`.
-
-Two implementations are selectable at runtime:
-
-===========================================  =================================
-``FridayUI("face.png")``  (default)          ambient Qt Quick overlay
-``FRIDAY_LEGACY_UI=1``                       original Tkinter window (verbatim)
-===========================================  =================================
-
-The escape hatch exists so a machine with a broken Qt install is never
-stranded, and so the migration can be bisected. Both classes satisfy the same
-contract, which is asserted by ``tests/test_ui_contract.py``.
+It preserves, byte for byte in behaviour, every attribute and method the
+legacy Tk implementation exposed (see ``docs/UI_AUDIT_CONTRACT.md`` §3), while
+delegating the actual pixels to the ambient Siri interface in
+:mod:`ui_siri`. ``ui_siri`` is the sole UI of the application; there is no
+Tk fallback, no legacy theme switch, and no parallel UI engine.
 
 Threading model
 ---------------
@@ -57,16 +47,10 @@ SYSTEM_NAME = "FRIDAY"
 MODEL_BADGE = "FRIDAY"
 
 # Kept for parity with the legacy module: callers/tests may read THEMES.
-# Deliberately the *Qt-free* theme module, so `import ui` never loads Qt and the
-# legacy fallback stays reachable on a machine with a broken PySide6 install.
-try:  # pragma: no cover - import-order safety
-    from ui_siri.themes import THEMES, THEME_NAMES  # noqa: F401
-except Exception:  # pragma: no cover - last-resort literal
-    THEMES = {
-        "cyber": {"name": "CYBER"}, "ocean": {"name": "OCEAN"},
-        "aurora": {"name": "AURORA"}, "sunset": {"name": "SUNSET"},
-    }
-    THEME_NAMES = ("cyber", "ocean", "aurora", "sunset")
+# The Qt-free theme module, so `import ui` never loads Qt. Siri is the sole
+# theme now — the legacy cyber/ocean/aurora/sunset variants were removed with
+# ui_legacy.py; `ui_siri.themes` exports exactly one palette, "siri".
+from ui_siri.themes import DEFAULT_THEME, THEMES, THEME_NAMES  # noqa: F401
 
 
 def _load_theme_name() -> str:
@@ -79,7 +63,7 @@ def _load_theme_name() -> str:
                 return name
     except Exception:
         pass
-    return "cyber"
+    return DEFAULT_THEME
 
 
 def _save_theme_name(name: str) -> None:
@@ -103,19 +87,6 @@ def _log_exception(exc: BaseException) -> None:
             level="ERROR")
     except Exception:
         pass
-
-
-def _env_flag(name: str) -> bool:
-    return os.environ.get(name, "").strip().lower() in ("1", "true", "yes", "on")
-
-
-def _legacy_requested() -> bool:
-    return _env_flag("FRIDAY_LEGACY_UI")
-
-
-def _strict_requested() -> bool:
-    """FRIDAY_STRICT_UI=1 -> never fall back; raise so the traceback is visible."""
-    return _env_flag("FRIDAY_STRICT_UI")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -336,8 +307,11 @@ class FridayUI:
             pass
 
         theme = _load_theme_name()
+        # Dormant by design: the Siri overlay is constructed but never shown
+        # until an explicit invocation (wake word, hotkey, tray, programmatic).
         self.controller = UiController(self._app, theme_name=theme,
-                                       audio=AudioUX(enabled=True, ducking=False))
+                                       audio=AudioUX(enabled=True, ducking=False),
+                                       start_hidden=True)
         self.bridge = self.controller.bridge
         self.state_machine = self.controller.state
 
@@ -657,6 +631,14 @@ class FridayUI:
     def hide(self) -> None:
         self._dispatch(self.controller.hide)
 
+    def invoke(self) -> None:
+        """Explicit Siri invocation: the orb pops into view (spring bloom)."""
+        self.show()
+
+    def dismiss(self) -> None:
+        """Graceful Siri dismissal: orb and cards dissolve to invisibility."""
+        self.hide()
+
     def raise_window(self) -> None:
         def _raise() -> None:
             win = self.controller.anchor
@@ -794,71 +776,45 @@ class FridayUI:
         return data
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Legacy Tk implementation, available on demand
-# ─────────────────────────────────────────────────────────────────────────────
-
-def _load_legacy_class():
-    """Import the untouched Tk UI lazily (only when explicitly requested)."""
-    import ui_legacy
-
-    ui_legacy.API_FILE = API_FILE
-    ui_legacy.CONFIG_DIR = CONFIG_DIR
-    ui_legacy.THEME_FILE = THEME_FILE
-    return ui_legacy.FridayUI
-
-
 def make_ui(face_path: str = "face.png", size: Any = None):
-    """Return a UI instance, honouring ``FRIDAY_LEGACY_UI`` / ``FRIDAY_STRICT_UI``.
+    """Return the sole UI implementation: the ambient Siri overlay in ui_siri.
 
-    Order of precedence:
-
-    * ``FRIDAY_LEGACY_UI=1`` -- use the original Tk interface, no Qt at all.
-    * ``FRIDAY_STRICT_UI=1`` -- use the ambient UI and *raise* on any failure,
-      including a QML load error, so the traceback is never swallowed. This is
-      the flag to use while bringing the overlay up on a new machine.
-    * otherwise -- try ambient, fall back to Tk, and print a full traceback
-      for the ambient failure so the log file records the real cause.
+    Siri is the only UI of the application; there is no Tk fallback, no legacy
+    theme switch, and no parallel UI engine anymore. On a QML load failure the
+    error is surfaced (traceback + SystemExit) instead of silently falling
+    back to a removed implementation.
     """
-    if _legacy_requested():
-        cls = _load_legacy_class()
-        return cls(face_path, size)
-
-    strict = _strict_requested()
     try:
         ui = FridayUI(face_path, size)
-        load_errors = []
-        try:
-            load_errors = ui.controller.qml_errors()
-        except Exception:
-            pass
-        if load_errors:
-            detail = "\n".join(f"  [{layer}] {url}:{line}:{col}: {msg}"
-                               for layer, url, line, col, msg in load_errors)
-            raise RuntimeError(f"QML failed to load:\n{detail}")
-        return ui
-    except Exception as exc:
-        print(f"[UI] ⚠️ Ambient UI unavailable: {type(exc).__name__}: {exc}")
-        print("[UI]    falling back to Tk" if not strict
-              else "[UI]    FRIDAY_STRICT_UI is set — not falling back")
-        # Full traceback, not just str(exc): the whole point of this log line is
-        # to make a first-run failure on someone else's machine debuggable.
+    except Exception:
+        # Construction failure (QML missing, Qt platform broken, ...):
+        # surface the traceback and exit hard — no silent fallback to a
+        # removed implementation.
         traceback.print_exc()
-        _log_exception(exc)
-        if strict:
-            raise
-        try:
-            cls = _load_legacy_class()
-            return cls(face_path, size)
-        except Exception as legacy_exc:
-            traceback.print_exc()
-            raise SystemExit(
-                "FRIDAY could not start its interface.\n"
-                f"  Qt Quick error: {exc}\n"
-                f"  Tk fallback error: {legacy_exc}\n\n"
-                "Install the UI dependencies with:\n"
-                f"  {sys.executable} -m pip install -r requirements.txt\n"
-            ) from legacy_exc
+        _log_exception(RuntimeError("FRIDAY's Siri UI failed to construct"))
+        raise SystemExit(
+            "FRIDAY's Siri UI failed to construct.\n\n"
+            "Install the UI dependencies with:\n"
+            f"  {sys.executable} -m pip install -r requirements.txt\n"
+        )
+    load_errors = []
+    try:
+        load_errors = ui.controller.qml_errors()
+    except Exception:
+        pass
+    if load_errors:
+        detail = "\n".join(f"  [{layer}] {url}:{line}:{col}: {msg}"
+                           for layer, url, line, col, msg in load_errors)
+        print(f"[UI] ⚠️ QML failed to load:\n{detail}")
+        traceback.print_exc()
+        _log_exception(RuntimeError(detail))
+        raise SystemExit(
+            "FRIDAY's Siri UI failed to load its QML interface.\n"
+            f"  {detail}\n\n"
+            "Install the UI dependencies with:\n"
+            f"  {sys.executable} -m pip install -r requirements.txt\n"
+        )
+    return ui
 
 
 __all__ = [

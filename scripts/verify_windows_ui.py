@@ -19,8 +19,8 @@ What it exercises in ~5 seconds:
 
 1. Environment: OS build, Python, PySide6/Qt versions, ``win32_native.probe()``
    and which Win32 capabilities degraded.
-2. All three overlay layers instantiate, load, and paint (alpha buffer, actual
-   HWND, captured ``QQuickWindow.grabWindow()`` parity).
+2. The Siri stage and inspector windows instantiate, load, and paint (alpha
+   buffer, actual HWND, captured ``QQuickWindow.grabWindow()`` parity).
 3. The state machine walks LISTENING -> THINKING -> ACTING -> SPEAKING ->
    ERROR -> DORMANT and the QML ``assistantState`` follows.
 4. ``QAbstractListModel`` insert/remove churn -- the operation that aborts on
@@ -196,7 +196,7 @@ def build_controller():
     from ui_siri.audio_ux import AudioUX
     from ui_siri.controller import UiController
 
-    controller = UiController(app, theme_name="cyber",
+    controller = UiController(app, theme_name="siri",
                               audio=AudioUX(enabled=False, ducking=False))
     return app, controller, alpha_ok
 
@@ -208,7 +208,7 @@ def check_layers(controller) -> None:
           getattr(controller, "_alpha_ok", True),
           "transparent windows need this")
 
-    for layer in ("overlay", "anchor", "inspector"):
+    for layer in ("siri", "inspector"):
         win = getattr(controller, layer, None)
         if not check(f"{layer} window created", win is not None,
                      "see [Controller] warnings above"):
@@ -223,34 +223,34 @@ def check_layers(controller) -> None:
             hwnd = 0
         check(f"{layer} has a real HWND", bool(hwnd), f"0x{hwnd:x}")
 
-    # The anchor is the only interactive surface: it must be visible and show
-    # something. grabWindow() renders through the real scene graph, so a
-    # non-uniform image proves QML actually painted.
-    anchor = controller.anchor
-    if anchor is not None:
+    # The Siri stage is the only interactive surface: it must paint something
+    # (translucent orb + cards), never an opaque fill. grabWindow() renders
+    # through the real scene graph, so a non-uniform image proves QML painted.
+    siri = controller.siri
+    if siri is not None:
         from PySide6.QtCore import QCoreApplication
 
         controller._layout_windows()
-        anchor.show()
+        siri.show()
         for _ in range(30):
             QCoreApplication.processEvents()
-        check("anchor window visible", anchor.isVisible())
+        check("siri window visible", siri.isVisible())
 
-        img = anchor.grabWindow()
-        check("anchor scene graph rendered", not img.isNull(),
+        img = siri.grabWindow()
+        check("siri scene graph rendered", not img.isNull(),
               f"{img.width()}x{img.height()}")
         if not img.isNull():
             colours = set()
             for y in range(0, img.height(), max(1, img.height() // 24)):
                 for x in range(0, img.width(), max(1, img.width() // 24)):
                     colours.add(img.pixelColor(x, y).rgba())
-            check("anchor is not a blank fill", len(colours) > 1,
+            check("siri is not a blank fill", len(colours) > 1,
                   f"{len(colours)} distinct sampled colours")
 
 
-def _overlay_root(controller):
-    """The live ``OverlayWindow`` QML root object, or ``None``."""
-    win = getattr(controller, "overlay", None)
+def _siri_root(controller):
+    """The live ``SiriWindow`` QML root object, or ``None``."""
+    win = getattr(controller, "siri", None)
     if win is None:
         return None
     try:
@@ -267,7 +267,7 @@ def check_states(controller) -> None:
     bridge = controller.bridge
     # The six lifecycle states, in the order the report asks for. ACTING and
     # DORMANT are legacy aliases the coercion table maps onto PROCESSING and
-    # BOOTING, so the full set is exercised by sending both spellings.
+    # LISTENING, so the full set is exercised by sending both spellings.
     sequence = [
         ("LISTENING", "LISTENING"),
         ("THINKING", "THINKING"),
@@ -284,25 +284,16 @@ def check_states(controller) -> None:
         ok = check(f"state {sent} -> QML", actual == expected,
                    f"assistantState={actual!r} (expected {expected!r})")
 
-        # DORMANT is the idle-awake state: the perimeter glow must be at its
-        # slow idle sweep, never the BOOTING/PROCESSING spin, and no spinner
-        # may be visible. Reading it back from the live QML root proves the
-        # binding actually resolved rather than defaulting.
+        # DORMANT is the idle-awake state: zero desktop footprint, so the Siri
+        # stage is constructed but never invoked — no orb, nothing clickable.
         if sent == "DORMANT" and ok:
-            root = _overlay_root(controller)
+            root = _siri_root(controller)
             if root is None:
-                skip("DORMANT glow idle", "overlay root not available")
+                skip("DORMANT stage not invoked", "siri root not available")
             else:
-                # Read back through the live binding: if `bridge.state` never
-                # reached QML these would still hold their defaults.
-                glow_state = root.property("glowState")
-                speed = root.property("glowSpinSpeed")
-                check("DORMANT reaches the glow as 'LISTENING'",
-                      glow_state == "LISTENING",
-                      f"glowState={glow_state!r}")
-                check("DORMANT glow is idle, not spinning",
-                      speed is not None and float(speed) <= 0.35,
-                      f"glowSpinSpeed={speed!r} (idle <= 0.35)")
+                invoked = root.property("invoked")
+                check("DORMANT stage not invoked",
+                      invoked is False, f"invoked={invoked!r}")
 
 
 #: One realistic payload per CardKind, so every card delegate is instantiated.

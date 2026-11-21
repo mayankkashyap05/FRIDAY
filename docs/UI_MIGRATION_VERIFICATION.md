@@ -169,12 +169,9 @@ legacy surface, asserted by `test_ui_contract.py`:
   `actions/wake_word.py` (which call `root.after` from their own threads) working.
 - all `player.*` members including `write_log`, the vision and arcade contracts,
   `silent_mode`, `speaking`, `set_state`, `set_connection`, `wait_for_api_key`
-- `import ui` **loads no Qt module** (asserted), so a broken PySide6 install
-  still reaches the Tk fallback rather than dying at import
-
-Escape hatches: `FRIDAY_LEGACY_UI=1` forces the original Tk UI; `make_ui()`
-falls back automatically and raises a `SystemExit` with both error messages only
-if *both* implementations fail.
+- `import ui` **loads no Qt module** (asserted): ``ui_siri`` is the sole UI,
+  so a missing PySide6 is surfaced at launch with a clear ``SystemExit``
+  instead of a silent fallback.
 
 ### Behavioural fixes made along the way
 
@@ -228,18 +225,20 @@ failures found while auditing the same paths.
 - **QML load errors were invisible.** `errors()` output was joined into one line
   and the inspector's status was never checked at all. Errors now print
   `url:line:column: message`, are exposed via `UiController.qml_errors()`, and
-  `make_ui()` treats a load error as a startup failure under `FRIDAY_STRICT_UI=1`.
+  `make_ui()` treats a load error as a startup failure: full traceback plus
+  ``SystemExit``.
 - **`_resize_anchor` silently did nothing.** It called
   `float(root.property("contentHeight"))`, but `contentHeight` is a QML
   *function*, so `property()` returned a bound-method wrapper and `float()`
   raised inside a bare `except`. The snippet stack would have been clipped to the
   initial window height.
 
-### New escape hatch
+### Failure policy
 
-`FRIDAY_STRICT_UI=1` re-raises instead of falling back to Tk, and prints the full
-traceback. Default behaviour is unchanged (fall back), but it now logs a
-complete traceback to stderr and to the app log instead of just `str(exc)`.
+There is no escape hatch or fallback implementation any more: ``ui_siri`` is
+the sole UI of the application. If QML fails to load, ``make_ui()`` prints the
+full traceback to stderr and the app log, then raises ``SystemExit`` so the
+process never runs with a silent, half-loaded overlay.
 
 ### Verification script
 

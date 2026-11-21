@@ -405,6 +405,7 @@ class UiBridge(QObject):
     toastRequested = Signal(str, str)      # (text, severity)
     reticleRequested = Signal(float, float)
     scanRequested = Signal(str)            # "start" | "stop"
+    amplitudeChanged = Signal()            # live microphone level 0..1
 
     def __init__(
         self,
@@ -458,6 +459,7 @@ class UiBridge(QObject):
         self._muted = False
         self._silent = False
         self._dnd = False
+        self._micAmplitude = 0.0
 
         self._state.add_listener(self._on_transition)
         self._wire_bus()
@@ -561,6 +563,18 @@ class UiBridge(QObject):
     @Property(bool, notify=stateChanged)
     def dnd(self) -> bool:
         return self._dnd
+
+    @Property(float, notify=amplitudeChanged)
+    def micAmplitude(self) -> float:
+        return self._micAmplitude
+
+    def setAmplitude(self, value: float) -> None:
+        """Live microphone level (0..1); feeds Siri's voice-reactive ribbons."""
+        value = max(0.0, min(1.0, float(value or 0.0)))
+        if abs(value - self._micAmplitude) < 0.01:
+            return
+        self._micAmplitude = value
+        self.amplitudeChanged.emit()
 
     # ── properties: persona ──────────────────────────────────────────────────
     _persona = {"mode": "normal", "mood": "calm", "voice": "Aoede"}
