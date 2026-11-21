@@ -26,12 +26,6 @@ pytest.importorskip("PySide6", reason="PySide6 not installed")
 
 from PySide6.QtCore import QCoreApplication, QSize, Qt  # noqa: E402
 
-# QGuiApplication is only needed for GUI tests (FRIDAY_GUI_TESTS=1). Importing
-# it unconditionally would fail on headless boxes that lack libGL.so.1.
-def _qgui_application():
-    from PySide6.QtGui import QGuiApplication
-    return QGuiApplication
-
 # QtGui/QtQuick need the platform's GL/DBus/xkb libraries. Headless CI boxes
 # (including the sandbox this change was developed in) frequently lack them, so
 # the GUI-dependent half of this module is skipped rather than failed. The
@@ -178,13 +172,19 @@ def test_only_qt6_compatible_qml_modules():
 # ─────────────────────────────────────────────────────────────────────────────
 
 @pytest.fixture
-def app():
-    """QGuiApplication for GUI tests — only created when QtGui is available."""
+def app(qt_app):
+    """QGuiApplication for GUI tests — only created when QtGui is available.
+
+    Delegates to the shared session-scoped ``qt_app`` fixture in conftest
+    rather than constructing an application here. Defining a local fixture that
+    called ``QGuiApplication.instance() or QGuiApplication(...)`` shadowed the
+    shared one, so this module could end up handed a bare ``QCoreApplication``
+    created earlier in the session by another test file — which is a hard crash,
+    not a skip, the moment a QPixmap is constructed.
+    """
     if not _QT_GUI_OK:
         pytest.skip(f"QtGui unavailable ({_QT_GUI_ERROR})")
-    QGuiApplication = _qgui_application()
-    application = QGuiApplication.instance() or QGuiApplication(sys.argv[:1])
-    yield application
+    return qt_app
 
 
 @gui_stack
@@ -378,12 +378,18 @@ def test_bridge_diagnostics_shape(app):
 
 @gui_only
 @gui_stack
-def test_controller_boots_and_shuts_down():
-    from PySide6.QtCore import QTimer
-    QGuiApplication = _qgui_application()
+def test_controller_boots_and_shuts_down(app):
+    """The whole overlay stack must boot and shut down cleanly.
 
-    application = QGuiApplication.instance() or QGuiApplication(sys.argv[:1])
+    Takes the shared ``app`` (-> ``qt_app``) fixture: creating a second
+    application inline is what aborted the process, because the first one
+    created in a session is the only one Qt ever hands out.
+    """
+    from PySide6.QtCore import QTimer
+
     from ui_siri.controller import UiController
+
+    application = app
 
     controller = UiController(application, enable_overlay=True)
     assert controller.anchor is not None
