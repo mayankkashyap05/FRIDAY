@@ -719,6 +719,20 @@ def test_setup_verifies_the_electron_binary_instead_of_trusting_npm():
     assert (APP / "scripts" / "ensure-electron.mjs").is_file()
 
 
+def test_make_ui_does_not_stack_a_second_generic_install_block(monkeypatch):
+    """One diagnosis, one set of commands — not two contradicting ones."""
+    monkeypatch.delenv("FRIDAY_UI_HEADLESS", raising=False)
+    monkeypatch.setattr("ui.controller.electron_executable", lambda *a, **k: None)
+
+    import ui
+
+    with pytest.raises(SystemExit) as excinfo:
+        ui.make_ui("face.png")
+    message = str(excinfo.value)
+    assert "Install and build the frontend with:" not in message
+    assert "electron binary" in message
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Frontend asset integrity (the renderer is the UI; a missing file is fatal)
 # ─────────────────────────────────────────────────────────────────────────────
