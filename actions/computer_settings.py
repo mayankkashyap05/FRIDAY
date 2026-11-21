@@ -9,6 +9,8 @@
 # - pyautogui + platform-specific API'ler
 
 import time
+
+from config.models import MODEL_FLASH_LITE
 import subprocess
 import sys
 import platform
@@ -735,7 +737,7 @@ def _detect_action(description: str) -> dict:
     """
     import google.generativeai as genai
     genai.configure(api_key=_get_api_key())
-    model = genai.GenerativeModel("gemini-2.5-flash-lite")
+    model = genai.GenerativeModel(MODEL_FLASH_LITE)
 
     available = ", ".join(sorted(ACTION_MAP.keys())) + ", volume_set, brightness_set, app_volume, mute_app, type_text, write_on_screen, reload_n, press_key"
 

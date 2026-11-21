@@ -468,3 +468,95 @@ Qt has never booted in this sandbox (`libGL.so.1` is absent), so: no QML was
 instantiated under a real engine, and no Win32 call was executed. The fixes above
 are verified by meta-object inspection and mocked-DLL probes only; the Windows
 run of `scripts/verify_windows_ui.py` remains the authoritative check.
+
+---
+
+## Round 4 — three fixes from the first live session
+
+`scripts/verify_windows_ui.py` reached **57/57 with 0 QML warnings** on Windows
+11 Build 26300 and `FRIDAY_STRICT_UI=1 python main.py` booted the ambient UI and
+executed live tool calls. Running it for real surfaced three things the verifier
+could not: a model retired server-side, a speaking flag that never dropped, and a
+Ctrl+C that bypassed all teardown.
+
+### 1. `gemini-2.5-flash-lite` is retired
+
+The live API answered:
+
+```
+404 NOT_FOUND: models/gemini-2.5-flash-lite is no longer available to new
+users. Please update your code to use models/gemini-3.5-flash-lite
+```
+
+The id was copy-pasted into nine files, which is why one retirement broke
+routing, planning, summarising, language detection, PDF Q&A, web search and
+memory extraction at once. It is now a single constant in `config/models.py`:
+
+```python
+MODEL_FLASH      = "gemini-2.5-flash"
+MODEL_FLASH_LITE = "gemini-3.5-flash-lite"   # was gemini-2.5-flash-lite (404)
+MODEL_LIVE       = "gemini-3.1-flash-live-preview"
+```
+
+Call sites now read `MODEL_FLASH_LITE`; a test fails the build if the literal
+reappears anywhere (`tests/test_live_session_fixes.py`).
+
+> **Still outstanding:** `gemini-2.5-flash` (the non-lite tier) is hard-coded in
+> ~20 more places and is the same SSOT problem waiting to happen. It was not part
+> of this fix and no API call in this session rejected it, but it should be
+> migrated to `MODEL_FLASH` next.
+
+### 2. `⏱ Speaking watchdog fired — force-cleared`
+
+Three separate faults, all in the same lifecycle:
+
+* **The player could not notice a finished turn.** `_play_audio` blocked forever
+  on `audio_in_queue.get()`, so after a reply's audio drained it stayed
+  "speaking" until the *next* turn produced a chunk.
+* **Release was decided from one `queue.empty()` sample.** That is true between
+  every chunk at the network's natural pacing, so replies were also cut short.
+  Release now requires the queue to stay empty for `AUDIO_END_GRACE_S` (350 ms).
+* **The watchdog measured the wrong clock.** It compared against
+  `_last_play_ts` (the last chunk that *arrived*) with a 25 s ceiling, and it
+  fired whenever the model went quiet to run a tool call — which is most turns.
+  It now measures silence from `_last_audio_write_ts` (the last chunk actually
+  written to the device), with an 8 s backstop, and requires an empty queue.
+
+The muted path was worse: `set_speaking(False)` called `_set_phase(LISTENING)`,
+which deliberately does nothing when muted, so the machine stayed on `SPEAKING`
+forever. Since `UiController._on_state` restores ducked audio only when it sees a
+transition *away* from `SPEAKING`, **every other app's audio stayed at 25% for
+the rest of the session**. `AssistantStateMachine.release_speech()` now always
+publishes the transition (`MUTED` when muted, otherwise `LISTENING`), and
+`ui.stop_speaking()` in the facade no longer no-ops while muted.
+
+Measured on the real loop (stubbed device): speaking released ~490 ms after
+`turn_complete` when unmuted, and ~490 ms when muted — versus **never** before.
+
+### 3. Ctrl+C dumped a traceback from `UiDispatcher.drain`
+
+Qt's event loop is C++ and does not hand control back to the interpreter between
+events, so SIGINT was first noticed inside a Python timer callback — the
+dispatcher's drain — and escaped as a bare `KeyboardInterrupt` traceback with no
+teardown. Ducked audio stayed ducked and the tray's Win32 message loop survived,
+so the process had to be killed.
+
+`UiController.install_interrupt_handler()` (called from `FridayUI.run()` *before*
+`app.exec()`) now routes SIGINT through a handler that sets a flag, prints the
+notice, and posts the teardown to the GUI thread. `shutdown()` restores audio,
+stops the tray, closes the windows and is idempotent; a second Ctrl+C calls
+`os._exit(130)` for a real escape hatch.
+
+### Gate results (Linux sandbox)
+
+| Gate | Result |
+|---|---|
+| `pyflakes` on ui.py, main.py, ui_siri/, verifier, config/, actions/, agent/, memory/ | **0 undefined names** |
+| UI + affected suites (9 files) | **239 passed, 12 skipped** |
+| Full suite | 297 passed, same 11 pre-existing unrelated failures |
+
+### Still not verified here
+
+No PortAudio, no GL stack, no Gemini key. The player loop was exercised against a
+stubbed `sounddevice` and a real `FridayLive`; the SIGINT handler was exercised
+against a fake controller. The live Windows run remains authoritative.

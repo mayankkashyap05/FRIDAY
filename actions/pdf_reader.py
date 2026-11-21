@@ -6,6 +6,8 @@ import re
 import sys
 from pathlib import Path
 
+from config.models import MODEL_FLASH_LITE
+
 try:
     from pypdf import PdfReader
     _PYPdf = True
@@ -124,7 +126,7 @@ def _ask_gemini(question: str, context: str) -> str:
         if "flash" in MODEL or "429" in str(e):
             try:
                 resp = client.models.generate_content(
-                    model="gemini-2.5-flash-lite", contents=prompt)
+                    model=MODEL_FLASH_LITE, contents=prompt)
                 return (resp.text or "").strip() or "No answer, sir."
             except Exception:
                 pass

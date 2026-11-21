@@ -250,6 +250,28 @@ class AssistantStateMachine:
         if len(self._history) > self._max_history:
             del self._history[: len(self._history) - self._max_history]
 
+    def release_speech(self, reason: str = "speech released") -> Transition:
+        """Clear the audio-speaking flags and publish LISTENING if un-muted.
+
+        ``set_speaking(False)`` in the live path is not enough on its own: when
+        the user is muted, ``_set_phase(PHASE_LISTENING)`` deliberately skips
+        ``ui.set_state``, so the machine stayed on SPEAKING forever. The
+        controller only restores ducked audio when it observes a transition
+        *away* from SPEAKING, so ducking then stayed engaged and every other
+        app's audio kept playing at 25% until the process exited.
+
+        This always emits a transition (``force=True``), moving to MUTED when
+        muted and LISTENING otherwise, so the release is never invisible.
+        """
+        with self._lock:
+            was_speaking = self._speaking_audio
+            self._speaking_audio = False
+            muted = self._muted
+        if was_speaking or self._state is UiState.SPEAKING:
+            target = UiState.MUTED if muted else UiState.LISTENING
+            return self.transition(target, reason, force=True)
+        return Transition(self._state, self._state, reason, time.time())
+
     def _resume_target(self) -> UiState:
         if self._muted:
             return UiState.MUTED

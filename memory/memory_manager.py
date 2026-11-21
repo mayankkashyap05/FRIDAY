@@ -12,6 +12,8 @@ import json
 import os
 import re
 from datetime import datetime
+
+from config.models import MODEL_FLASH_LITE
 from threading import Lock
 from pathlib import Path
 import sys
@@ -184,7 +186,7 @@ def should_extract_memory(user_text: str, assistant_text: str, api_key: str) -> 
             f"{combined}"
         )
         check = client.models.generate_content(
-            model="gemini-2.5-flash-lite",
+            model=MODEL_FLASH_LITE,
             contents=prompt,
         )
         return "YES" in (check.text or "").upper()
@@ -235,7 +237,7 @@ def extract_memory(user_text: str, assistant_text: str, api_key: str) -> dict:
         )
 
         resp = client.models.generate_content(
-            model="gemini-2.5-flash-lite",
+            model=MODEL_FLASH_LITE,
             contents=prompt,
         )
         raw = (resp.text or "").strip()

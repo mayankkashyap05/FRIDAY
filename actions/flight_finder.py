@@ -19,6 +19,8 @@
 import json
 import re
 import sys
+
+from config.models import MODEL_FLASH_LITE
 import subprocess
 import platform
 from datetime import datetime, timedelta
@@ -73,7 +75,7 @@ def _parse_date(raw: str) -> str:
     try:
         import google.generativeai as genai
         genai.configure(api_key=_get_api_key())
-        model    = genai.GenerativeModel("gemini-2.5-flash-lite")
+        model    = genai.GenerativeModel(MODEL_FLASH_LITE)
         today_str = today.strftime("%Y-%m-%d")
         response = model.generate_content(
             f"Today is {today_str}. Convert this date to YYYY-MM-DD format: '{raw}'. "

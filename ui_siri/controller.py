@@ -22,6 +22,7 @@ the legacy contract. It never raises into ``main.py``.
 from __future__ import annotations
 
 import os
+import signal
 import sys
 import time
 from pathlib import Path
@@ -221,6 +222,11 @@ class UiController(QObject):
         self.app = app or QGuiApplication.instance()
         if self.app is None:
             raise RuntimeError("UiController requires a QGuiApplication")
+
+        # Interrupt state must exist before any handler can run.
+        self._interrupted = False
+        self._interrupt_installed = False
+        self._shutdown_done = False
 
         self.bus = EventBus()
         self.state = AssistantStateMachine()
@@ -716,7 +722,74 @@ class UiController(QObject):
             pass
 
     # ── shutdown ─────────────────────────────────────────────────────────────
+    # ── graceful interrupt ───────────────────────────────────────────────────
+    def install_interrupt_handler(self) -> bool:
+        """Route Ctrl+C to a clean shutdown instead of a KeyboardInterrupt.
+
+        Qt's event loop is C++ and does not return to the Python interpreter
+        between events, so a SIGINT that arrives while QML is running is only
+        noticed when some Python frame next executes -- which, in practice, is
+        inside :meth:`UiDispatcher.drain`, producing a bare ``KeyboardInterrupt``
+        traceback from a timer callback and skipping every piece of teardown.
+        That matters here: ducked audio sessions stay at 25% and the tray icon
+        keeps a Win32 message loop alive, so the process had to be killed.
+
+        The signal handler runs on the interpreter's main thread as soon as the
+        loop yields, so it only sets a flag and posts a queued quit; the actual
+        teardown (timers, ducking restore, windows, tray) then happens on the GUI
+        thread via the normal shutdown path.
+
+        Safe to call more than once, and safe when not on the main thread / not
+        on Windows -- it degrades to ``False`` rather than raising.
+        """
+        try:
+            signal.signal(signal.SIGINT, self._on_sigint)
+        except (ValueError, OSError, AttributeError):
+            # Not the main thread, or an embedded interpreter without signals.
+            return False
+        self._interrupt_installed = True
+        return True
+
+    def _on_sigint(self, _signum=None, _frame=None) -> None:
+        """Signal handler: keep it tiny and never raise.
+
+        Prints the shutdown notice from here so the message is ordered before
+        teardown, then defers the real work to the GUI thread.
+        """
+        if self._interrupted:
+            # Second Ctrl+C: the user wants out now, teardown or not.
+            print("[FRIDAY] 🛑 Second interrupt — exiting immediately.")
+            os._exit(130)
+        self._interrupted = True
+        print("\n[FRIDAY] 🛑 Ctrl+C — shutting down cleanly...")
+        # request_quit() posts to the GUI thread and cannot raise; if the
+        # dispatcher is already gone it runs the teardown inline.
+        self.request_quit()
+
+    def request_quit(self) -> None:
+        """Thread-safe "please exit": post the teardown to the GUI thread."""
+        def _quit() -> None:
+            print("[FRIDAY] 👋 Tray stopped, audio restored, windows closed.")
+            self.shutdown()
+            try:
+                self.app.quit()
+            except Exception:
+                pass
+
+        try:
+            self.dispatcher.call(_quit)
+        except Exception:
+            # Dispatcher already torn down or never started: do it inline.
+            _quit()
+
     def shutdown(self) -> None:
+        # Idempotent: the SIGINT path, the tray "Quit" item and the event loop's
+        # finally-block can all arrive here. Tearing down twice would restore
+        # audio that was never ducked and close already-deleted windows.
+        if self._shutdown_done:
+            return
+        self._shutdown_done = True
+
         for timer in (self._tick, self._slow, self._drain):
             try:
                 timer.stop()
@@ -727,8 +800,18 @@ class UiController(QObject):
         except Exception:
             pass
         self._remember_anchor()
+        # Restore any ducked audio session *before* the process can exit; if the
+        # machine was interrupted mid-reply this is the only thing that puts
+        # other apps' volume back.
         try:
             self.audio.stop()
+        except Exception:
+            pass
+        # The tray owns a Win32 message loop; stop() is the only way it ends.
+        try:
+            from actions import system_tray
+
+            system_tray.stop()
         except Exception:
             pass
         for win in (self.inspector, self.anchor, self.overlay):
