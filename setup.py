@@ -115,7 +115,7 @@ def build_ui() -> bool:
             return False
         print(f"  node {version}")
 
-        print("  installing renderer dependencies (Electron downloads on first run)...")
+        print("  installing renderer dependencies (Electron's binary is checked below)...")
         subprocess.run(
             [npm, "install", "--no-audit", "--no-fund"],
             cwd=str(APP),
