@@ -20,6 +20,12 @@ models/hey_jarvis*
 models/hey_friday*
 models/training/
 
+# Electron renderer — dependencies and build output are never committed
+ui/app/node_modules/
+ui/app/dist/
+ui/app/*.tsbuildinfo
+ui/app/.vite/
+
 # Local runtime state
 data/
 documents/

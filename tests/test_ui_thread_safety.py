@@ -1,28 +1,21 @@
-"""Thread-safety regression tests for the Qt UI layer.
+"""Thread-safety regression tests for the UI layer.
 
-These encode findings from real multi-threaded runs against PySide6, so a future
-refactor cannot quietly reintroduce the failure modes:
+These encode findings from real multi-threaded runs, so a future refactor cannot
+quietly reintroduce the failure modes:
 
-1. **Producers must touch no Qt object at all.**  In particular
-   ``QThread.currentThread()`` must never be called from a background thread:
-   Qt then *adopts* that foreign thread and allocates a wrapper object on every
-   call, which is both slow and (observed) a source of native crashes under
-   contention.  ``UiDispatcher`` therefore tracks the GUI thread with
-   ``threading.get_ident()``.
+1. **Producers must never touch UI state.**  They append a callable to a
+   ``deque`` (atomic under the GIL) and wake a single consumer thread. No
+   signal emission, no shared model mutation, no timer reconfiguration.
 
-2. **``Signal.emit()`` must not be the cross-thread transport.**  With several
-   producer threads emitting concurrently, PySide6 aborts with
-   ``Fatal Python error: bool_dealloc``.  The dispatcher uses a plain ``deque``
-   (atomic append under the GIL) plus a GUI-thread ``QTimer`` drain instead.
+2. **The consumer is one dedicated UI-loop thread**, not whatever thread
+   happens to call ``drain()``. Work is FIFO and per-producer order is kept.
 
-3. **``QTimer`` mutation is GUI-thread only.**  ``setInterval()`` from a
-   producer thread yields ``Timers cannot be started from another thread``;
-   the adaptive interval is therefore computed inside ``drain()``.
+3. **Nothing may be lost when a producer fires before the loop starts.**
 
-4. **Nothing may be lost when a producer fires before the event loop starts.**
+4. **A bounded backlog**: a dead consumer drops updates instead of growing
+   memory without limit.
 
-The suite needs only ``QtCore`` (no ``QtGui``), so it runs in a headless CI
-container.
+The suite needs no third-party packages at all.
 """
 
 from __future__ import annotations
@@ -33,73 +26,87 @@ import time
 
 import pytest
 
-pytest.importorskip("PySide6.QtCore")
-
-from PySide6.QtCore import QTimer  # noqa: E402
-
-from ui_siri import bridge as bridge_mod  # noqa: E402
-from ui_siri.bridge import UiBridge, UiDispatcher  # noqa: E402
-from ui_siri.event_bus import EventBus  # noqa: E402
-from ui_siri.state_machine import AssistantStateMachine  # noqa: E402
+from ui import bridge as bridge_mod
+from ui.bridge import UiBridge, UiDispatcher
+from ui.event_bus import EventBus
+from ui.state_machine import AssistantStateMachine
 
 
 @pytest.fixture()
-def bridge(qt_app):
-    machine, bus, dispatcher = AssistantStateMachine(), EventBus(), UiDispatcher()
-    dispatcher.bind_gui_thread()
-    dispatcher.start()
+def dispatcher():
+    instance = UiDispatcher()
+    instance.bind_ui_thread()
+    yield instance
+    instance.stop()
+
+
+@pytest.fixture()
+def bridge(dispatcher):
+    machine, bus = AssistantStateMachine(), EventBus()
     view = UiBridge(machine, bus, dispatcher)
     view.machine = machine          # convenience handle for the tests
-    yield view
-    dispatcher.stop()
+    return view
 
 
-def _pump(dispatcher: UiDispatcher, qt_app, rounds: int = 60) -> None:
+def _pump(dispatcher: UiDispatcher, rounds: int = 60) -> None:
     for _ in range(rounds):
+        if dispatcher.pending() == 0:
+            break
         dispatcher.drain(4000)
-        qt_app.processEvents()
         time.sleep(0.001)
+    dispatcher.drain(4000)
+
+
+def _wait_for(predicate, timeout: float = 5.0) -> bool:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if predicate():
+            return True
+        time.sleep(0.005)
+    return predicate()
 
 
 # ── the dispatcher itself ────────────────────────────────────────────────────
 
-def test_dispatcher_never_references_qthread():
-    """Guards finding #1 at the source level.
+def test_bridge_module_imports_no_gui_toolkit():
+    """Guards the migration: the bridge must stay pure Python.
 
-    ``QThread`` in this module would mean thread identity is being resolved
-    through Qt, which is exactly what crashed.
+    Checked against the AST (not the prose) so the module's own explanation of
+    what it replaced cannot trip the guard.
     """
-    source = inspect.getsource(bridge_mod)
-    assert "QThread" not in source, (
-        "UiDispatcher must track thread identity with threading.get_ident(), "
-        "not QThread.currentThread()"
-    )
+    import ast
+
+    tree = ast.parse(inspect.getsource(bridge_mod))
+    imported: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            imported.update(alias.name for alias in node.names)
+        elif isinstance(node, ast.ImportFrom):
+            imported.add(node.module or "")
+    offenders = sorted(name for name in imported
+                       if name.startswith(("PySide", "PyQt", "shiboken")))
+    assert not offenders, (
+        f"ui/bridge.py must not import a GUI toolkit: {offenders}")
 
 
-def test_on_gui_thread_uses_python_thread_identity(qt_app):
-    dispatcher = UiDispatcher()
-    dispatcher.bind_gui_thread()
-    assert dispatcher.on_gui_thread
+def test_on_ui_thread_uses_python_thread_identity(dispatcher):
+    assert dispatcher.on_ui_thread
 
     seen = []
-    thread = threading.Thread(target=lambda: seen.append(dispatcher.on_gui_thread))
+    thread = threading.Thread(target=lambda: seen.append(dispatcher.on_ui_thread))
     thread.start()
     thread.join()
     assert seen == [False]
 
 
-def test_gui_thread_calls_run_inline(qt_app):
-    dispatcher = UiDispatcher()
-    dispatcher.bind_gui_thread()
+def test_ui_thread_calls_run_inline(dispatcher):
     ran = []
     dispatcher.call(ran.append, 1)
     assert ran == [1], "same-thread calls must not be deferred"
     assert dispatcher.pending() == 0
 
 
-def test_cross_thread_calls_are_queued_then_drained_in_order(qt_app):
-    dispatcher = UiDispatcher()
-    dispatcher.bind_gui_thread()
+def test_cross_thread_calls_are_queued_then_drained_in_order(dispatcher):
     ran = []
 
     def produce(tid):
@@ -115,7 +122,7 @@ def test_cross_thread_calls_are_queued_then_drained_in_order(qt_app):
     assert ran == [], "nothing may execute on a producer thread"
     assert dispatcher.pending() == 300
 
-    _pump(dispatcher, qt_app)
+    _pump(dispatcher)
     assert len(ran) == 300
     assert dispatcher.pending() == 0
     # Per-producer ordering is preserved even though producers interleave.
@@ -124,39 +131,82 @@ def test_cross_thread_calls_are_queued_then_drained_in_order(qt_app):
         assert seq == list(range(50))
 
 
-def test_queued_before_event_loop_nothing_is_lost(qt_app):
-    """Finding #4: a producer may fire before exec() starts."""
-    dispatcher = UiDispatcher()          # never bound: treated as GUI thread
+def test_queued_before_the_loop_starts_is_not_lost():
+    """Finding #4: a producer may fire before the loop thread exists."""
+    dispatcher = UiDispatcher()          # never bound: treated as UI thread
     ran = []
     dispatcher.call(ran.append, "early")
     assert ran == ["early"] or dispatcher.pending() == 1
 
 
-def test_dispatcher_survives_callable_exceptions(qt_app):
-    dispatcher = UiDispatcher()
-    dispatcher.bind_gui_thread()
+def test_dispatcher_survives_callable_exceptions(dispatcher):
     dispatcher.call(lambda: (_ for _ in ()).throw(RuntimeError("boom")))
     assert dispatcher.stats()["executed"] == 1
 
 
-def test_dispatcher_drops_instead_of_growing_without_bound(qt_app):
-    dispatcher = UiDispatcher()
-    dispatcher.bind_gui_thread()
-    dispatcher._max_queue = 10
+def test_dispatcher_drops_instead_of_growing_without_bound(dispatcher):
+    dispatcher.MAX_QUEUE = 10
     # Pretend we are a producer thread (nothing is ever drained here).
-    dispatcher._gui_ident = -1
-    for i in range(40):
+    dispatcher._ident = -1
+    for _ in range(40):
         dispatcher.call(lambda: None)
     stats = dispatcher.stats()
     assert stats["dropped"] > 0, stats
     assert dispatcher.pending() <= 11
 
 
-# ── end-to-end: backend threads -> models ───────────────────────────────────
+def test_producer_path_does_not_emit_or_touch_timers():
+    """Finding #1/#3, at the source level."""
+    source = inspect.getsource(UiDispatcher.call)
+    assert "emit" not in source, (
+        "call() must not emit a signal; concurrent emits abort GUI toolkits")
+    assert "setInterval" not in source and "Timer(" not in source, (
+        "call() runs on producer threads and must not reconfigure timers")
 
-def test_bridge_ingest_is_thread_safe_under_load(bridge, qt_app):
-    """The real workload: many producers logging while the GUI drains."""
-    dispatcher = bridge.dispatcher
+
+def test_dedicated_loop_thread_owns_mutations(dispatcher):
+    """The real contract: bridge mutations happen on the loop thread."""
+    dispatcher.start()
+    try:
+        assert _wait_for(lambda: dispatcher.running)
+        loop_ident = []
+        dispatched = []
+        dispatcher.call(lambda: loop_ident.append(threading.get_ident()))
+        assert _wait_for(lambda: bool(loop_ident)), "the loop thread never ran"
+
+        def producer():
+            dispatched.append(threading.get_ident())
+            for i in range(20):
+                dispatcher.call(lambda v=i: None)
+
+        thread = threading.Thread(target=producer)
+        thread.start()
+        thread.join()
+        assert _wait_for(lambda: dispatcher.pending() == 0)
+        assert loop_ident[0] != dispatched[0], (
+            "work must not run on the producer thread")
+        assert dispatcher.stats()["executed"] >= 1
+    finally:
+        dispatcher.stop()
+
+
+def test_idle_loop_uses_almost_no_cpu(dispatcher):
+    """No busy-wait: an idle dispatcher must sleep, not spin."""
+    dispatcher.start()
+    try:
+        assert _wait_for(lambda: dispatcher.running)
+        before = time.process_time()
+        time.sleep(0.35)
+        idle_cpu = time.process_time() - before
+        assert idle_cpu < 0.15, f"idle dispatcher burned {idle_cpu:.3f}s of CPU"
+    finally:
+        dispatcher.stop()
+
+
+# ── end-to-end: backend threads -> stores ───────────────────────────────────
+
+def test_bridge_ingest_is_thread_safe_under_load(bridge, dispatcher):
+    """The real workload: many producers logging while the UI thread drains."""
     errors = []
 
     def produce(tid):
@@ -175,64 +225,39 @@ def test_bridge_ingest_is_thread_safe_under_load(bridge, qt_app):
         thread.join()
 
     assert errors == []
-    _pump(dispatcher, qt_app)
+    _pump(dispatcher)
 
     assert dispatcher.pending() == 0
     assert dispatcher.stats()["executed"] == 8 * 60 * 2
-    # Transcript saturates at its cap rather than growing without bound.
-    assert bridge.transcript.count() <= 400
-    assert bridge.transcript.count() > 0
+    # The transcript saturates at its cap rather than growing without bound.
+    assert 0 < bridge.transcript.count() <= 400
 
 
-def test_models_stay_within_capacity(bridge, qt_app):
+def test_models_stay_within_capacity(bridge):
     for i in range(600):
         bridge.ingest(f"[SYS] event {i}")
-    for _ in range(4):
-        _pump(bridge.dispatcher, qt_app, rounds=5)
-
     assert bridge.cards.count() <= 8
     assert bridge.activities.active_count() <= 16
     assert bridge.transcript.count() <= 400
 
 
-def test_timer_interval_is_only_touched_on_the_gui_thread():
-    """Finding #3, at the source level."""
-    source = inspect.getsource(UiDispatcher.call)
-    assert "setInterval" not in source, (
-        "call() runs on producer threads and must not start/restart a QTimer"
-    )
-    assert "emit" not in source, (
-        "call() must not emit a Signal; concurrent emits abort PySide6"
-    )
-
-
-# ── live-frame plumbing (regression: preview froze on frame one) ────────────
-
-def test_frame_revision_is_a_working_qml_property(bridge, qt_app):
-    """QML appends `frameRevision` to image provider URLs.
-
-    Without this the inspector's camera preview is decoded once and never
-    refreshed, because QQuickImageProvider URLs are revision-based.
-    """
-    assert bridge.frameRevision == 0
-
+def test_amplitude_updates_are_thread_safe_and_coalesced(bridge, dispatcher):
+    """The sounddevice callback fires ~30 Hz from a real-time audio thread."""
     seen = []
-    bridge.framesChanged.connect(lambda: seen.append(bridge.frameRevision))
+    bridge.on_emit = lambda kind, payload: seen.append((kind, payload))
 
-    bridge.notify_frames()
-    bridge.notify_frames()
+    def audio_callback():
+        for i in range(240):
+            dispatcher.call(bridge.setAmplitude, (i % 100) / 100.0)
 
-    assert bridge.frameRevision == 2
-    assert seen == [1, 2], "each batch must notify QML exactly once"
-
-
-def test_push_frame_notifies_from_a_producer_thread(bridge, qt_app):
-    """Frames arrive on the backend thread; the revision bump must not."""
-    dispatcher = bridge.dispatcher
-    thread = threading.Thread(target=dispatcher.call, args=(bridge.notify_frames,))
+    thread = threading.Thread(target=audio_callback)
     thread.start()
     thread.join()
+    _pump(dispatcher)
 
-    assert bridge.frameRevision == 0, "a producer thread must not touch the bridge"
-    _pump(dispatcher, qt_app)
-    assert bridge.frameRevision == 1
+    assert dispatcher.pending() == 0
+    amplitudes = [p["value"] for k, p in seen if k == "amplitude"]
+    assert amplitudes, "no amplitude reached the renderer"
+    # Throttled to <= 60 Hz: 240 queued updates cannot all be broadcast.
+    assert len(amplitudes) < 240
+    assert all(0.0 <= value <= 1.0 for value in amplitudes)

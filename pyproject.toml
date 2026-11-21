@@ -30,9 +30,9 @@ classifiers = [
 ]
 
 dependencies = [
-    "PySide6>=6.8.0,<6.12",
     "sounddevice>=0.5.0",
     "google-genai>=1.0.0,<2.0.0",
+    "websockets>=13.0,<17.0",
     "google-generativeai>=0.8.0,<1.0.0",
     "pillow>=10.0.0",
     "requests>=2.30.0",
@@ -74,12 +74,7 @@ test = [
 [project.scripts]
 friday = "main:main"
 
-[tool.setuptools.package-data]
-# QML is data, not Python: it must ship with wheels/sdists and with any
-# PyInstaller bundle (add --add-data "ui_siri/qml;ui_siri/qml").
-ui_siri = [
-    "qml/*.qml",
-    "qml/qmldir",
-    "qml/cards/*.qml",
-    "qml/cards/qmldir",
-]
+# The UI is the `ui` Python package. Its pixels live in ui/app (Electron + Vite
+# + React + WebGL2) and are built once with:
+#     cd ui/app && npm install && npm run build
+# ui/app/dist is loaded by the Electron main process at runtime.

@@ -3,12 +3,11 @@
 These tests are the executable form of ``docs/UI_AUDIT_CONTRACT.md`` §3. They
 assert that the ambient Siri implementation exposes the full legacy-compatible
 surface, so the migration cannot silently break ``main.py`` or ``actions/``.
-``ui_legacy.py`` and the FRIDAY_LEGACY_UI escape hatch are gone: ``ui_siri``
-is the sole UI of the application.
+There is one implementation — the Electron Siri overlay in ``ui/`` — and no
+fallback of any kind.
 
-The ambient façade is imported and introspected but never instantiated with a
-real window here (a GUI session is not available in CI), which is why the
-surface assertions are static.
+The facade is imported and introspected, but never instantiated here (that
+would spawn Electron), which is why the surface assertions are static.
 """
 
 from __future__ import annotations
@@ -129,15 +128,17 @@ def test_ambient_class_declares_parity_attributes_via_source():
             f"FridayUI.__init__ no longer sets self.{name}"
 
 
-def test_no_legacy_tk_fallback_remains():
-    """ui_legacy.py and the FRIDAY_LEGACY_UI escape hatch were removed: Siri
-    is the sole UI implementation, so nothing can silently fall back to Tk."""
+def test_no_legacy_fallback_remains():
+    """No Tk module, no Qt/QML module, and no escape hatch: Siri (Electron) is
+    the sole UI implementation, so nothing can silently fall back."""
     assert not hasattr(ui, "_load_legacy_class")
     assert not hasattr(ui, "_legacy_requested")
     assert not hasattr(ui, "_strict_requested")
     import importlib.util
 
     assert importlib.util.find_spec("ui_legacy") is None
+    for removed in ("image_provider", "qml"):
+        assert importlib.util.find_spec(f"ui.{removed}") is None
 
 
 # ── root duck-type contract ─────────────────────────────────────────────────
@@ -188,7 +189,7 @@ def _adapter():
             return (456, 216)
 
     fake = FakeUI()
-    return ui._QtRootAdapter(fake), fake
+    return ui._RootAdapter(fake), fake
 
 
 def test_root_after_runs_the_callback():
@@ -250,7 +251,7 @@ def test_root_unknown_winfo_is_a_noop_callable():
 
 def test_ui_state_coercion_covers_every_literal_main_py_uses():
     """Guard against main.py gaining a state string the UI drops."""
-    from ui_siri.event_bus import UiState
+    from ui.event_bus import UiState
 
     source = (REPO / "main.py").read_text(encoding="utf-8")
     literals = set(re.findall(r'set_state\("([A-Za-z_-]+)"\)', source))

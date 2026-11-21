@@ -1,9 +1,9 @@
 """Regressions for the Windows 11 first-run failures.
 
-These are the three errors reported from a real Windows 11 run (Python 3.13.3,
-PySide6 6.11.3), plus the latent ones found while auditing the same code paths.
-The Linux sandbox cannot execute QtGui/QML, so each bug is pinned at the level
-where it *is* observable here: source invariants and pure-Python behaviour.
+These are the errors reported from real Windows 11 runs (Python 3.13.3), plus
+the latent ones found while auditing the same code paths. The Linux sandbox
+cannot launch Electron, so each bug is pinned at the level where it *is*
+observable here: source invariants and pure-Python behaviour.
 """
 
 from __future__ import annotations
@@ -20,25 +20,36 @@ import pytest
 REPO = Path(__file__).resolve().parent.parent
 
 
-# ── Error 1: `name 'qml_dir' is not defined` killed the whole overlay ───────
+# ── Error 1: the overlay must never be started through a shell shim ─────────
 
-def test_controller_has_no_undefined_qml_dir():
-    source = (REPO / "ui_siri" / "controller.py").read_text(encoding="utf-8")
-    assert "qml_dir" not in source, (
-        "`qml_dir` was the NameError that forced the Tk fallback; the Qt-free "
-        "theme module exports QML_DIR instead"
-    )
-    assert "QML_DIR" in source
+def test_electron_is_spawned_from_the_real_binary_not_a_shim():
+    """Windows' ``electron.cmd`` is a cmd.exe batch file: terminating it leaves
+    the actual Electron process running. The controller must spawn
+    ``node_modules/electron/dist/electron.exe`` directly."""
+    source = (REPO / "ui" / "controller.py").read_text(encoding="utf-8")
+    assert "electron.exe" in source
+    # No string literal may name a batch shim (prose in the docstring may
+    # mention it; an executable path may not).
+    import ast
+
+    literals = [node.value for node in ast.walk(ast.parse(source))
+                if isinstance(node, ast.Constant) and isinstance(node.value, str)]
+    offenders = [value for value in literals
+                 if value.lower().endswith((".cmd", ".bat"))]
+    assert not offenders, f"never launch Electron through a shim: {offenders}"
+    spawn = source[source.index("self._electron = subprocess.Popen("):]
+    spawn = spawn[: spawn.index("\n            )")]
+    assert "[str(exe), str(self.app_dir.resolve())]" in spawn, (
+        "spawn [exe, app_dir] with no shell and no cmd.exe")
+    assert "shell=True" not in source
 
 
-def test_singleton_registration_uses_a_local_file_url():
-    """Windows paths are C:\\..., so the URL must come from fromLocalFile."""
-    source = (REPO / "ui_siri" / "controller.py").read_text(encoding="utf-8")
-    block = source[source.index("def _register_singleton"):]
-    block = block[: block.index("\nclass ") if "\nclass " in block else len(block)]
-    assert "QUrl.fromLocalFile" in block
-    assert ".resolve()" in block, "paths handed to Qt must be absolute+resolved"
-    assert 'f"file://' not in block
+def test_renderer_and_electron_are_verified_before_launch():
+    """A missing build must fail loudly with the fix commands, not open a
+    blank window."""
+    source = (REPO / "ui" / "controller.py").read_text(encoding="utf-8")
+    assert "renderer_built" in source
+    assert "npm install" in source and "npm run build" in source
 
 
 # ── Error 2: TrayThread died importing actions.friday_wake ──────────────────
@@ -168,7 +179,7 @@ def test_make_ui_is_siri_only(monkeypatch):
                   "_legacy_requested", "_strict_requested"):
         assert token not in src, f"{token} must not gate make_ui()"
     # Env flags no longer select an implementation: make_ui builds the
-    # ambient Siri overlay and exits hard if QML cannot load.
+    # ambient Siri overlay and exits hard if its Electron UI cannot start.
     monkeypatch.setenv("FRIDAY_LEGACY_UI", "1")
     monkeypatch.setenv("FRIDAY_STRICT_UI", "1")
     assert ui.THEME_NAMES == ("siri",)
@@ -179,7 +190,7 @@ def test_make_ui_logs_a_full_traceback_before_system_exit(monkeypatch, capsys):
     import ui
 
     def _explode(*_a, **_k):
-        raise RuntimeError("simulated QML failure")
+        raise RuntimeError("simulated UI failure")
 
     monkeypatch.setattr(ui, "FridayUI", _explode)
 
@@ -189,30 +200,30 @@ def test_make_ui_logs_a_full_traceback_before_system_exit(monkeypatch, capsys):
     out = capsys.readouterr()
     combined = out.out + out.err
     assert "Traceback (most recent call last)" in combined
-    assert "simulated QML failure" in combined
+    assert "simulated UI failure" in combined
 
 
 def test_card_mapper_return_arity_is_documented():
     """from_log_event -> (card, activities); to_cards -> (card, activities, event).
 
     The Windows verifier treated from_log_event()'s result as a card and died
-    with "'tuple' object has no attribute 'to_qml'". This pins the arity so a
+    with "'tuple' object has no attribute 'to_dict'". This pins the arity so a
     future caller cannot make the same mistake silently.
     """
     import inspect
 
     sys.path.insert(0, str(REPO))
-    from ui_siri import card_mapper
+    from ui import card_mapper
 
     assert len(inspect.signature(card_mapper.from_log_event).parameters) >= 1
     # Behavioural check: the shapes are what the docstrings promise.
-    from ui_siri.event_bus import classify_legacy
+    from ui.event_bus import classify_legacy
 
     event = classify_legacy("[Code] verify row 0")
     result = card_mapper.from_log_event(event)
     assert isinstance(result, tuple) and len(result) == 2, result
     card, activities = result
-    assert card is None or hasattr(card, "to_qml"), "first element must be a Card"
+    assert card is None or hasattr(card, "to_dict"), "first element must be a Card"
     assert isinstance(activities, list)
 
     triple = card_mapper.to_cards("[Code] verify row 0")
