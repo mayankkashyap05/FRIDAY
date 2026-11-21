@@ -35,7 +35,7 @@ import pytest
 
 pytest.importorskip("PySide6.QtCore")
 
-from PySide6.QtCore import QCoreApplication, QTimer  # noqa: E402
+from PySide6.QtCore import QTimer  # noqa: E402
 
 from ui_siri import bridge as bridge_mod  # noqa: E402
 from ui_siri.bridge import UiBridge, UiDispatcher  # noqa: E402
@@ -44,18 +44,7 @@ from ui_siri.state_machine import AssistantStateMachine  # noqa: E402
 
 
 @pytest.fixture()
-def app():
-    """A QCoreApplication without an event loop (drains are driven manually)."""
-    existing = QCoreApplication.instance()
-    created = existing is None
-    application = existing or QCoreApplication([])
-    yield application
-    if created:
-        application.quit()
-
-
-@pytest.fixture()
-def bridge(app):
+def bridge(qt_app):
     machine, bus, dispatcher = AssistantStateMachine(), EventBus(), UiDispatcher()
     dispatcher.bind_gui_thread()
     dispatcher.start()
@@ -65,10 +54,10 @@ def bridge(app):
     dispatcher.stop()
 
 
-def _pump(dispatcher: UiDispatcher, app, rounds: int = 60) -> None:
+def _pump(dispatcher: UiDispatcher, qt_app, rounds: int = 60) -> None:
     for _ in range(rounds):
         dispatcher.drain(4000)
-        app.processEvents()
+        qt_app.processEvents()
         time.sleep(0.001)
 
 
@@ -87,7 +76,7 @@ def test_dispatcher_never_references_qthread():
     )
 
 
-def test_on_gui_thread_uses_python_thread_identity(app):
+def test_on_gui_thread_uses_python_thread_identity(qt_app):
     dispatcher = UiDispatcher()
     dispatcher.bind_gui_thread()
     assert dispatcher.on_gui_thread
@@ -99,7 +88,7 @@ def test_on_gui_thread_uses_python_thread_identity(app):
     assert seen == [False]
 
 
-def test_gui_thread_calls_run_inline(app):
+def test_gui_thread_calls_run_inline(qt_app):
     dispatcher = UiDispatcher()
     dispatcher.bind_gui_thread()
     ran = []
@@ -108,7 +97,7 @@ def test_gui_thread_calls_run_inline(app):
     assert dispatcher.pending() == 0
 
 
-def test_cross_thread_calls_are_queued_then_drained_in_order(app):
+def test_cross_thread_calls_are_queued_then_drained_in_order(qt_app):
     dispatcher = UiDispatcher()
     dispatcher.bind_gui_thread()
     ran = []
@@ -126,7 +115,7 @@ def test_cross_thread_calls_are_queued_then_drained_in_order(app):
     assert ran == [], "nothing may execute on a producer thread"
     assert dispatcher.pending() == 300
 
-    _pump(dispatcher, app)
+    _pump(dispatcher, qt_app)
     assert len(ran) == 300
     assert dispatcher.pending() == 0
     # Per-producer ordering is preserved even though producers interleave.
@@ -135,7 +124,7 @@ def test_cross_thread_calls_are_queued_then_drained_in_order(app):
         assert seq == list(range(50))
 
 
-def test_queued_before_event_loop_nothing_is_lost(app):
+def test_queued_before_event_loop_nothing_is_lost(qt_app):
     """Finding #4: a producer may fire before exec() starts."""
     dispatcher = UiDispatcher()          # never bound: treated as GUI thread
     ran = []
@@ -143,14 +132,14 @@ def test_queued_before_event_loop_nothing_is_lost(app):
     assert ran == ["early"] or dispatcher.pending() == 1
 
 
-def test_dispatcher_survives_callable_exceptions(app):
+def test_dispatcher_survives_callable_exceptions(qt_app):
     dispatcher = UiDispatcher()
     dispatcher.bind_gui_thread()
     dispatcher.call(lambda: (_ for _ in ()).throw(RuntimeError("boom")))
     assert dispatcher.stats()["executed"] == 1
 
 
-def test_dispatcher_drops_instead_of_growing_without_bound(app):
+def test_dispatcher_drops_instead_of_growing_without_bound(qt_app):
     dispatcher = UiDispatcher()
     dispatcher.bind_gui_thread()
     dispatcher._max_queue = 10
@@ -165,7 +154,7 @@ def test_dispatcher_drops_instead_of_growing_without_bound(app):
 
 # ── end-to-end: backend threads -> models ───────────────────────────────────
 
-def test_bridge_ingest_is_thread_safe_under_load(bridge, app):
+def test_bridge_ingest_is_thread_safe_under_load(bridge, qt_app):
     """The real workload: many producers logging while the GUI drains."""
     dispatcher = bridge.dispatcher
     errors = []
@@ -186,7 +175,7 @@ def test_bridge_ingest_is_thread_safe_under_load(bridge, app):
         thread.join()
 
     assert errors == []
-    _pump(dispatcher, app)
+    _pump(dispatcher, qt_app)
 
     assert dispatcher.pending() == 0
     assert dispatcher.stats()["executed"] == 8 * 60 * 2
@@ -195,11 +184,11 @@ def test_bridge_ingest_is_thread_safe_under_load(bridge, app):
     assert bridge.transcript.count() > 0
 
 
-def test_models_stay_within_capacity(bridge, app):
+def test_models_stay_within_capacity(bridge, qt_app):
     for i in range(600):
         bridge.ingest(f"[SYS] event {i}")
     for _ in range(4):
-        _pump(bridge.dispatcher, app, rounds=5)
+        _pump(bridge.dispatcher, qt_app, rounds=5)
 
     assert bridge.cards.count() <= 8
     assert bridge.activities.active_count() <= 16
@@ -219,7 +208,7 @@ def test_timer_interval_is_only_touched_on_the_gui_thread():
 
 # ── live-frame plumbing (regression: preview froze on frame one) ────────────
 
-def test_frame_revision_is_a_working_qml_property(bridge, app):
+def test_frame_revision_is_a_working_qml_property(bridge, qt_app):
     """QML appends `frameRevision` to image provider URLs.
 
     Without this the inspector's camera preview is decoded once and never
@@ -237,7 +226,7 @@ def test_frame_revision_is_a_working_qml_property(bridge, app):
     assert seen == [1, 2], "each batch must notify QML exactly once"
 
 
-def test_push_frame_notifies_from_a_producer_thread(bridge, app):
+def test_push_frame_notifies_from_a_producer_thread(bridge, qt_app):
     """Frames arrive on the backend thread; the revision bump must not."""
     dispatcher = bridge.dispatcher
     thread = threading.Thread(target=dispatcher.call, args=(bridge.notify_frames,))
@@ -245,5 +234,5 @@ def test_push_frame_notifies_from_a_producer_thread(bridge, app):
     thread.join()
 
     assert bridge.frameRevision == 0, "a producer thread must not touch the bridge"
-    _pump(dispatcher, app)
+    _pump(dispatcher, qt_app)
     assert bridge.frameRevision == 1
