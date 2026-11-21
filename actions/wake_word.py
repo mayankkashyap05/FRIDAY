@@ -191,13 +191,13 @@ _service = WakeWordService()
 def _load_matcher():
     """Return the custom "Hey Friday" matcher, or ``None``.
 
-    The module is ``actions.kaizumi_wake`` (it still carries the original
+    The module is ``actions.friday_wake`` (it still carries the original
     ``actions/friday_wake.py`` header comment, which is why the old import name
     lingered). It pulls in ``onnxruntime`` plus a local ONNX model, so it can
     legitimately be absent — and the tray thread must never die for that. The
     old name is tried second so an older checkout keeps working.
     """
-    for module_name in ("actions.kaizumi_wake", "actions.friday_wake"):
+    for module_name in ("actions.friday_wake", "actions.friday_wake"):
         try:
             module = importlib.import_module(module_name)
             # Attribute access stays inside the guard: a module-level lazy
@@ -237,14 +237,14 @@ def wake_word(
     if action in ("record", "record_wake_word"):
         if _matcher is None:
             return ("Custom wake-word recording is unavailable: "
-                    "actions.kaizumi_wake could not be imported (needs "
+                    "actions.friday_wake could not be imported (needs "
                     "onnxruntime + a trained model).")
         n = int(params.get("clips") or params.get("count") or 5)
         return _matcher.record(n_clips=n)
     if action in ("train", "train_wake_word", "train_model"):
         if _matcher is None:
             return ("Custom wake-word training is unavailable: "
-                    "actions.kaizumi_wake could not be imported.")
+                    "actions.friday_wake could not be imported.")
         return _matcher.train(
             steps=int(params.get("steps") or params.get("epochs") or 900),
         )

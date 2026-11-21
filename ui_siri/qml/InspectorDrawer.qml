@@ -486,7 +486,7 @@ Rectangle {
                         width: parent.width - 24
                         horizontalAlignment: Text.AlignHCenter
                         wrapMode: Text.WordWrap
-                        text: qsTr("Retrain: python -m actions.kaizumi_wake --train hey_friday")
+                        text: qsTr("Retrain: python -m actions.friday_wake --train hey_friday")
                         color: Theme.withAlpha(Theme.text, 0.55)
                         font.pixelSize: Theme.fontXS - 1
                         font.family: "Cascadia Mono, Consolas, monospace"

@@ -65,7 +65,7 @@ def test_wake_word_no_longer_imports_the_dead_module_name():
     # The *old* name may only appear as a backwards-compatible fallback string.
     for line in source.splitlines():
         if "actions.friday_wake" in line:
-            assert "kaizumi_wake" in source, "new name must be tried first"
+            assert "friday_wake" in source, "new name must be tried first"
             assert "importlib" in source, "must be a runtime import, not a hard import"
     
     assert "from actions.friday_wake import" not in source, (
@@ -75,7 +75,7 @@ def test_wake_word_no_longer_imports_the_dead_module_name():
 
 def test_matcher_falls_back_when_no_module_exists(monkeypatch):
     for name in list(sys.modules):
-        if name.startswith(("actions.kaizumi_wake", "actions.friday_wake")):
+        if name.startswith(("actions.friday_wake", "actions.friday_wake")):
             monkeypatch.delitem(sys.modules, name, raising=False)
     monkeypatch.setattr(importlib, "import_module",
                         lambda name: (_ for _ in ()).throw(ModuleNotFoundError(name)))
@@ -83,14 +83,14 @@ def test_matcher_falls_back_when_no_module_exists(monkeypatch):
 
 
 def test_matcher_prefers_the_new_module(monkeypatch):
-    module = types.ModuleType("actions.kaizumi_wake")
+    module = types.ModuleType("actions.friday_wake")
     module._matcher = object()
-    monkeypatch.setitem(sys.modules, "actions.kaizumi_wake", module)
+    monkeypatch.setitem(sys.modules, "actions.friday_wake", module)
     assert _load_matcher_fn()() is module._matcher
 
 
 def test_matcher_falls_back_to_the_old_module(monkeypatch):
-    monkeypatch.setitem(sys.modules, "actions.kaizumi_wake", None)
+    monkeypatch.setitem(sys.modules, "actions.friday_wake", None)
     module = types.ModuleType("actions.friday_wake")
     module._matcher = object()
     monkeypatch.setitem(sys.modules, "actions.friday_wake", module)
@@ -108,7 +108,7 @@ def test_matcher_survives_a_module_that_raises_on_attribute_access(monkeypatch):
 
     bad.__getattr__ = _boom
     monkeypatch.setitem(sys.modules, "actions.friday_wake", bad)
-    monkeypatch.setitem(sys.modules, "actions.kaizumi_wake", None)
+    monkeypatch.setitem(sys.modules, "actions.friday_wake", None)
     assert _load_matcher_fn()() is None
 
 

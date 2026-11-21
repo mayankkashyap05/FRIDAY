@@ -196,7 +196,7 @@ failures found while auditing the same paths.
 | # | Error | Root cause | Fix |
 | --- | --- | --- | --- |
 | 1 | `name 'qml_dir' is not defined` — entire overlay lost, silent Tk fallback | `_register_singleton()` still used the lowercase variable from before the `themes.py` split, which exports `QML_DIR`. The `NameError` escaped `UiController.__init__`, so no window was ever created. | Uses `QML_DIR / "Theme.qml"`, `.resolve()`d, through `QUrl.fromLocalFile`. |
-| 2 | `ModuleNotFoundError: actions.friday_wake` crashed `TrayThread` | The module was renamed to `actions/kaizumi_wake.py` (it still carries the old header comment, which is why the name lingered) but two call sites kept importing the old name. | `_load_matcher()` imports `kaizumi_wake` first, falls back to the old name, and treats *every* failure — including a lazy `import onnxruntime` that raises at attribute-access time — as "no custom matcher". `TrayThread` can no longer die. |
+| 2 | `ModuleNotFoundError: actions.friday_wake` crashed `TrayThread` | The module was renamed to `actions/friday_wake.py` (it still carries the old header comment, which is why the name lingered) but two call sites kept importing the old name. | `_load_matcher()` imports `friday_wake` first, falls back to the old name, and treats *every* failure — including a lazy `import onnxruntime` that raises at attribute-access time — as "no custom matcher". `TrayThread` can no longer die. |
 | 3 | `NameError: name 're' is not defined` after every tool call | `main.py` used `re.findall` twice with no `import re`. | Added; also switched `asyncio.get_event_loop()` (deprecated 3.12+) to `get_running_loop()` in all three places. |
 
 ### Found by auditing the same path (would have been the next three crashes)
