@@ -19,6 +19,17 @@ Item {
     signal canceled()
 
     property string text: ""
+    property bool open: false
+    property real reveal: open ? 1.0 : 0.0
+
+    visible: open || reveal > 0.01
+    opacity: reveal
+    height: visible ? implicitHeight : 0
+
+    onOpenChanged: {
+        if (open)
+            Qt.callLater(function() { input.forceActiveFocus() })
+    }
 
     // The controller / window never reach inside: the field is exposed so the
     // window can focus it when the user clicks the orb.
@@ -86,9 +97,11 @@ Item {
         anchors.left: parent.left
         anchors.leftMargin: Math.round(14 * Theme.uiScale)
         anchors.verticalCenter: parent.verticalCenter
-        text: "🎤"
-        font.pixelSize: Math.round(16 * Theme.uiScale)
-        opacity: 0.82
+        text: qsTr("Siri")
+        color: Theme.withAlpha(Theme.text, 0.52)
+        font.pixelSize: Theme.fontXS
+        font.family: Theme.fontDisplay
+        font.weight: Font.DemiBold
     }
 
     // ── field ──────────────────────────────────────────────────────────────
@@ -108,7 +121,7 @@ Item {
         font.pixelSize: Theme.fontM
         font.family: Theme.fontText
         clip: true
-        focus: true
+        focus: false
         cursorVisible: input.activeFocus
         cursorDelegate: caretComponent
         onAccepted: {
@@ -146,14 +159,13 @@ Item {
         font.family: Theme.fontText
     }
 
-    // Entrance: slide up out of the orb + fade, never a pop-in.
-    property real reveal: visible ? 1 : 0
     Behavior on reveal {
         NumberAnimation {
             duration: Theme.durShort
             easing.type: Easing.OutCubic
         }
     }
+
     transform: Translate {
         y: (1 - pill.reveal) * Math.round(10 * Theme.uiScale) * Theme.motion
     }

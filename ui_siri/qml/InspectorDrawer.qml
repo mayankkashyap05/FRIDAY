@@ -489,7 +489,7 @@ Rectangle {
                         spacing: 5
                         Text {
                             text: qsTr("Wake word")
-                            color: Theme.withAlpha(Theme.mid, 1)
+                            color: Theme.withAlpha(Theme.textOnGlass, 0.46)
                             font.pixelSize: Theme.fontXS
                             font.bold: true
                             font.letterSpacing: 1
@@ -695,7 +695,7 @@ Rectangle {
                         spacing: 6
                         Text {
                             text: qsTr("DESIGN")
-                            color: Theme.withAlpha(Theme.mid, 1)
+                            color: Theme.withAlpha(Theme.textOnGlass, 0.46)
                             font.pixelSize: Theme.fontXS
                             font.bold: true
                             font.letterSpacing: 1
@@ -750,7 +750,7 @@ Rectangle {
                         spacing: 6
                         Text {
                             text: qsTr("PERSONA")
-                            color: Theme.withAlpha(Theme.mid, 1)
+                            color: Theme.withAlpha(Theme.textOnGlass, 0.46)
                             font.pixelSize: Theme.fontXS
                             font.bold: true
                             font.letterSpacing: 1
@@ -779,7 +779,7 @@ Rectangle {
                         spacing: 6
                         Text {
                             text: qsTr("ACCESSIBILITY")
-                            color: Theme.withAlpha(Theme.mid, 1)
+                            color: Theme.withAlpha(Theme.textOnGlass, 0.46)
                             font.pixelSize: Theme.fontXS
                             font.bold: true
                             font.letterSpacing: 1

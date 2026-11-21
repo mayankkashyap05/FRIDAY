@@ -2637,8 +2637,10 @@ class FridayLive:
             # throttled (~30 Hz) so the audio callback never blocks and the
             # cross-thread dispatcher is never flooded.
             try:
-                if np is not None:
-                    rms = float(np.sqrt(np.mean(np.square(indata.astype(np.float32))))) / 32768.0
+                if (np is not None and not assistant_speaking
+                        and not self.ui.muted):
+                    rms = float(np.sqrt(np.mean(
+                        np.square(indata.astype(np.float32))))) / 32768.0
                     amp = min(1.0, rms * 3.0)
                 else:
                     amp = 0.0
@@ -2726,11 +2728,13 @@ class FridayLive:
                             txt = sc.output_transcription.text.strip()
                             if txt:
                                 out_buf.append(txt)
+                                self.ui.set_live_transcript(" ".join(out_buf))
 
                         if sc.input_transcription and sc.input_transcription.text:
                             txt = sc.input_transcription.text.strip()
                             if txt:
                                 in_buf.append(txt)
+                                self.ui.set_live_transcript(" ".join(in_buf))
 
                         if sc.turn_complete:
                             self._turn_complete = True

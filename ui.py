@@ -46,10 +46,8 @@ THEME_FILE = CONFIG_DIR / "ui_theme.json"
 SYSTEM_NAME = "FRIDAY"
 MODEL_BADGE = "FRIDAY"
 
-# Kept for parity with the legacy module: callers/tests may read THEMES.
-# The Qt-free theme module, so `import ui` never loads Qt. Siri is the sole
-# theme now — the legacy cyber/ocean/aurora/sunset variants were removed with
-# ui_legacy.py; `ui_siri.themes` exports exactly one palette, "siri".
+# Legacy visual variants were removed with the legacy interface. Siri is the
+# sole palette and the sole UI implementation.
 from ui_siri.themes import DEFAULT_THEME, THEMES, THEME_NAMES  # noqa: F401
 
 
@@ -404,11 +402,15 @@ class FridayUI:
 
     # ── QML -> backend ───────────────────────────────────────────────────────
     def _on_qml_submit(self, text: str, origin: str) -> None:
-        self.write_log(f"You: {text}")
+        # UiBridge.submitText() has already inserted the typed turn.
         callback = self.on_text_command
         if callback is not None:
             threading.Thread(target=callback, args=(text,), daemon=True,
                              name="UiTextCommand").start()
+
+    def set_live_transcript(self, text: str) -> None:
+        """Show the current partial user/assistant utterance above the orb."""
+        self._dispatch(self.bridge.set_live_transcript, str(text or ""))
 
     def _on_qml_api_key(self, key: str) -> None:
         if not self.submit_api_key(key):

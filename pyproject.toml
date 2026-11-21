@@ -77,4 +77,9 @@ friday = "main:main"
 [tool.setuptools.package-data]
 # QML is data, not Python: it must ship with wheels/sdists and with any
 # PyInstaller bundle (add --add-data "ui_siri/qml;ui_siri/qml").
-ui_siri = ["qml/*.qml", "qml/cards/*.qml"]
+ui_siri = [
+    "qml/*.qml",
+    "qml/qmldir",
+    "qml/cards/*.qml",
+    "qml/cards/qmldir",
+]

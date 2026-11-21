@@ -40,14 +40,14 @@ from PySide6.QtCore import (
     Signal,
     Slot,
 )
-from PySide6.QtGui import QColor, QGuiApplication, QIcon, QScreen
+from PySide6.QtGui import QColor, QCursor, QGuiApplication, QIcon, QScreen
 from PySide6.QtQml import QQmlApplicationEngine, QQmlEngine, qmlRegisterSingletonType
 from PySide6.QtQuick import QQuickImageProvider, QQuickItem, QQuickView
 
 from . import win32_native as w32
 from .audio_ux import AudioUX
 from .bridge import UiBridge, UiDispatcher
-from .event_bus import EventBus, Topics, UiState
+from .event_bus import CardKind, EventBus, Topics, UiState
 from .image_provider import FridayImageProvider
 from .state_machine import AssistantStateMachine
 from .themes import (  # noqa: F401  (re-exported for convenience)
@@ -298,7 +298,7 @@ class UiController(QObject):
         self._stage_geometry: QRect | None = None
         # Input footprint: the stage is click-through until the pointer is over
         # something interactive (or the user is typing).
-        self._siri_interactive = False
+        self._siri_interactive: bool | None = None
         self._pointer_inside = False
         # Pending invoked state applied once the Siri QML has finished loading
         # (set_root_property silently fails if rootObject() is None before load).
@@ -328,6 +328,14 @@ class UiController(QObject):
 
         # Drain the bus on the GUI thread at ~30 Hz: cheap, and keeps the
         # transcript live even while QML is busy animating.
+        self._desktop_input = QTimer(self)
+        self._desktop_input.setInterval(45)
+        self._desktop_input.timeout.connect(self._poll_desktop_input)
+        self._escape_was_down = False
+
+        self.bridge.setupChanged.connect(self._sync_setup_visibility)
+        self.bridge.liveTranscriptChanged.connect(self._reschedule_dismissal)
+
         # Bus drain (event_bus -> QML models).
         self._drain = QTimer(self)
         self._drain.setInterval(33)
@@ -411,7 +419,7 @@ class UiController(QObject):
     def _create_windows(self, capture_excluded: bool) -> None:
         try:
             self.siri = _LayerWindow(
-                "SiriWindow.qml", click_through=False,
+                "SiriWindow.qml", click_through=True,
                 capture_excluded=False, focusable=False,
                 dark=self._system_dark, dwm_naked=True,
                 initial_properties={"bridge": self.bridge,
@@ -643,16 +651,63 @@ class UiController(QObject):
         self._siri_interactive = interactive
         self.siri.set_click_through(not interactive)
 
-    def on_interaction(self) -> None:
-        """An explicit interaction happened: refresh the grace + hit-testing."""
+    def _cursor_over_siri_surface(self, position: QPoint) -> bool:
+        """Hit-test only visible QML surfaces, never the transparent stage."""
+        if self.siri is None or self.siri.rootObject() is None:
+            return False
+
         try:
-            root = self.anchor.rootObject() if self.anchor is not None else None
-            self._pointer_inside = bool(root.property("pointerInside")) \
-                if root is not None else False
-            typing = bool(root.property("typing")) if root is not None else False
+            raw = self.siri.rootObject().property("interactiveRegions") or []
+            if hasattr(raw, "toVariant"):
+                raw = raw.toVariant()
+            origin = self.siri.geometry().topLeft()
+
+            for region in raw:
+                if hasattr(region, "toVariant"):
+                    region = region.toVariant()
+                if not isinstance(region, dict):
+                    continue
+
+                x = origin.x() + float(region.get("x", 0))
+                y = origin.y() + float(region.get("y", 0))
+                w = max(0.0, float(region.get("width", 0)))
+                h = max(0.0, float(region.get("height", 0)))
+                if w <= 0 or h <= 0:
+                    continue
+
+                if region.get("shape") == "ellipse":
+                    dx = (position.x() - (x + w / 2.0)) / (w / 2.0)
+                    dy = (position.y() - (y + h / 2.0)) / (h / 2.0)
+                    if dx * dx + dy * dy <= 1.0:
+                        return True
+                elif x <= position.x() < x + w and y <= position.y() < y + h:
+                    return True
         except Exception:
-            self._pointer_inside, typing = False, False
-        self._update_click_through(force_interactive=typing)
+            pass
+        return False
+
+    def _poll_desktop_input(self) -> None:
+        if self.siri is None or self._hidden or not self.siri.isVisible():
+            return
+        try:
+            inside = self._cursor_over_siri_surface(QCursor.pos())
+            if inside != self._pointer_inside:
+                self._pointer_inside = inside
+                self._reschedule_dismissal()
+            self._update_click_through()
+
+            # The Siri window deliberately does not accept focus on voice
+            # summon, so Escape cannot rely solely on QML Keys handlers.
+            escape_down = w32.key_is_down(w32.VK_ESCAPE)
+            if escape_down and not self._escape_was_down:
+                self.state.on_user_cancelled()
+                self.hide()
+            self._escape_was_down = escape_down
+        except Exception:
+            pass
+
+    def on_interaction(self) -> None:
+        self._poll_desktop_input()
         self._reschedule_dismissal()
 
     # ── public window ops (tray / hotkeys / invocation / dismissal) ────────
@@ -677,6 +732,9 @@ class UiController(QObject):
                 self._pending_invoked = True
             self._layout_windows()
             self._update_click_through()
+            self._escape_was_down = False
+            self._desktop_input.start()
+            self._reschedule_dismissal()
 
     def hide(self) -> None:
         """Dismiss Siri: the orb contracts and fades, then the window hides."""
@@ -707,6 +765,8 @@ class UiController(QObject):
                 except Exception:
                     pass
             self.siri.hide()
+            self._desktop_input.stop()
+            self._pointer_inside = False
 
     def invoke(self) -> None:
         """Explicit invocation (wake word / hotkey / tray / programmatic)."""
@@ -723,41 +783,51 @@ class UiController(QObject):
             self.hide()
 
     def _busy(self) -> bool:
-        """True while something must keep Siri on screen.
-
-        Reading a response, an unresolved confirmation, a live background job,
-        an open typing pill or a pointer resting on the stage all suspend
-        auto-dismissal. The grace resumes the moment the user stops.
-        """
+        """Whether dismissing now would interrupt the user or an active turn."""
         st = self.state.state
-        if st is not UiState.LISTENING or self.state.muted:
+
+        if st not in (UiState.LISTENING, UiState.MUTED):
             return True
-        if self.bridge.cardCount > 0 or self.bridge.activeActivities > 0:
+        if self._setup_visible or self.bridge.setupVisible:
+            return True
+        if self.bridge.awaitingConfirmation:
+            return True
+        if self.bridge.activeActivities > 0:
             return True
         if self._pointer_inside:
             return True
+        # Do not dissolve while the user is actively speaking.
+        if self.bridge.micAmplitude > 0.055:
+            return True
+
         try:
             root = self.anchor.rootObject() if self.anchor is not None else None
             if root is not None and bool(root.property("typing")):
-                return True
-            if root is not None and bool(root.property("pointerInside")):
                 return True
         except Exception:
             pass
         return False
 
-    def _reschedule_dismissal(self) -> None:
-        """Restart the auto-dismiss grace, or start it when Siri is idle.
+    def _reading_grace_ms(self) -> int:
+        """Scale the quiet reading period with visible response length."""
+        characters = len(self.bridge.lastEvent or "")
+        try:
+            for card in self.bridge.cards.items():
+                if card.get("kind") == CardKind.CONFIRMATION.value:
+                    continue
+                characters += len(str(card.get("title") or ""))
+                characters += len(str(card.get("body") or ""))
+                characters += len(str(card.get("footer") or ""))
+        except Exception:
+            pass
+        return max(4500, min(14000, 3200 + characters * 38))
 
-        Dismissal only arms when nothing above is holding the stage open, so a
-        response being read, a pending confirmation, an active background job,
-        an open typing pill or a hovered card never vanishes under the user.
-        """
+    def _reschedule_dismissal(self) -> None:
         self._dismissTimer.stop()
-        if self._hidden or self.siri is None:
+        if self._hidden or self.siri is None or self._busy():
             return
-        if not self._busy():
-            self._dismissTimer.start()
+        self._dismissTimer.setInterval(self._reading_grace_ms())
+        self._dismissTimer.start()
 
     def _cancel_dismissal(self) -> None:
         self._dismissTimer.stop()
@@ -807,13 +877,7 @@ class UiController(QObject):
             pass
 
     def _on_typing_changed(self) -> None:
-        """While the user types, Siri is interactive: never click-through."""
-        try:
-            typing = bool(self.anchor.rootObject().property("typing")) \
-                if self.anchor is not None and self.anchor.rootObject() else False
-        except Exception:
-            typing = False
-        self._update_click_through(force_interactive=typing)
+        self._poll_desktop_input()
         self._reschedule_dismissal()
 
     # ── theme ────────────────────────────────────────────────────────────────
@@ -879,11 +943,9 @@ class UiController(QObject):
         self._setup_visible = bool(self.bridge.setupVisible)
         if self.siri is not None:
             self.siri.set_root_property("setupVisible", self._setup_visible)
-        # First-run onboarding must be visible to the user: invoke Siri so the
-        # setup card can be seen, then let the normal dismissal grace take over
-        # once systems are initialised.
         if self._setup_visible:
             self.show()
+        self._reschedule_dismissal()
 
     def _on_api_key_submitted(self, key: str) -> None:
         """QML handed us a key. Persist it and unblock the voice worker."""
@@ -995,7 +1057,7 @@ class UiController(QObject):
             return
         self._shutdown_done = True
 
-        for timer in (self._tick, self._slow, self._drain):
+        for timer in (self._tick, self._slow, self._drain, self._desktop_input):
             try:
                 timer.stop()
             except Exception:

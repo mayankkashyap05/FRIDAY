@@ -1,8 +1,7 @@
 """FRIDAY Siri UI — design tokens.
 
-A single, canonical theme: Apple Siri. The legacy cyber/ocean/aurora/sunset
-variants were removed with ui_legacy.py; Siri is the sole palette of the
-application.
+# Legacy visual variants were removed with the legacy interface. Siri is the
+# sole palette and the sole UI implementation.
 
 Kept Qt-free on purpose: the theme table is plain data, so it can be imported
 by the test-suite, by tooling, and by ``ui.py`` without dragging in PySide6.
@@ -34,24 +33,24 @@ QML_MODULE = "ui_siri.qml"
 # text  : near-white additive glow for labels and metrics
 SIRI = {
     "name": "siri",
-    # surfaces (dark frosted glass)
     "bg": "#000000",
-    "panel": "#0A0E14",
-    "hdr": "#060A0F",
-    "input": "#0E141C",
-    # accents
-    "pri": "#06F7FF",   # luminous electric aqua / cyan — primary ribbon
-    "mid": "#1E5FFF",   # deep sapphire / cobalt — ribbon mid
-    "dim": "#1A2430",
-    "dimmer": "#05080C",
-    "acc": "#FF2D9F",   # radiant magenta / rose — attention
-    "acc2": "#B030FF",  # iridescent violet / amethyst — reasoning
-    "text": "#FFFFFF",  # pure additive white for labels
-    "green": "#34D399",
-    "red": "#FB7185",
-    "mutcol": "#F43F5E",
-    "inp_border": "#2A3644",
-    # iridescent ribbon hues (cyan → sapphire → magenta → violet → white-hot)
+    "panel": "#17171B",
+    "hdr": "#111114",
+    "input": "#1D1D22",
+
+    "pri": "#06F7FF",
+    "mid": "#1E5FFF",
+    "dim": "#3A3A40",
+    "dimmer": "#08080A",
+    "acc": "#FF2D9F",
+    "acc2": "#B030FF",
+
+    "text": "#F5F5F7",
+    "green": "#30D158",
+    "red": "#FF6961",
+    "mutcol": "#FF6961",
+    "inp_border": "#45454D",
+
     "irid_a": "#06F7FF",
     "irid_b": "#1E5FFF",
     "irid_c": "#FF2D9F",

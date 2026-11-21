@@ -28,19 +28,19 @@ QtObject {
 
     // ── core surfaces (dark frosted glass) ──────────────────────────────────
     property color bg: "#000000"
-    property color panel: "#0A0E14"
-    property color hdr: "#060A0F"
-    property color input: "#0E141C"
+    property color panel: "#17171B"
+    property color hdr: "#111114"
+    property color input: "#1D1D22"
 
     // ── Siri accents ────────────────────────────────────────────────────────
     property color pri: "#06F7FF"   // electric aqua / cyan — primary ribbon
     property color mid: "#1E5FFF"   // deep sapphire / cobalt — ribbon mid
-    property color dim: "#1A2430"
-    property color dimmer: "#05080C"
+    property color dim: "#3A3A40"
+    property color dimmer: "#08080A"
     property color acc: "#FF2D9F"   // radiant magenta / rose — attention
     property color acc2: "#B030FF"  // iridescent violet / amethyst — reasoning
-    property color text: "#FFFFFF"  // pure additive white for labels
-    property color textStrong: "#FFFFFF"
+    property color text: "#F5F5F7"  // pure additive white for labels
+    property color textStrong: "#F5F5F7"
     property color green: "#34D399"
     property color red: "#FB7185"
     property color mutcol: "#F43F5E"
@@ -63,11 +63,11 @@ QtObject {
 
     // ── glass material ──────────────────────────────────────────────────────
     // One material for cards, the pill, the capsule and the drawer.
-    property color glassSurface: Qt.rgba(0.039, 0.063, 0.102, 0.62)
-    property color glassBorder: Qt.rgba(1, 1, 1, 0.085)
+    property color glassSurface: Qt.rgba(0.090, 0.090, 0.106, 0.72)
+    property color glassBorder: Qt.rgba(1, 1, 1, 0.12)
     property color glassBorderHover: Qt.rgba(0.024, 0.969, 1.0, 0.45)
     property color glassSpecular: Qt.rgba(1, 1, 1, 0.55)
-    property color glassInnerRim: Qt.rgba(1, 1, 1, 0.16)
+    property color glassInnerRim: Qt.rgba(1, 1, 1, 0.20)
 
     // ── severity rails ──────────────────────────────────────────────────────
     property color railInfo: "#06F7FF"
@@ -92,8 +92,8 @@ QtObject {
 
     // ── derived metrics ─────────────────────────────────────────────────────
     readonly property int radiusPill: Math.round(24 * uiScale)
-    readonly property int radiusCard: Math.round(18 * uiScale)
-    readonly property int radiusChip: Math.round(10 * uiScale)
+    readonly property int radiusCard: Math.round(22 * uiScale)
+    readonly property int radiusChip: Math.round(12 * uiScale)
     readonly property int gap: Math.round(10 * uiScale)
     readonly property int pad: Math.round(16 * uiScale)
     readonly property int fontXS: Math.max(9, Math.round(9 * uiScale))
@@ -121,10 +121,10 @@ QtObject {
 
     // Frosted-glass strength; 0 when the user disabled transparency.
     readonly property real glass: transparency ? 1.0 : 0.0
-    readonly property real surfaceAlpha: transparency ? 0.62 : 0.97
+    readonly property real surfaceAlpha: transparency ? 0.72 : 0.97
     readonly property real veilAlpha: transparency ? 0.42 : 0.92
     // Opaque-enough background for high-contrast text over the blurred surface.
-    readonly property color textOnGlass: lightMode ? "#0b1116" : "#f2fbff"
+    readonly property color textOnGlass: "#F5F5F7"
 
     // ── shadow / glow tokens ────────────────────────────────────────────────
     readonly property color shadowColor: lightMode ? "#33000000" : "#a6000000"

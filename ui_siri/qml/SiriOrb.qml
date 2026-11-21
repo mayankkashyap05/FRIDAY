@@ -67,6 +67,7 @@ Item {
     // Summon / dismiss drives (set by SiriWindow when `invoked` changes).
     property bool summoning: false
     property bool dismissing: false
+    property real summonFlash: 0.0
 
     // `orbSize` is the glass *sphere* diameter (Apple's 76–96 px presence).
     // The item itself is larger so the feathered halo can fade to zero inside
@@ -89,62 +90,77 @@ Item {
     // Muted collapses the whole optic to near-invisible stillness.
     readonly property real muteFactor: orb.muted ? 0.4 : 1
 
-    // ── harmonic phase ──────────────────────────────────────────────────────
-    // One wall-clock phase drives every ribbon, the chromatic drift and the
-    // core pulse, so nothing can fall out of step. It integrates dt, which
-    // lets the state change the *rate* without restarting the animation.
+    // ── harmonic phase & voice reactivity ───────────────────────────────────
+    // One wall-clock frame driver updates phase and the critically damped
+    // voice spring, then requests a single canvas repaint.
     property real phase: 0
+    property real smoothAmplitude: 0.0
+    property real ampVelocity: 0.0
+    property real lastFrameAt: 0
+
     readonly property int phasePeriod: 11000
     readonly property real speedMul: orb.thinking ? 0.66
                                     : orb.speaking ? 1.30
                                     : orb.acting ? 1.12
                                     : 1.0
+    readonly property real ampTarget: orb.muted
+                                      ? 0.0
+                                      : Math.max(0.0, Math.min(1.0, orb.amplitude))
 
     Timer {
-        id: phaseTimer
+        id: motionTimer
         interval: 16
         repeat: true
-        running: orb.opacity > 0.01 && Theme.motion > 0
-        onTriggered: {
-            orb.phase += (0.016 / (orb.phasePeriod / 1000.0)) * orb.speedMul
-            if (orb.phase >= 1.0)
-                orb.phase -= 1.0
-        }
-    }
+        running: orb.visible && orb.opacity > 0.005
 
-    // ── voice reactivity ────────────────────────────────────────────────────
-    // A critically damped spring integrates the (throttled ~30 Hz) mic level
-    // into a per-frame value, so the ribbons never step between discrete
-    // updates. Tuned for a ~90 ms settle with zero overshoot: it tracks
-    // speech cadence and relaxes with liquid inertia.
-    property real smoothAmplitude: 0.0
-    property real ampVelocity: 0.0
-    readonly property real ampTarget: orb.muted ? 0.0 : orb.amplitude
-
-    Timer {
-        id: ampIntegrator
-        interval: 16
-        repeat: true
-        running: orb.opacity > 0.01
         onTriggered: {
-            if (Theme.motion <= 0) {
-                orb.smoothAmplitude = orb.ampTarget
-                orb.ampVelocity = 0
-                return
+            const now = Date.now()
+            const dt = orb.lastFrameAt === 0
+                       ? 1.0 / 60.0
+                       : Math.min(0.04,
+                                  Math.max(0.001,
+                                           (now - orb.lastFrameAt) / 1000.0))
+            orb.lastFrameAt = now
+
+            if (Theme.motion > 0) {
+                orb.phase += dt / (orb.phasePeriod / 1000.0) * orb.speedMul
+                if (orb.phase >= 1.0)
+                    orb.phase -= 1.0
             }
-            var dt = 0.016
-            var stiffness = 165.0
-            var damping = 25.0
-            var force = (orb.ampTarget - orb.smoothAmplitude) * stiffness
-            orb.ampVelocity = (orb.ampVelocity + force * dt) * (1.0 - damping * dt)
-            orb.smoothAmplitude = Math.max(0.0, Math.min(1.0,
-                                        orb.smoothAmplitude + orb.ampVelocity * dt))
+
+            // Critically damped voice spring. This interpolates the throttled
+            // microphone updates instead of stepping between them.
+            const stiffness = 180.0
+            const damping = 2.0 * Math.sqrt(stiffness)
+            const acceleration =
+                    (orb.ampTarget - orb.smoothAmplitude) * stiffness
+                    - orb.ampVelocity * damping
+
+            orb.ampVelocity += acceleration * dt
+            orb.smoothAmplitude = Math.max(
+                        0.0,
+                        Math.min(1.0,
+                                 orb.smoothAmplitude + orb.ampVelocity * dt))
+
+            if (orb.ampTarget === 0 && orb.smoothAmplitude < 0.001) {
+                orb.smoothAmplitude = 0
+                orb.ampVelocity = 0
+            }
+
+            // Reduced-motion mode only repaints for a real input change.
+            if (Theme.motion > 0
+                    || Math.abs(orb.ampTarget - orb.smoothAmplitude) > 0.0005)
+                canvas.requestPaint()
         }
     }
 
-    // ── repaint ─────────────────────────────────────────────────────────────
-    onPhaseChanged: canvas.requestPaint()
-    onSmoothAmplitudeChanged: canvas.requestPaint()
+    onVisibleChanged: orb.lastFrameAt = 0
+    onOpacityChanged: {
+        orb.lastFrameAt = 0
+        if (orb.opacity > 0.005)
+            canvas.requestPaint()
+    }
+
     onEnergyChanged: canvas.requestPaint()
     onAttentionChanged: canvas.requestPaint()
     onErrorChanged: canvas.requestPaint()
@@ -159,15 +175,6 @@ Item {
         anchors.fill: parent
         renderTarget: Canvas.FramebufferObject
         antialiasing: true
-
-        Timer {
-            id: paintTimer
-            interval: 16
-            running: orb.opacity > 0.01 && Theme.motion > 0
-            repeat: true
-            triggeredOnStart: true
-            onTriggered: canvas.requestPaint()
-        }
 
         onPaint: {
             var w = canvas.width
@@ -195,7 +202,21 @@ Item {
             var r = Math.min(w, h) / 2 * (orb.orbSize / orb.canvasSize)
 
             var amp = orb.smoothAmplitude
-            var voice = Math.min(1.0, amp * 1.4)
+
+            // Microphone energy belongs to user listening only. Otherwise the
+            // speakers can feed back into the mic and make Friday react to itself.
+            var inputVoice = orb.listening ? Math.min(1.0, amp * 1.35) : 0.0
+
+            // Gemini does not expose a per-output-sample amplitude here, so use
+            // a restrained conversational cadence while actual audio is playing.
+            var outputVoice = orb.speaking
+                    ? Math.max(0.0,
+                               0.34
+                               + 0.16 * Math.sin(tau * t * 3.1)
+                               + 0.08 * Math.sin(tau * t * 5.3 + 1.2))
+                    : 0.0
+
+            var voice = Math.min(1.0, Math.max(inputVoice, outputVoice))
             var energy = Math.max(0.0, Math.min(1.0, orb.energy))
             var mute = orb.muteFactor
             var t = orb.phase
@@ -240,7 +261,10 @@ Item {
 
             // Character per state: `warm` pushes toward rose/magenta,
             // `cool` toward amethyst (reasoning).
-            var warm = orb.attention ? 0.85 : orb.error ? 0.60 : 0.0
+            var warm = orb.attention ? 0.85
+                     : orb.error ? 0.60
+                     : orb.speaking ? 0.10
+                     : 0.0
             var cool = orb.thinking ? 0.60 : 0.0
             var accent = mix(mix(Theme.pri, Theme.acc2, 0.25 + cool * 0.55),
                              Theme.acc, warm * 0.55)
@@ -454,16 +478,14 @@ Item {
             ctx.restore()
 
             // ── 9. summon bloom (outside the clip: a bloom, not a disc) ──
-            if (orb.summoning && Theme.motion > 0) {
-                var flash = Math.max(0.0, 1.0 - Math.min(1.0, t * 8.0))
-                if (flash > 0.01) {
-                    var fg = ctx.createRadialGradient(cx, cy, 0, cx, cy, r * 1.9)
-                    fg.addColorStop(0.0, css(Theme.iridE, flash * 0.26))
-                    fg.addColorStop(0.32, css(Theme.pri, flash * 0.16))
-                    fg.addColorStop(1.0, css(Theme.pri, 0.0))
-                    ctx.fillStyle = fg
-                    ctx.fillRect(0, 0, w, h)
-                }
+            if (orb.summonFlash > 0.01) {
+                var flash = orb.summonFlash
+                var fg = ctx.createRadialGradient(cx, cy, 0, cx, cy, r * 1.9)
+                fg.addColorStop(0.0, css(Theme.iridE, flash * 0.26))
+                fg.addColorStop(0.32, css(Theme.pri, flash * 0.16))
+                fg.addColorStop(1.0, css(Theme.pri, 0.0))
+                ctx.fillStyle = fg
+                ctx.fillRect(0, 0, w, h)
             }
         }
     }
@@ -476,20 +498,21 @@ Item {
     onSummoningChanged: {
         if (orb.summoning) {
             dismissalAnimation.stop()
-            orb.scale = 0.15
+            orb.dismissing = false
+            orb.scale = Theme.reducedMotion ? 0.94 : 0.15
             orb.opacity = 0
             summoningAnimation.restart()
         } else {
-            // A dismissal or an explicit settle mid-bloom must never leave the
-            // spring running against a newer target.
             summoningAnimation.stop()
         }
     }
+
     onDismissingChanged: {
         if (orb.dismissing) {
             summoningAnimation.stop()
-            orb.scale = 1
-            orb.opacity = 1
+            orb.summonFlash = 0
+            // Do not force scale/opacity back to 1: dismissing mid-bloom must
+            // continue from the currently rendered values without a snap.
             dismissalAnimation.restart()
         } else {
             dismissalAnimation.stop()
@@ -498,24 +521,40 @@ Item {
 
     SequentialAnimation {
         id: summoningAnimation
+
         ScriptAction {
             script: {
-                orb.scale = 0.15
-                orb.opacity = 0
+                orb.summonFlash = Theme.reducedMotion ? 0.0 : 1.0
                 orb.summoned()
             }
         }
+
         ParallelAnimation {
             NumberAnimation {
-                target: orb; property: "scale"; to: 1
+                target: orb
+                property: "scale"
+                to: 1
                 duration: Theme.durSummon
-                easing.type: Easing.OutElastic
+                easing.type: Theme.reducedMotion
+                             ? Easing.OutCubic
+                             : Easing.OutElastic
                 easing.amplitude: 1.12
                 easing.period: 0.34
             }
+
             NumberAnimation {
-                target: orb; property: "opacity"; to: 1
+                target: orb
+                property: "opacity"
+                to: 1
                 duration: Theme.reducedMotion ? 160 : 420
+                easing.type: Easing.OutCubic
+            }
+
+            NumberAnimation {
+                target: orb
+                property: "summonFlash"
+                to: 0
+                duration: 620
                 easing.type: Easing.OutCubic
             }
         }

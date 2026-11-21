@@ -401,6 +401,7 @@ class UiBridge(QObject):
     cardsChanged = Signal()
     inspectorChanged = Signal()
     setupChanged = Signal()
+    liveTranscriptChanged = Signal()
     inputRequested = Signal(str, str)      # (text, origin)
     toastRequested = Signal(str, str)      # (text, severity)
     reticleRequested = Signal(float, float)
@@ -477,17 +478,25 @@ class UiBridge(QObject):
         except Exception as exc:  # pragma: no cover
             print(f"[UiBridge] ⚠️ ingest failed: {exc}")
 
+    def set_live_transcript(self, text: str) -> None:
+        """Update the floating line without adding noise to transcript history."""
+        clean = " ".join(str(text or "").split())[:240]
+        if not clean or clean == self._last_event:
+            return
+        self._last_event = clean
+        self.stateChanged.emit()
+        self.liveTranscriptChanged.emit()
+
     def ingest(self, payload: Any) -> None:
         """Single entry point for *any* backend content. GUI thread only."""
         card, activities, event = card_mapper.to_cards(payload)
         if event is not None:
             self._transcript.add(event)
-            # `lastEvent` is declared with notify=stateChanged, so a new
-            # transcript line has to announce itself or the QML binding never
-            # re-evaluates and the stage keeps showing the previous turn.
-            if event.text[:120] != self._last_event:
-                self._last_event = event.text[:120]
-                self.stateChanged.emit()
+
+            # Tool/system logs belong in History, not above the orb.
+            if event.channel in (LogChannel.YOU, LogChannel.FRIDAY):
+                self.set_live_transcript(event.text)
+
             implied = derive_state_for_log(event)
             if implied is not None and not self._muted:
                 # Legacy parity: transcript lines nudge the orb state.
@@ -696,6 +705,13 @@ class UiBridge(QObject):
     def activeActivities(self) -> int:
         return self._activities.active_count()
 
+    @Property(bool, notify=cardsChanged)
+    def awaitingConfirmation(self) -> bool:
+        return any(
+            item.get("kind") == CardKind.CONFIRMATION.value
+            for item in self._cards.items()
+        )
+
     # ── slots: user intents ──────────────────────────────────────────────────
     def submitText(self, text: str) -> None:
         text = (text or "").strip()
@@ -703,6 +719,7 @@ class UiBridge(QObject):
             return
         self._state.on_user_input(text)
         self._transcript.add(classify_legacy(f"You: {text}"))
+        self.set_live_transcript(text)
         self.inputRequested.emit(text, "text")
 
     def toggleMute(self) -> None:
