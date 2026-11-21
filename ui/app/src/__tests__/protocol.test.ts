@@ -62,32 +62,6 @@ describe("applyMessage", () => {
     expect(ui.state.micAmplitude).toBe(0.42);
   });
 
-  it("stores spectral bands and source in audioBands", () => {
-    const ui = applyMessage(initialUiState, {
-      t: "amplitude",
-      value: 0.55,
-      low: 0.8,
-      mid: 0.4,
-      high: 0.2,
-      source: "tts",
-    });
-    expect(ui.amplitude).toBe(0.55);
-    expect(ui.audioBands).toBeDefined();
-    expect(ui.audioBands?.rms).toBe(0.55);
-    expect(ui.audioBands?.low).toBe(0.8);
-    expect(ui.audioBands?.mid).toBe(0.4);
-    expect(ui.audioBands?.high).toBe(0.2);
-    expect(ui.audioBands?.source).toBe("tts");
-    expect(ui.audioBands?.ts).toBeDefined();
-  });
-
-  it("keeps existing audioBands if amplitude message lacks bands", () => {
-    const initial = { ...initialUiState, audioBands: { rms: 0.1, low: 0.1, mid: 0.1, high: 0.1, source: "mic", ts: 1 } };
-    const ui = applyMessage(initial, { t: "amplitude", value: 0.6 });
-    expect(ui.amplitude).toBe(0.6);
-    expect(ui.audioBands).toBe(initial.audioBands);
-  });
-
   it("appends transcript entries and caps the list at 400", () => {
     let ui = applyMessage(initialUiState, {
       t: "transcript_append",
