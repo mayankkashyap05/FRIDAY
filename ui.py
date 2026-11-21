@@ -284,7 +284,9 @@ class FridayUI:
 
         self._api_key_ready = self._api_keys_exist()
         self._started = time.time()
+        #: Log lines that arrived before the event loop was running.
         self._pending_cards: list[Any] = []
+        self._MAX_PENDING_LOGS = 200
 
         # ── Qt side ──────────────────────────────────────────────────────────
         from PySide6.QtGui import QGuiApplication
@@ -445,11 +447,30 @@ class FridayUI:
 
     # ── public API — transcript ──────────────────────────────────────────────
     def write_log(self, text: str) -> None:
-        """The single most-used legacy sink (30 call sites in actions/)."""
+        """The single most-used legacy sink (30 call sites in actions/).
+
+        Before the event loop starts (``wait_for_api_key`` runs on the worker
+        thread while the main thread has not reached ``exec()`` yet), logs are
+        coalesced instead of queued: 30 modules start talking at once at
+        launch, and an unbounded queue of transcript lines would all be
+        replayed into the UI in the first 8 ms. Only the tail is interesting.
+        """
         if text is None:
             return
         payload = str(text)
+        if not self._loop_entered:
+            self._pending_cards.append(payload)
+            if len(self._pending_cards) > self._MAX_PENDING_LOGS:
+                del self._pending_cards[: len(self._pending_cards) // 2]
+            return
         self._dispatch(self._ingest, payload)
+
+    def _flush_pending_logs(self) -> None:
+        if not self._pending_cards:
+            return
+        pending, self._pending_cards = self._pending_cards, []
+        for payload in pending:
+            self._ingest(payload)
 
     def _ingest(self, payload: Any) -> None:
         self.bridge.ingest(payload)
@@ -636,6 +657,13 @@ class FridayUI:
     def run(self) -> int:
         """Enter the Qt event loop. MUST be called on the main OS thread."""
         self._loop_entered = True
+        # Replay what was logged during startup, once, from the GUI thread.
+        try:
+            from PySide6.QtCore import QTimer
+
+            QTimer.singleShot(0, self._flush_pending_logs)
+        except Exception:
+            self._flush_pending_logs()
         code = 0
         try:
             code = int(self._app.exec())

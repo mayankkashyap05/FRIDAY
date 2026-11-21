@@ -18,7 +18,10 @@ from pathlib import Path
 
 import pytest
 
+import threading
+
 import ui
+from ui import FridayUI
 
 REPO = Path(__file__).resolve().parent.parent
 
@@ -281,3 +284,61 @@ def test_legacy_env_switch_is_parsed(monkeypatch):
     for value in ("0", "false", "", "no", "off"):
         monkeypatch.setenv("FRIDAY_LEGACY_UI", value)
         assert ui._legacy_requested() is False
+
+
+# ── startup burst control ───────────────────────────────────────────────────
+
+class _RecordingBridge:
+    def __init__(self) -> None:
+        self.seen: list[str] = []
+
+    def ingest(self, payload) -> None:
+        self.seen.append(payload)
+
+
+def _bare_facade():
+    """A FridayUI without the Qt constructor (which needs libGL)."""
+    obj = FridayUI.__new__(FridayUI)
+    obj._pending_cards = []
+    obj._MAX_PENDING_LOGS = 200
+    obj._loop_entered = False
+    obj.bridge = _RecordingBridge()
+    obj._closed = threading.Event()
+    obj._dispatch = lambda fn, *a, **k: fn(*a, **k)
+    obj._ingest = lambda payload: obj.bridge.ingest(payload)
+    return obj
+
+
+def test_logs_before_the_event_loop_are_coalesced_not_queued():
+    """Every backend thread logs at once on startup; replaying all of it into
+    the UI in the first frame is pointless. Only the tail is kept."""
+    facade = _bare_facade()
+    for i in range(1000):
+        FridayUI.write_log(facade, f"[SYS] boot line {i}")
+
+    assert facade.bridge.seen == [], "nothing may touch the UI before exec()"
+    assert 0 < len(facade._pending_cards) <= facade._MAX_PENDING_LOGS
+    # The *tail* survives, which is what a user actually needs to see.
+    assert facade._pending_cards[-1] == "[SYS] boot line 999"
+
+
+def test_flush_delivers_each_early_log_exactly_once():
+    facade = _bare_facade()
+    for i in range(50):
+        FridayUI.write_log(facade, f"line {i}")
+
+    facade._flush_pending_logs()
+    delivered = len(facade.bridge.seen)
+    assert delivered == 50
+    assert facade._pending_cards == []
+
+    facade._flush_pending_logs()          # idempotent
+    assert len(facade.bridge.seen) == delivered
+
+
+def test_logs_after_the_loop_go_straight_through():
+    facade = _bare_facade()
+    facade._loop_entered = True
+    FridayUI.write_log(facade, "live line")
+    assert facade.bridge.seen == ["live line"]
+    assert facade._pending_cards == []

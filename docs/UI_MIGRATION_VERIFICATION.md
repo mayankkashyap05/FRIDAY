@@ -15,7 +15,7 @@ the migration, and — just as importantly — what could not be.
 
 ```
 python -m pytest tests/ -q
-218 passed, 12 skipped, 11 failed
+221 passed, 12 skipped, 11 failed
 ```
 
 All 11 failures are pre-existing and confined to modules with **no UI
@@ -32,7 +32,7 @@ The UI-relevant suites are fully green:
 
 ```
 tests/test_ui_siri_core.py       51 passed
-tests/test_ui_contract.py        52 passed, 1 skipped   (Tk absent)
+tests/test_ui_contract.py        55 passed, 1 skipped   (Tk absent)
 tests/test_ui_siri_qt.py         16 passed, 11 skipped  (QtGui absent)
 tests/test_ui_thread_safety.py   10 passed
 tests/test_p0_security.py        20 passed
