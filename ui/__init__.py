@@ -725,16 +725,24 @@ def make_ui(face_path: str = "face.png", size: Any = None):
     except Exception as exc:
         traceback.print_exc()
         _log_exception(RuntimeError("FRIDAY's Siri UI failed to construct"))
-        raise SystemExit(
+        from .controller import UiStartupError
+
+        message = (
             "FRIDAY's Siri UI failed to construct.\n"
-            f"  {type(exc).__name__}: {exc}\n\n"
-            "Install and build the frontend with:\n"
-            f"  cd {APP_DIR}\n"
-            "  npm install\n"
-            "  npm run build\n\n"
-            "Then run FRIDAY again:\n"
-            "  python main.py\n"
-        ) from exc
+            f"  {type(exc).__name__}: {exc}\n"
+        )
+        if not isinstance(exc, UiStartupError):
+            # Startup errors already carry the exact commands for the piece that
+            # is missing; repeating a generic block only obscures them.
+            message += (
+                "\nInstall and build the frontend with:\n"
+                f"  cd {APP_DIR}\n"
+                "  npm install\n"
+                "  npm run build\n\n"
+                "Then run FRIDAY again:\n"
+                "  python main.py\n"
+            )
+        raise SystemExit(message) from exc
     return instance
 
 

@@ -114,16 +114,22 @@ def check_npm() -> str:
 
 
 def check_electron_binary() -> str:
+    from ui.controller import electron_executable
+
+    exe = electron_executable(APP)
     require(
-        ELECTRON_EXE.exists(),
-        "electron.exe is missing — run:  cd ui\\app; npm install",
+        exe is not None,
+        "electron's binary is missing (npm can report success without it) — "
+        "run:  cd ui\\app; npm rebuild electron",
     )
-    size = ELECTRON_EXE.stat().st_size / (1024 * 1024)
-    return f"{ELECTRON_EXE} ({size:.1f} MB)"
+    size = exe.stat().st_size / (1024 * 1024)
+    return f"{exe} ({size:.1f} MB)"
 
 
 def check_renderer_built() -> str:
-    missing = [str(p.relative_to(ROOT)) for p in (RENDERER, MAIN_JS) if not p.exists()]
+    from ui.controller import renderer_files
+
+    missing = [str(p.relative_to(ROOT)) for p in renderer_files(APP) if not p.exists()]
     require(not missing, "renderer not built (missing "
                          + ", ".join(missing) + ") — run:  cd ui\\app; npm run build")
     return "dist/index.html + dist/electron/main.js"
@@ -414,6 +420,7 @@ def main() -> int:
             print("\nPowerShell:")
             print("  cd ui\\app")
             print("  npm install")
+            print("  npm rebuild electron    # only needed if the binary is missing")
             print("  npm run build")
         return 1
     print("\nFRIDAY's UI is ready. Launch it with:\n  python main.py")

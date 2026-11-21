@@ -154,7 +154,8 @@ set_theme · ping → pong · request_quit
 
 | Situation | Behaviour |
 |---|---|
-| Renderer missing / not built | `make_ui` raises `SystemExit` with a message naming `npm install`, `npm run build` and the absolute `ui/app` path |
+| Renderer missing / not built | `make_ui` raises `SystemExit` with a message naming the absolute `ui/app` path and `npm install` / `npm run build` |
+| Electron package installed but its binary absent (npm's silent half-install) | the same `SystemExit` names the missing binary and says `npm rebuild electron`; `setup.py` fails instead of reporting success |
 | Electron exits unexpectedly | the watcher calls `request_quit()`; FRIDAY never lingers windowless |
 | Renderer crashes | Electron `render-process-gone` quits the app |
 | WebGL2 unavailable | orb falls back to a CSS radial gradient **inside the same stage** (not a second UI) |
