@@ -162,7 +162,8 @@ class _LayerWindow(QQuickView):
             return
         if self._click_through:
             w32.make_click_through(hwnd, True)
-        w32.keep_on_top(hwnd, True, no_activate=self._click_through)
+        # WS_EX_NOACTIVATE: voice-summoned overlays must never steal focus.
+        w32.keep_on_top(hwnd, True, no_activate=True)
         if self._capture_excluded:
             w32.exclude_from_capture(hwnd, True)
         # `dark` follows the OS theme; rounded corners are skipped for the
@@ -280,6 +281,9 @@ class UiController(QObject):
         self._hidden = bool(start_hidden)
         self._pill_expanded = False
         self._setup_visible = False
+        # Pending invoked state applied once the Siri QML has finished loading
+        # (set_root_property silently fails if rootObject() is None before load).
+        self._pending_invoked = False
         # Filled from the backend's wake-word engine when it reports in.
         self._wake_active = False
         self._wake_status = "Engine idle"
@@ -377,6 +381,8 @@ class UiController(QObject):
             if root is not None:
                 root.apiKeySubmitted.connect(self._on_api_key_submitted)
                 root.dismissed.connect(self.windowDismissed)
+            # Re-apply pending invoked state once the QML finishes loading.
+            self.siri.statusChanged.connect(self._on_siri_status_changed)
             if self.siri.load_error:
                 print("[Controller] ⚠️ Siri QML did not load; the ambient "
                       "overlay cannot be shown")
@@ -391,6 +397,20 @@ class UiController(QObject):
         self._create_inspector(capture_excluded)
         self._layout_windows()
         self._install_screen_tracking()
+
+    def _on_siri_status_changed(self, _status) -> None:
+        """Apply pending invoked state once the Siri QML has finished loading.
+
+        ``set_root_property("invoked", True)`` silently fails if
+        ``rootObject()`` is None because the QML hasn't loaded yet. When the
+        status reaches Ready, re-apply the pending invoked state so the orb
+        springs into view even if show() was called before load completed.
+        """
+        if self._pending_invoked and self.siri is not None:
+            from PySide6.QtQuick import QQuickView
+            if self.siri.status() == QQuickView.Status.Ready:
+                self._pending_invoked = False
+                self.siri.set_root_property("invoked", True)
 
     def _create_inspector(self, capture_excluded: bool) -> None:
         """Layer 4: created lazily-on-demand but kept alive once built so tab
@@ -526,14 +546,14 @@ class UiController(QObject):
             screen = self.active_screen()
             if screen is None or self.siri is None:
                 return
-            geo: QRect = screen.geometry()
+            avail: QRect = screen.availableGeometry()
 
-            # macOS Siri placement: centred near the top of the active screen,
+            # macOS Siri placement: top-right of the available screen geometry,
             # never wall-to-wall and never covering the user's focus of attention.
             stage_w = int(560 * self._scale)
             stage_h = int(460 * self._scale)
-            x = geo.x() + (geo.width() - stage_w) // 2
-            y = geo.y() + int(geo.height() * 0.07)
+            x = avail.x() + (avail.width() - stage_w) - int(20 * self._scale)
+            y = avail.y() + int(avail.height() * 0.07)
             self.siri.setGeometry(QRect(x, y, stage_w, stage_h))
             if not self.siri.isVisible() and not self._hidden:
                 self.siri.show()
@@ -547,7 +567,10 @@ class UiController(QObject):
         self._cancel_dismissal()
         if self.siri is not None:
             self.siri.show()
-            self.siri.set_root_property("invoked", True)
+            if not self.siri.set_root_property("invoked", True):
+                # QML hasn't loaded yet (rootObject() is None); re-apply once
+                # it finishes loading via _on_siri_status_changed.
+                self._pending_invoked = True
             self._layout_windows()
 
     def hide(self) -> None:
@@ -724,6 +747,10 @@ class UiController(QObject):
                 self.audio.play("listen")
         except Exception:
             pass
+        # Show the Siri UI whenever Friday enters an active conversational or
+        # work state so the orb is visible during the turn, not hidden.
+        if tr.current in (UiState.THINKING, UiState.PROCESSING, UiState.SPEAKING):
+            self.dispatcher.call(self.show)
         self._reschedule_dismissal()
 
     # ── shutdown ─────────────────────────────────────────────────────────────
