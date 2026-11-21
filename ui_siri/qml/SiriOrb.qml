@@ -71,7 +71,7 @@ Item {
 
     // Apparent ribbon speed: idle breath is slow, mic / thinking quickens it,
     // everything scales with visual energy.
-    readonly property real speed: {
+    property real speed: {
         var s = 0.45
         if (orb.thinking)
             s = 1.4
