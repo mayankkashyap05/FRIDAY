@@ -166,8 +166,8 @@ def test_watchdog_measures_silence_from_the_last_chunk_written():
 
 def test_state_machine_release_speech_always_emits():
     """Muted must not swallow the release: ducking is restored on transition."""
-    from ui.event_bus import UiState
-    from ui.state_machine import AssistantStateMachine
+    from _archive.ui_legacy.event_bus import UiState
+    from _archive.ui_legacy.state_machine import AssistantStateMachine
 
     machine = AssistantStateMachine()
     seen = []
@@ -196,8 +196,8 @@ def test_state_machine_release_speech_always_emits():
 
 def test_ducking_is_restored_on_release_including_muted():
     """The user-facing symptom: other apps stayed at 25% volume."""
-    from ui.event_bus import UiState
-    from ui.state_machine import AssistantStateMachine
+    from _archive.ui_legacy.event_bus import UiState
+    from _archive.ui_legacy.state_machine import AssistantStateMachine
 
     class Ducker:
         def __init__(self):

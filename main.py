@@ -36,7 +36,7 @@ except ModuleNotFoundError:
     genai = None
     types = None
 
-from ui import FridayUI, make_ui
+from _archive.ui_legacy import FridayUI, make_ui
 from memory.memory_manager import (
     load_memory, update_memory, format_memory_for_prompt,
     should_extract_memory, extract_memory

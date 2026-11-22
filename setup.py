@@ -34,7 +34,7 @@ def electron_binary() -> Path | None:
     `python main.py`; fall back to a direct probe if the package cannot import.
     """
     try:
-        from ui.controller import electron_executable
+        from _archive.ui_legacy.controller import electron_executable
 
         found = electron_executable(APP)
         if found is not None:

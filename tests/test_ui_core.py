@@ -10,8 +10,9 @@ import time
 
 import pytest
 
-from ui import audio_ux, card_mapper, event_bus, state_machine, win32_native
-from ui.event_bus import (
+from _archive.ui_legacy import audio_ux, card_mapper, event_bus, state_machine
+from _archive.ui_legacy import win32_native
+from _archive.ui_legacy.event_bus import (
     ActivityKind,
     Card,
     CardKind,
@@ -23,7 +24,7 @@ from ui.event_bus import (
     classify_legacy,
     derive_state_for_log,
 )
-from ui.state_machine import AssistantStateMachine, Transition
+from _archive.ui_legacy.state_machine import AssistantStateMachine, Transition
 
 
 # ── EventBus ────────────────────────────────────────────────────────────────
@@ -365,7 +366,7 @@ def _fake_windows(monkeypatch, build=26300, *, user32_exports=None,
     and no real Windows: we swap the loaded libraries for fakes that answer
     ``getattr`` the way the real export tables would.
     """
-    from ui import win32_native as w32
+    from _archive.ui_legacy import win32_native as w32
 
     defaults = {
         "user32": ("GetWindowLongPtrW", "SetWindowLongPtrW", "GetWindowLongW",
@@ -523,7 +524,7 @@ def test_probe_missing_export_is_named(monkeypatch):
 
 
 def test_probe_non_windows_explains_everything(monkeypatch):
-    from ui import win32_native as w32
+    from _archive.ui_legacy import win32_native as w32
 
     monkeypatch.setattr(w32, "IS_WINDOWS", False, raising=False)
     monkeypatch.setattr(w32, "CAPS", w32.Capabilities(windows=False), raising=False)
@@ -536,7 +537,7 @@ def test_probe_non_windows_explains_everything(monkeypatch):
 
 
 def test_windows_build_reports_a_number():
-    from ui import win32_native as w32
+    from _archive.ui_legacy import win32_native as w32
 
     build = w32.windows_build()
     assert isinstance(build, int) and build >= 0
@@ -563,7 +564,7 @@ def test_windows_build_reports_a_number():
 ])
 def test_legacy_state_strings_resolve(legacy, expected):
     """Unknown spellings degrade to LISTENING, which is how ACTING was lost."""
-    from ui.event_bus import UiState
+    from _archive.ui_legacy.event_bus import UiState
 
     assert UiState.coerce(legacy).value == expected
 
@@ -575,9 +576,9 @@ def test_full_lifecycle_on_the_bridge():
     coerce_legacy) and checks the *bridge* surface QML reads, which is what the
     verifier asserted on Windows.
     """
-    from ui.bridge import UiBridge, UiDispatcher
-    from ui.event_bus import EventBus
-    from ui.state_machine import AssistantStateMachine
+    from _archive.ui_legacy.bridge import UiBridge, UiDispatcher
+    from _archive.ui_legacy.event_bus import EventBus
+    from _archive.ui_legacy.state_machine import AssistantStateMachine
 
     machine = AssistantStateMachine()
     dispatcher = UiDispatcher()

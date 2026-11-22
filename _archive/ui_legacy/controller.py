@@ -35,7 +35,8 @@ from pathlib import Path
 from typing import Any, Callable
 from urllib.parse import parse_qs, urlparse
 
-from . import protocol, win32_native as w32
+from . import win32_native as w32
+from . import protocol
 from .audio_ux import AudioUX
 from .bridge import UiBridge, UiDispatcher
 from .event_bus import CardKind, EventBus, UiState

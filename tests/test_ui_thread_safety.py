@@ -26,10 +26,10 @@ import time
 
 import pytest
 
-from ui import bridge as bridge_mod
-from ui.bridge import UiBridge, UiDispatcher
-from ui.event_bus import EventBus
-from ui.state_machine import AssistantStateMachine
+from _archive.ui_legacy import bridge as bridge_mod
+from _archive.ui_legacy.bridge import UiBridge, UiDispatcher
+from _archive.ui_legacy.event_bus import EventBus
+from _archive.ui_legacy.state_machine import AssistantStateMachine
 
 
 @pytest.fixture()

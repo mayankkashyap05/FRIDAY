@@ -33,7 +33,8 @@ import time
 from collections import deque
 from typing import Any, Callable, Iterable, Sequence
 
-from . import card_mapper, protocol
+from . import protocol
+from . import card_mapper
 from .event_bus import (
     Activity,
     ActivityKind,

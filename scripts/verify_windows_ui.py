@@ -114,7 +114,7 @@ def check_npm() -> str:
 
 
 def check_electron_binary() -> str:
-    from ui.controller import electron_executable
+    from _archive.ui_legacy.controller import electron_executable
 
     exe = electron_executable(APP)
     require(
@@ -127,7 +127,7 @@ def check_electron_binary() -> str:
 
 
 def check_renderer_built() -> str:
-    from ui.controller import renderer_files
+    from _archive.ui_legacy.controller import renderer_files
 
     missing = [str(p.relative_to(ROOT)) for p in renderer_files(APP) if not p.exists()]
     require(not missing, "renderer not built (missing "
@@ -144,7 +144,7 @@ def check_dependencies() -> str:
 # ── 2. import purity + public contract ───────────────────────────────────────
 
 def check_import_purity() -> str:
-    import ui  # noqa: F401
+    import _archive.ui_legacy as ui_legacy  # noqa: F401
 
     # Any Qt binding would show up as a top-level module here; FRIDAY must load
     # none of them, because the frontend is Electron.
@@ -155,27 +155,27 @@ def check_import_purity() -> str:
 
 
 def check_public_contract() -> str:
-    import ui
+    import _archive.ui_legacy as ui_legacy
 
     with_keys = (
         "FridayUI", "make_ui", "get_base_dir", "BASE_DIR", "CONFIG_DIR",
         "API_FILE", "THEME_FILE", "THEMES", "THEME_NAMES", "DEFAULT_THEME",
         "SYSTEM_NAME", "MODEL_BADGE",
     )
-    missing = [key for key in with_keys if not hasattr(ui, key)]
+    missing = [key for key in with_keys if not hasattr(ui_legacy, key)]
     require(not missing, f"ui is missing: {missing}")
 
     helpers = ("_dispatch", "_safe_ui", "_api_keys_exist")
-    missing_helpers = [key for key in helpers if not hasattr(ui.FridayUI, key)]
+    missing_helpers = [key for key in helpers if not hasattr(ui_legacy.FridayUI, key)]
     require(not missing_helpers, f"FridayUI is missing: {missing_helpers}")
 
-    require(ui.get_base_dir() == ROOT, f"get_base_dir() returned {ui.get_base_dir()}")
-    from ui import controller
+    require(ui_legacy.get_base_dir() == ROOT, f"get_base_dir() returned {ui_legacy.get_base_dir()}")
+    from _archive.ui_legacy import controller
 
     for method in ("set_wake_status", "shutdown", "request_quit", "show", "wait"):
         require(hasattr(controller.UiController, method),
                 f"UiController.{method} is missing")
-    return f"{len(with_keys)} exports, base dir {ui.get_base_dir()}"
+    return f"{len(with_keys)} exports, base dir {ui_legacy.get_base_dir()}"
 
 
 def check_models() -> str:
@@ -185,7 +185,7 @@ def check_models() -> str:
     assignment would bind the tuple and explode on the next attribute access,
     so every call here is unpacked.
     """
-    from ui import card_mapper
+    from _archive.ui_legacy import card_mapper
 
     card, activities, event = card_mapper.to_cards(
         {"type": "weather", "city": "Dibrugarh", "temp_c": 27, "humidity": 81}
@@ -202,7 +202,7 @@ def check_models() -> str:
 def check_windows_capabilities() -> str:
     """Win32 prerequisites for the overlay's glass, click-through and capture
     exclusion. Everything here needs Windows 11 22H2 (build 22621) or newer."""
-    from ui import win32_native as w32
+    from _archive.ui_legacy import win32_native as w32
 
     build = w32.windows_build()
     require(build >= 22621,
@@ -309,7 +309,7 @@ async def exercise(controller, warnings: list[str]) -> dict:
 
 
 def check_live_controller() -> str:
-    from ui.controller import UiController
+    from _archive.ui_legacy.controller import UiController
 
     warnings: list[str] = []
     # `enable_overlay=False` keeps the full WebSocket + bridge + state machine

@@ -78,3 +78,11 @@ friday = "main:main"
 # + React + WebGL2) and are built once with:
 #     cd ui/app && npm install && npm run build
 # ui/app/dist is loaded by the Electron main process at runtime.
+
+
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+norecursedirs = ["vendor", "_archive", ".venv", "node_modules"]
+[tool.setuptools.packages.find]
+exclude = ["vendor*", "_archive*", "tests*"]

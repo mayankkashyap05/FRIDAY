@@ -27,7 +27,7 @@ def headless_ui(tmp_path, monkeypatch):
     Covers the WebSocket server, the dispatcher loop, the state machine, the
     bridge stores and the frame pump — everything observable without Electron.
     """
-    from ui.controller import UiController
+    from _archive.ui_legacy.controller import UiController
 
     monkeypatch.setenv("FRIDAY_UI_HEADLESS", "1")
     monkeypatch.setattr("ui.API_FILE", tmp_path / "api_keys.json")

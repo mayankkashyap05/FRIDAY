@@ -166,15 +166,15 @@ def test_no_deprecated_asyncio_get_event_loop():
 
 def test_make_ui_is_siri_only(monkeypatch):
     import inspect
-    import ui
+    import _archive.ui_legacy as ui_legacy
 
-    assert ui.THEME_NAMES == ("siri",)
-    assert ui.DEFAULT_THEME == "siri"
+    assert ui_legacy.THEME_NAMES == ("siri",)
+    assert ui_legacy.DEFAULT_THEME == "siri"
     # No legacy switching machinery survives the removal of ui_legacy.py.
     for removed in ("_env_flag", "_load_legacy_class", "_legacy_requested",
                     "_strict_requested"):
-        assert not hasattr(ui, removed), f"{removed} must not remain"
-    src = inspect.getsource(ui.make_ui)
+        assert not hasattr(ui_legacy, removed), f"{removed} must not remain"
+    src = inspect.getsource(ui_legacy.make_ui)
     for token in ("FRIDAY_LEGACY_UI", "FRIDAY_STRICT_UI", "_load_legacy_class",
                   "_legacy_requested", "_strict_requested"):
         assert token not in src, f"{token} must not gate make_ui()"
@@ -182,20 +182,20 @@ def test_make_ui_is_siri_only(monkeypatch):
     # ambient Siri overlay and exits hard if its Electron UI cannot start.
     monkeypatch.setenv("FRIDAY_LEGACY_UI", "1")
     monkeypatch.setenv("FRIDAY_STRICT_UI", "1")
-    assert ui.THEME_NAMES == ("siri",)
-    assert ui.DEFAULT_THEME == "siri"
+    assert ui_legacy.THEME_NAMES == ("siri",)
+    assert ui_legacy.DEFAULT_THEME == "siri"
 
 
 def test_make_ui_logs_a_full_traceback_before_system_exit(monkeypatch, capsys):
-    import ui
+    import _archive.ui_legacy as ui_legacy
 
     def _explode(*_a, **_k):
         raise RuntimeError("simulated UI failure")
 
-    monkeypatch.setattr(ui, "FridayUI", _explode)
+    monkeypatch.setattr(ui_legacy, "FridayUI", _explode)
 
     with pytest.raises(SystemExit):
-        ui.make_ui("face.png")
+        ui_legacy.make_ui("face.png")
 
     out = capsys.readouterr()
     combined = out.out + out.err
@@ -213,11 +213,11 @@ def test_card_mapper_return_arity_is_documented():
     import inspect
 
     sys.path.insert(0, str(REPO))
-    from ui import card_mapper
+    from _archive.ui_legacy import card_mapper
 
     assert len(inspect.signature(card_mapper.from_log_event).parameters) >= 1
     # Behavioural check: the shapes are what the docstrings promise.
-    from ui.event_bus import classify_legacy
+    from _archive.ui_legacy.event_bus import classify_legacy
 
     event = classify_legacy("[Code] verify row 0")
     result = card_mapper.from_log_event(event)

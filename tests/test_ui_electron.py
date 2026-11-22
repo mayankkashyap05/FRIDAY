@@ -20,11 +20,12 @@ from pathlib import Path
 
 import pytest
 
-from ui import FridayUI, protocol
-from ui.bridge import UiBridge, UiDispatcher
-from ui.controller import FramePump, UiController
-from ui.event_bus import Card, CardKind, EventBus
-from ui.state_machine import AssistantStateMachine
+from _archive.ui_legacy import FridayUI
+from _archive.ui_legacy import protocol
+from _archive.ui_legacy.bridge import UiBridge, UiDispatcher
+from _archive.ui_legacy.controller import FramePump, UiController
+from _archive.ui_legacy.event_bus import Card, CardKind, EventBus
+from _archive.ui_legacy.state_machine import AssistantStateMachine
 
 REPO = Path(__file__).resolve().parent.parent
 APP = REPO / "ui" / "app"
@@ -443,7 +444,7 @@ def test_frame_pump_drops_stale_frames_under_backpressure():
 
 
 def test_frame_pump_encodes_off_the_producer_thread():
-    from ui.protocol import STREAM_VISION
+    from _archive.ui_legacy.protocol import STREAM_VISION
 
     threads: list[int] = []
     pump = FramePump(lambda stream, jpeg: threads.append(threading.get_ident()))
@@ -669,10 +670,10 @@ def test_make_ui_fails_loudly_without_electron(monkeypatch, capsys):
     monkeypatch.delenv("FRIDAY_UI_HEADLESS", raising=False)
     monkeypatch.setattr("ui.controller.electron_executable", lambda *a, **k: None)
 
-    import ui
+    import _archive.ui_legacy as ui_legacy
 
     with pytest.raises(SystemExit) as excinfo:
-        ui.make_ui("face.png")
+        ui_legacy.make_ui("face.png")
     message = str(excinfo.value)
     assert "npm install" in message and "npm run build" in message
     assert str(APP) in message
@@ -686,7 +687,7 @@ def test_make_ui_fails_loudly_without_electron(monkeypatch, capsys):
 
 def test_electron_executable_resolves_through_the_packages_path_txt(tmp_path):
     """The electron package names its binary in path.txt; trust that first."""
-    from ui.controller import electron_executable
+    from _archive.ui_legacy.controller import electron_executable
 
     pkg = tmp_path / "node_modules" / "electron"
     dist = pkg / "dist"
@@ -701,7 +702,7 @@ def test_electron_executable_resolves_through_the_packages_path_txt(tmp_path):
 
 def test_electron_executable_never_returns_the_cmd_shim(tmp_path):
     """A batch shim would leave a zombie Electron behind and flash a console."""
-    from ui.controller import electron_executable
+    from _archive.ui_legacy.controller import electron_executable
 
     dist = tmp_path / "node_modules" / "electron" / "dist"
     dist.mkdir(parents=True)
@@ -711,7 +712,7 @@ def test_electron_executable_never_returns_the_cmd_shim(tmp_path):
 
 
 def test_renderer_built_requires_both_build_artefacts(tmp_path):
-    from ui.controller import renderer_built
+    from _archive.ui_legacy.controller import renderer_built
 
     dist = tmp_path / "dist"
     dist.mkdir()
@@ -725,7 +726,7 @@ def test_renderer_built_requires_both_build_artefacts(tmp_path):
 
 
 def test_install_status_separates_a_missing_binary_from_a_missing_build(tmp_path):
-    from ui.controller import ui_install_status
+    from _archive.ui_legacy.controller import ui_install_status
 
     empty = ui_install_status(tmp_path)
     assert empty["renderer"] is False
@@ -746,7 +747,7 @@ def test_install_status_separates_a_missing_binary_from_a_missing_build(tmp_path
 
 def test_missing_ui_help_names_the_real_repair(tmp_path):
     """npm exits 0 even when Electron's download fails; say what to run."""
-    from ui.controller import missing_ui_help
+    from _archive.ui_legacy.controller import missing_ui_help
 
     (tmp_path / "node_modules" / "electron" / "dist").mkdir(parents=True)
     message = missing_ui_help(tmp_path)
@@ -774,10 +775,10 @@ def test_make_ui_does_not_stack_a_second_generic_install_block(monkeypatch):
     monkeypatch.delenv("FRIDAY_UI_HEADLESS", raising=False)
     monkeypatch.setattr("ui.controller.electron_executable", lambda *a, **k: None)
 
-    import ui
+    import _archive.ui_legacy as ui_legacy
 
     with pytest.raises(SystemExit) as excinfo:
-        ui.make_ui("face.png")
+        ui_legacy.make_ui("face.png")
     message = str(excinfo.value)
     assert "Install and build the frontend with:" not in message
     assert "electron binary" in message

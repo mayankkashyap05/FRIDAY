@@ -20,8 +20,8 @@ import pytest
 
 import threading
 
-import ui
-from ui import FridayUI
+import _archive.ui_legacy as ui_legacy
+from _archive.ui_legacy import FridayUI
 
 REPO = Path(__file__).resolve().parent.parent
 
@@ -66,52 +66,52 @@ REQUIRED_MODULE_GLOBALS = (
 
 @pytest.mark.parametrize("name", REQUIRED_MODULE_GLOBALS)
 def test_module_global_present(name):
-    assert hasattr(ui, name), f"ui.{name} disappeared — callers depend on it"
+    assert hasattr(ui_legacy, name), f"ui.{name} disappeared — callers depend on it"
 
 
 def test_themes_are_siri_only():
-    assert ui.THEME_NAMES == ("siri",)
-    assert "siri" in ui.THEMES
+    assert ui_legacy.THEME_NAMES == ("siri",)
+    assert "siri" in ui_legacy.THEMES
 
 
 def test_api_file_is_reassignable(tmp_path, monkeypatch):
     """tests/test_p0_security.py monkeypatches ui.API_FILE."""
-    original = ui.API_FILE
+    original = ui_legacy.API_FILE
     try:
-        ui.API_FILE = tmp_path / "api_keys.json"
-        assert ui.API_FILE != original
+        ui_legacy.API_FILE = tmp_path / "api_keys.json"
+        assert ui_legacy.API_FILE != original
     finally:
-        ui.API_FILE = original
+        ui_legacy.API_FILE = original
 
 
 def test_api_keys_exist_works_on_a_bare_stub(tmp_path):
     """Bound unbound to a Stub() instance (no __init__ ever ran)."""
     from types import MethodType
 
-    original = ui.API_FILE
+    original = ui_legacy.API_FILE
     try:
-        ui.API_FILE = tmp_path / "api_keys.json"
+        ui_legacy.API_FILE = tmp_path / "api_keys.json"
         stub = type("Stub", (), {})()
-        fn = MethodType(ui.FridayUI._api_keys_exist, stub)
+        fn = MethodType(ui_legacy.FridayUI._api_keys_exist, stub)
         assert fn() is False
-        ui.API_FILE.write_text('{"gemini_api_key": "k"}', encoding="utf-8")
+        ui_legacy.API_FILE.write_text('{"gemini_api_key": "k"}', encoding="utf-8")
         assert fn() is True
-        ui.API_FILE.write_text("{not json", encoding="utf-8")
+        ui_legacy.API_FILE.write_text("{not json", encoding="utf-8")
         assert fn() is False
     finally:
-        ui.API_FILE = original
+        ui_legacy.API_FILE = original
 
 
 # ── Class surface (static — no window needed) ───────────────────────────────
 
 @pytest.mark.parametrize("name", REQUIRED_METHODS)
 def test_ambient_class_has_method(name):
-    assert callable(getattr(ui.FridayUI, name, None)), \
+    assert callable(getattr(ui_legacy.FridayUI, name, None)), \
         f"FridayUI.{name} missing or not callable"
 
 
 def test_constructor_signature_is_unchanged():
-    sig = inspect.signature(ui.FridayUI.__init__)
+    sig = inspect.signature(ui_legacy.FridayUI.__init__)
     params = list(sig.parameters)
     assert params[:3] == ["self", "face_path", "size"], params
     assert sig.parameters["size"].default is None
@@ -119,7 +119,7 @@ def test_constructor_signature_is_unchanged():
 
 def test_ambient_class_declares_parity_attributes_via_source():
     """Attributes are set in __init__, so check the source declares them."""
-    src = inspect.getsource(ui.FridayUI.__init__)
+    src = inspect.getsource(ui_legacy.FridayUI.__init__)
     for name in REQUIRED_ATTRIBUTES:
         if name == "root":
             assert "self.root" in src
@@ -131,9 +131,9 @@ def test_ambient_class_declares_parity_attributes_via_source():
 def test_no_legacy_fallback_remains():
     """No Tk module, no Qt/QML module, and no escape hatch: Siri (Electron) is
     the sole UI implementation, so nothing can silently fall back."""
-    assert not hasattr(ui, "_load_legacy_class")
-    assert not hasattr(ui, "_legacy_requested")
-    assert not hasattr(ui, "_strict_requested")
+    assert not hasattr(ui_legacy, "_load_legacy_class")
+    assert not hasattr(ui_legacy, "_legacy_requested")
+    assert not hasattr(ui_legacy, "_strict_requested")
     import importlib.util
 
     assert importlib.util.find_spec("ui_legacy") is None
@@ -189,7 +189,7 @@ def _adapter():
             return (456, 216)
 
     fake = FakeUI()
-    return ui._RootAdapter(fake), fake
+    return ui_legacy._RootAdapter(fake), fake
 
 
 def test_root_after_runs_the_callback():
@@ -251,7 +251,7 @@ def test_root_unknown_winfo_is_a_noop_callable():
 
 def test_ui_state_coercion_covers_every_literal_main_py_uses():
     """Guard against main.py gaining a state string the UI drops."""
-    from ui.event_bus import UiState
+    from _archive.ui_legacy.event_bus import UiState
 
     source = (REPO / "main.py").read_text(encoding="utf-8")
     literals = set(re.findall(r'set_state\("([A-Za-z_-]+)"\)', source))
