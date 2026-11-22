@@ -99,6 +99,7 @@ class FridayUI:
         from .island.voice_hud import VoiceHUD
         from .bridge.controller import UiController
         self._closed = threading.Event(); self._loop_entered = False
+        self._gui_shutdown = False
         self._api_key_ready = self._api_keys_exist()
         self._headless = bool(headless)
         self._lock = threading.RLock()
@@ -200,9 +201,11 @@ class FridayUI:
     def invoke(self): self.show(); self.set_state('LISTENING')
     def dismiss(self): self.hide()
     def _shutdown_gui(self):
+        if self._gui_shutdown: return
+        self._gui_shutdown = True
         if self.tray: self.tray.close()
-        self.hud.close()
         self.controller.shutdown()
+        self.hud.close()
         self.app.quit()
     def quit(self):
         if self._closed.is_set(): return

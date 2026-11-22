@@ -98,3 +98,21 @@ def test_windows_overlay_fallback_is_safe(app):
         assert win32_overlay.foreground_is_fullscreen(hud) is False
         assert win32_overlay.foreground_window() == (0, '')
         hud.close()
+
+
+@pytest.mark.parametrize('payload', [None, '', {}, [], 7, {'type': 'unknown'}])
+def test_unexpected_log_payload_remains_plain_text(payload):
+    entry = classify_log(payload)
+    assert isinstance(entry.text, str)
+    assert entry.channel == 'system'
+
+
+def test_bridge_rejects_null_log_without_poisoning_later_delivery(app):
+    bridge = UiBridge(); received = []
+    bridge.log_added.connect(received.append)
+    assert bridge.ingest(None) is False
+    assert bridge.ingest({'type': 'unknown'}) is True
+    assert bridge.ingest('You: hello') is True
+    app.processEvents()
+    assert [entry.channel for entry in received] == ['system', 'user']
+    bridge.dispatcher.stop()

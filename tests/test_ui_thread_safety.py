@@ -119,3 +119,52 @@ def test_stop_discards_pending_and_rejects_new_callbacks(app, dispatcher):
     ran = []; dispatcher.call(ran.append, 1); dispatcher.stop()
     assert dispatcher.call(ran.append, 2) is False
     app.processEvents(); assert not ran and not dispatcher.pending()
+
+
+def test_panel_close_waits_for_worker_and_suppresses_result(app):
+    from ui.panels.common import PanelServices
+    entered = threading.Event(); release = threading.Event(); delivered = []
+    dispatcher = UiDispatcher()
+    services = PanelServices(dispatcher)
+    def work():
+        entered.set()
+        release.wait(2)
+        return 'done'
+    assert services.run(work, lambda *args: delivered.append(args))
+    assert entered.wait(1)
+    closer_result = []
+    closer = threading.Thread(target=lambda: closer_result.append(services.close(1)))
+    closer.start()
+    assert services._closed.wait(1)
+    assert not services.run(lambda: None, lambda *_: None)
+    release.set(); closer.join(2)
+    app.processEvents()
+    assert closer_result == [True] and delivered == []
+    dispatcher.stop()
+
+
+def test_panel_close_timeout_prevents_late_delivery(app):
+    from ui.panels.common import PanelServices
+    entered = threading.Event(); release = threading.Event(); delivered = []
+    dispatcher = UiDispatcher(); services = PanelServices(dispatcher)
+    def work():
+        entered.set(); release.wait(2); return 42
+    assert services.run(work, lambda *args: delivered.append(args))
+    assert entered.wait(1)
+    assert services.close(0) is False
+    release.set()
+    assert services.close(2) is True
+    app.processEvents()
+    assert not delivered
+    dispatcher.stop()
+
+
+def test_controller_shutdown_disconnects_and_stops_timers(headless_ui, qt_app):
+    controller = headless_ui; hud = controller.hud
+    assert hud._timer.isActive()
+    controller.shutdown(); controller.shutdown()
+    assert not hud._timer.isActive() and not hud._fullscreen_timer.isActive()
+    controller.bridge._set_amplitude(.75)
+    assert hud.audio_level == 0.0
+    assert not controller.bridge.setAmplitude(.5)
+    qt_app.processEvents()

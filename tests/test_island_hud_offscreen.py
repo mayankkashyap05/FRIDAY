@@ -108,3 +108,13 @@ def test_hover_hit_areas_match_painted_tiles():
     assert all(not a.intersects(b) for i, a in enumerate(tabs) for b in tabs[i+1:])
     assert not any(rect.contains(QPointF(left + 283, 80)) for rect in primary)
     hud.close()
+
+
+def test_detached_face_has_reference_capsule_proportions():
+    app = QApplication.instance() or QApplication([])
+    hud = VoiceHUD()
+    hud.set_scene('face_out', immediate=True)
+    bounds = hud.current_path().boundingRect()
+    assert bounds.width() == 184 and bounds.height() == 96
+    assert not hud.current_path().contains(bounds.topLeft())
+    hud.shutdown(); hud.close(); app.processEvents()

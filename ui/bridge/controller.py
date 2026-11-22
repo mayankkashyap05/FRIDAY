@@ -7,6 +7,7 @@ from ui.settings_store import SettingsStore
 class UiController:
     def __init__(self, hud, bridge=None, player=None, store=None):
         self.hud = hud
+        self._closed = False
         self.bridge = bridge or UiBridge()
         self.dispatcher = self.bridge.dispatcher
         self.store = store or SettingsStore()
@@ -83,5 +84,19 @@ class UiController:
         self.hud.update()
 
     def shutdown(self):
-        self.services.close()
+        if self._closed:
+            return
+        self._closed = True
+        self.hud.shutdown()
         self.dispatcher.stop()
+        if not self.services.close(timeout=2.0):
+            import logging
+            logging.getLogger(__name__).warning('Panel workers still running after shutdown deadline')
+        self.bridge.state_changed.disconnect(self._state_changed)
+        self.bridge.log_added.disconnect(self.hud.append_log)
+        self.bridge.amplitude_changed.disconnect(self._amplitude_changed)
+        self.bridge.transcript_changed.disconnect(self._transcript_changed)
+        self.hud.command_requested.disconnect(self.submit_text)
+        self.hud.face_out_moved.disconnect(self._save_face_out)
+        self.hud.mode_requested.disconnect(self._mode_requested)
+        self.hud.panels['settings'].settings_changed.disconnect(self.apply_settings)

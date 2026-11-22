@@ -44,8 +44,10 @@ class UiDispatcher(QObject):
             self._queue.append((callback, args, kwargs))
             wake = not self._scheduled
             self._scheduled = True
-        if wake:
-            self._wake.emit()
+            # Serialize emission against stop so no producer can signal a
+            # dispatcher after shutdown has completed.
+            if wake:
+                self._wake.emit()
         return True
 
     @Slot()
