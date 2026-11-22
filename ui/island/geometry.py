@@ -37,19 +37,6 @@ def notch_path(body: QRectF, shoulder: float = 14, corner: float = 14,
                  x-s+top_r-k*(top_r-s), y, x-s+top_r, y)
     path.closeSubpath()
     return path
-    k = KAPPA
-    path.moveTo(x-s, y)
-    path.lineTo(x+w+s, y)
-    # Outside edge -> body side. Horizontal and vertical tangents match.
-    path.cubicTo(x+w+s-k*s, y, x+w, y+s-k*s, x+w, y+s)
-    path.lineTo(x+w, y+h-r)
-    path.cubicTo(x+w, y+h-r+k*r, x+w-r+k*r, y+h, x+w-r, y+h)
-    path.lineTo(x+r, y+h)
-    path.cubicTo(x+r-k*r, y+h, x, y+h-r+k*r, x, y+h-r)
-    path.lineTo(x, y+s)
-    path.cubicTo(x, y+s-k*s, x-s+k*s, y, x-s, y)
-    path.closeSubpath()
-    return path
 
 
 def contains(path: QPainterPath, x: float, y: float) -> bool:

@@ -1,14 +1,4 @@
-"""Legacy UI compatibility contract.
-
-These tests are the executable form of ``docs/UI_AUDIT_CONTRACT.md`` §3. They
-assert that the ambient Siri implementation exposes the full legacy-compatible
-surface, so the migration cannot silently break ``main.py`` or ``actions/``.
-There is one implementation — the Electron Siri overlay in ``ui/`` — and no
-fallback of any kind.
-
-The facade is imported and introspected, but never instantiated here (that
-would spawn Electron), which is why the surface assertions are static.
-"""
+"""Compatibility contract exercised against the native Qt frontend."""
 
 from __future__ import annotations
 
@@ -20,10 +10,11 @@ import pytest
 
 import threading
 
-import _archive.ui_legacy as ui_legacy
-from _archive.ui_legacy import FridayUI
+import ui as ui_legacy
+from ui import FridayUI
 
 REPO = Path(__file__).resolve().parent.parent
+_APP = None
 
 
 # ── The contract, transcribed from the audit ────────────────────────────────
@@ -69,9 +60,9 @@ def test_module_global_present(name):
     assert hasattr(ui_legacy, name), f"ui.{name} disappeared — callers depend on it"
 
 
-def test_themes_are_siri_only():
-    assert ui_legacy.THEME_NAMES == ("siri",)
-    assert "siri" in ui_legacy.THEMES
+def test_native_themes():
+    assert ui_legacy.THEME_NAMES == ("dark", "light")
+    assert set(ui_legacy.THEMES) == {"dark", "light"}
 
 
 def test_api_file_is_reassignable(tmp_path, monkeypatch):
@@ -128,17 +119,8 @@ def test_ambient_class_declares_parity_attributes_via_source():
             f"FridayUI.__init__ no longer sets self.{name}"
 
 
-def test_no_legacy_fallback_remains():
-    """No Tk module, no Qt/QML module, and no escape hatch: Siri (Electron) is
-    the sole UI implementation, so nothing can silently fall back."""
-    assert not hasattr(ui_legacy, "_load_legacy_class")
-    assert not hasattr(ui_legacy, "_legacy_requested")
-    assert not hasattr(ui_legacy, "_strict_requested")
-    import importlib.util
-
-    assert importlib.util.find_spec("ui_legacy") is None
-    for removed in ("image_provider", "qml"):
-        assert importlib.util.find_spec(f"ui.{removed}") is None
+def test_native_facade_resolves_to_ui_package():
+    assert Path(ui_legacy.__file__).resolve() == (REPO / 'ui' / '__init__.py').resolve()
 
 
 # ── root duck-type contract ─────────────────────────────────────────────────
@@ -195,25 +177,30 @@ def _adapter():
 def test_root_after_runs_the_callback():
     root, fake = _adapter()
     hits = []
+    from PySide6.QtWidgets import QApplication
+    global _APP
+    _APP = QApplication.instance() or QApplication([])
+    app = _APP
     root.after(0, hits.append, 1)
+    app.processEvents()
     assert hits == [1]
 
 
-def test_root_after_is_thread_safe():
-    """main.py calls root.after(0, cb) from the pystray / keyboard threads."""
-    import threading
-
-    root, _ = _adapter()
+def test_root_after_is_thread_safe(monkeypatch):
+    from PySide6.QtWidgets import QApplication
+    global _APP
+    _APP = QApplication.instance() or QApplication([])
+    app = _APP
+    monkeypatch.setenv('FRIDAY_GEMINI_API_KEY', 'test')
+    facade = FridayUI(headless=True)
     hits = []
-    def post(value):
-        root.after(0, hits.append, value)
-
-    threads = [threading.Thread(target=post, args=(i,)) for i in range(20)]
-    for t in threads:
-        t.start()
-    for t in threads:
-        t.join()
+    threads = [threading.Thread(target=facade.root.after, args=(0, hits.append, i)) for i in range(20)]
+    for thread in threads: thread.start()
+    for thread in threads: thread.join()
+    assert hits == []
+    for _ in range(10): app.processEvents()
     assert sorted(hits) == list(range(20))
+    facade.quit()
 
 
 def test_root_window_state_round_trip():
@@ -240,9 +227,8 @@ def test_root_destroy_maps_to_quit():
     assert ("quit",) in fake.calls
 
 
-def test_root_unknown_winfo_is_a_noop_callable():
+def test_unknown_root_method_raises():
     root, _ = _adapter()
-    root.winfo_exists()          # must not raise
     with pytest.raises(AttributeError):
         root.definitely_not_a_method
 
@@ -251,7 +237,7 @@ def test_root_unknown_winfo_is_a_noop_callable():
 
 def test_ui_state_coercion_covers_every_literal_main_py_uses():
     """Guard against main.py gaining a state string the UI drops."""
-    from _archive.ui_legacy.event_bus import UiState
+    from ui.bridge.protocol import UiState
 
     source = (REPO / "main.py").read_text(encoding="utf-8")
     literals = set(re.findall(r'set_state\("([A-Za-z_-]+)"\)', source))
@@ -295,6 +281,7 @@ def _bare_facade():
     obj._loop_entered = False
     obj.bridge = _RecordingBridge()
     obj._closed = threading.Event()
+    obj._lock = threading.RLock()
     obj._dispatch = lambda fn, *a, **k: fn(*a, **k)
     obj._ingest = lambda payload: obj.bridge.ingest(payload)
     return obj

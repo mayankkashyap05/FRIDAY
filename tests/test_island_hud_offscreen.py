@@ -30,7 +30,11 @@ def test_transparent_pixels_drop_and_background_bridge():
     assert img.pixelColor(360, 10).alpha() > 0
     received = []; hud.files_dropped.connect(received.append)
     mime = QMimeData(); mime.setUrls([QUrl.fromLocalFile('/tmp/example.txt')])
-    enter = QDragEnterEvent(QPoint(360, 20), Qt.CopyAction, mime, Qt.LeftButton, Qt.NoModifier)
+    # Qt 6.8 only exposes the QPoint overload; newer releases add QPointF.
+    try:
+        enter = QDragEnterEvent(QPointF(360, 20), Qt.CopyAction, mime, Qt.LeftButton, Qt.NoModifier)
+    except TypeError:
+        enter = QDragEnterEvent(QPoint(360, 20), Qt.CopyAction, mime, Qt.LeftButton, Qt.NoModifier)
     hud.dragEnterEvent(enter); assert enter.isAccepted()
     drop = QDropEvent(QPointF(360, 20), Qt.CopyAction, mime, Qt.LeftButton, Qt.NoModifier)
     hud.dropEvent(drop); assert drop.isAccepted() and received == [['/tmp/example.txt']]
@@ -85,9 +89,22 @@ def test_hover_tabs_and_face_out_drag():
     hud.set_scene('resting', immediate=True)
     a, b = QPointF(360, 20), QPointF(390, 70)
     press = QMouseEvent(QEvent.MouseButtonPress, a, a, Qt.LeftButton, Qt.LeftButton, Qt.NoModifier)
+    hud.mousePressEvent(press)
     move = QMouseEvent(QEvent.MouseMove, b, b, Qt.NoButton, Qt.LeftButton, Qt.NoModifier)
-    hud.mousePressEvent(press); hud.mouseMoveEvent(move)
+    hud.mouseMoveEvent(move)
     assert hud.state == 'face_out'
     hud.set_scene('face_out', immediate=True)
     assert hud.current_path().boundingRect().top() == 18
+    hud.close()
+
+
+def test_hover_hit_areas_match_painted_tiles():
+    from PySide6.QtCore import QPointF
+    app = QApplication.instance() or QApplication([])
+    hud = VoiceHUD(); hud.set_scene('hover', immediate=True)
+    left = (hud.width() - hud.width_spring.value) / 2
+    primary = hud._primary_rects(left); tabs = hud._tab_rects(left)
+    assert all(not a.intersects(b) for i, a in enumerate(primary) for b in primary[i+1:])
+    assert all(not a.intersects(b) for i, a in enumerate(tabs) for b in tabs[i+1:])
+    assert not any(rect.contains(QPointF(left + 283, 80)) for rect in primary)
     hud.close()
