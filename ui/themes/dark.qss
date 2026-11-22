@@ -1,0 +1,9 @@
+* { color: #F5F6F8; font-family: "Segoe UI"; font-size: 11px; }
+QWidget { background: transparent; }
+QPushButton, QLineEdit, QComboBox, QDateTimeEdit, QListWidget, QPlainTextEdit { background: #1D1F23; border: 1px solid #303238; border-radius: 7px; padding: 5px; }
+QPushButton:hover { background: #303238; }
+QPushButton:pressed { background: #3882F6; }
+QLabel#panelTitle { font-weight: bold; color: #F5F6F8; }
+QScrollArea { border: 0; background: transparent; }
+QMenu { background: #141518; border: 1px solid #303238; }
+QMenu::item:selected { background: #303238; }

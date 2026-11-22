@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import asyncio
 import threading
 import json
@@ -21,7 +23,8 @@ for _stream in (sys.stdout, sys.stderr):
 
 try:
     import sounddevice as sd
-except ModuleNotFoundError:
+except (ImportError, OSError):
+    # sounddevice may be installed while its native PortAudio library is absent.
     sd = None
 
 try:
@@ -36,7 +39,7 @@ except ModuleNotFoundError:
     genai = None
     types = None
 
-from _archive.ui_legacy import FridayUI, make_ui
+from ui import FridayUI, make_ui
 from memory.memory_manager import (
     load_memory, update_memory, format_memory_for_prompt,
     should_extract_memory, extract_memory
@@ -140,7 +143,7 @@ MAX_ROLLING_CHARS = 16000
 def _ensure_core_deps():
     missing = []
     if sd is None:
-        missing.append("sounddevice")
+        missing.append("sounddevice or its PortAudio library")
     if genai is None or types is None:
         missing.append("google-genai")
 
@@ -1382,9 +1385,13 @@ class FridayLive:
         self._rolling_len   = 0
         self._roll_turns    = 0
         self._human_confirmed = False
+        self._confirmation_lock = threading.Lock()
+        self._pending_card_token = None
+        self._approved_card_token = None
         self.loop_guard     = LoopGuard()
         self._tool_handlers = self._build_tool_handlers()
         self.ui.on_text_command = self._on_text_command
+        self.ui.on_silent_change = self._on_silent_change
         self.enable_bluetooth = False
         self._schedules     = []
         self._sched_lock    = threading.Lock()
@@ -1429,103 +1436,82 @@ class FridayLive:
             print(f"[WakeWord] ⚠️ {e}")
 
     def attach_tray(self):
-        """Background tray icon + global hotkeys (optional deps)."""
+        """Register optional global shortcuts; the Qt UI owns the tray icon."""
         try:
             from actions import system_tray
-
-            def _on_ui(cb):
-                return lambda: self.ui.root.after(0, cb)
-
-            def _wake_active():
-                from actions.wake_word import _pick_engine
-                return _pick_engine()[1]._running
-
-            def _sync_wake_ui():
-                """Mirror wake-word state into the Inspector's Wake tab."""
-                controller = getattr(self.ui, "controller", None)
-                if controller is None or not hasattr(controller, "set_wake_status"):
-                    return
-                try:
-                    active = bool(_wake_active())
-                    controller.set_wake_status(
-                        active,
-                        "Listening for \"Hey Friday\"" if active else "Engine idle")
-                except Exception:
-                    pass
-
-            def _toggle_wake():
+            def toggle_wake():
                 try:
                     from actions.wake_word import _pick_engine
-                    name, eng = _pick_engine()
-                    if not eng.available:
-                        print("[Tray] ⚠️ Wake word engine not ready:", name)
+                    _, engine = _pick_engine()
+                    if not engine.available:
+                        self.ui.write_log('SYS: Wake word engine unavailable.')
                         return
-                    if eng._running:
-                        r = eng.stop()
+                    if engine._running:
+                        result = engine.stop()
                     else:
-                        eng.configure(on_detect=self._on_wake_detect)
-                        r = eng.start()
-                    print(f"[Tray] {r}")
-                    self.ui.write_log(f"SYS: {r}")
-                    _sync_wake_ui()
-                except Exception as e:
-                    print(f"[Tray] ⚠️ {e}")
-
-            def _hide_show():
-                state = self.ui.root.state()
-                if state in ("normal", "iconic"):
-                    self.ui.root.withdraw()
-                else:
-                    self.ui.root.deiconify()
-                    self.ui.root.lift()
-
-            def _brief():
-                if self._loop and self.session:
-                    self.speak("Give me today's morning briefing.")
-                print("[Tray] Briefing requested")
-
-            def _quit():
-                try:
-                    self.ui.root.after(0, self.ui.root.destroy)
-                except Exception:
-                    os._exit(0)
-
+                        engine.configure(on_detect=self._on_wake_detect)
+                        result = engine.start()
+                    self.ui.write_log(f'SYS: {result}')
+                except Exception as exc:
+                    self.ui.write_log(f'ERR: Wake word: {exc}')
             callbacks = {
-                "toggle_mute": _on_ui(self.ui._toggle_mute),
-                "toggle_wake": _toggle_wake,
-                "hide_show":   _hide_show,
-                "briefing":    _brief,
-                "quit":        _quit,
+                'toggle_mute': self.ui._toggle_mute,
+                'toggle_wake': toggle_wake,
+                'hide_show': lambda: self.ui.hide() if self.ui.visible else self.ui.show(),
+                'briefing': lambda: self.ui.submit_text("Give me today's daily briefing."),
+                'quit': self.ui.quit,
             }
-
-            def menu_factory():
-                import pystray
-                return pystray.Menu(
-                    pystray.MenuItem(
-                        lambda item: "🔇 Unmute" if self.ui.muted else "🔊 Mute (F4)",
-                        _on_ui(self.ui._toggle_mute),
-                    ),
-                    pystray.MenuItem(
-                        lambda item: "😴 Stop Wake Word" if _wake_active() else "💤 Activate Wake Word",
-                        _toggle_wake,
-                    ),
-                    pystray.MenuItem("📋 Daily Briefing", _brief),
-                    pystray.MenuItem("👁 Hide/Show Window", _hide_show),
-                    pystray.Menu.SEPARATOR,
-                    pystray.MenuItem("🚪 Quit Friday", _quit, default=True),
-                )
-
-            _sync_wake_ui()
-            tray_ok   = system_tray.configure_icon(menu_factory)
-            hot_ok    = system_tray.register_hotkeys(callbacks)
-            print(f"[Tray] 🖥 Tray: {'on' if tray_ok else 'off'} | Hotkeys: {hot_ok} registered ({system_tray.available()})")
-        except Exception as e:
-            print(f"[Tray] ⚠️ Could not attach tray: {e}")
-            import traceback; traceback.print_exc()
+            system_tray.register_hotkeys(callbacks)
+        except Exception as exc:
+            self.ui.write_log(f'SYS: Global shortcuts unavailable: {exc}')
 
     def _mark_human_confirmed(self):
-        self._human_confirmed = True
+        with self._confirmation_lock:
+            if not self._pending_card_token:
+                return
+            self._human_confirmed = True
+            self._approved_card_token = self._pending_card_token
         print("[FRIDAY] 🛡️ Human confirmation verified out-of-band.")
+
+    def _request_card_confirmation(self, description, token):
+        with self._confirmation_lock:
+            self._pending_card_token = token
+            self._approved_card_token = None
+            self._human_confirmed = False
+        request = getattr(self.ui, 'request_confirmation', None)
+        if callable(request):
+            try:
+                request(description, lambda accepted: self._answer_card_confirmation(token, accepted))
+            except Exception as exc:
+                self.ui.write_log(f'ERR: Could not show confirmation: {exc}')
+
+    def _answer_card_confirmation(self, token, accepted):
+        with self._confirmation_lock:
+            if token != self._pending_card_token:
+                return 'This confirmation is no longer current.'
+            self._pending_card_token = None
+            if accepted and (not self._loop or not self.session or not self._send_lock):
+                self._human_confirmed = False
+                self._approved_card_token = None
+                return 'Cannot approve while the assistant is disconnected.'
+            self._human_confirmed = bool(accepted)
+            self._approved_card_token = token if accepted else None
+        self._send_text('Yes, I approve the requested action.' if accepted else 'No, I decline the requested action.')
+        return 'Approval recorded.' if accepted else 'Request denied.'
+
+    def _has_human_confirmation(self, token):
+        with self._confirmation_lock:
+            return bool(self._human_confirmed and token and token == self._approved_card_token)
+
+    def _consume_human_confirmation(self, confirmed, token):
+        with self._confirmation_lock:
+            allowed = not confirmed or (self._human_confirmed and
+                token == self._approved_card_token and bool(token))
+            if allowed:
+                self._human_confirmed = False
+                self._pending_card_token = None
+                self._approved_card_token = None
+            return allowed
 
     def flush_audio(self):
         """Drop queued TTS when the user switches to text-only mode."""
@@ -1548,11 +1534,22 @@ class FridayLive:
         if silent:
             self.flush_audio()
 
+    @staticmethod
+    def _is_explicit_approval(text):
+        # Never interpret a sentence containing an incidental affirmative as consent.
+        normalized = " ".join(re.findall(r"\w+", (text or "").lower()))
+        return normalized in {"yes", "yeah", "yep", "sure", "ok", "okay", "proceed",
+                              "allow", "approve", "i approve", "yes i approve",
+                              "ha", "albatta", "evet", "olur"}
+
     def _on_text_command(self, text: str):
-        _words = set(re.findall(r"\w+", (text or "").lower()))
-        _affirmative = {"yes", "yeah", "yep", "sure", "ok", "okay", "proceed", "allow", "approve", "ha", "albatta", "evet", "olur"}
-        if _words & _affirmative:
+        if not self._loop or not self.session or not self._send_lock:
+            return
+        if self._is_explicit_approval(text):
             self._mark_human_confirmed()
+        self._send_text(text)
+
+    def _send_text(self, text):
         if not self._loop or not self.session or not self._send_lock:
             return
         async def _send():
@@ -1821,10 +1818,11 @@ class FridayLive:
             )
 
         def _lazy(mod, fn, *extra_args, **extra_kwargs):
-            import importlib
-            m = importlib.import_module(mod)
-            f = getattr(m, fn)
-            return lambda a: f(parameters=a, *extra_args, **extra_kwargs)
+            def invoke(args):
+                import importlib
+                f = getattr(importlib.import_module(mod), fn)
+                return f(parameters=args, *extra_args, **extra_kwargs)
+            return invoke
 
         return {
             "open_app":          (_lazy("actions.open_app", "open_app", response=None, player=ui), 60),
@@ -1891,17 +1889,21 @@ class FridayLive:
 
         # ── Safety gate: high-risk actions need explicit user confirmation ──
         from safety import (
-            needs_confirmation, describe, CONFIRM_MESSAGE,
+            needs_confirmation, describe, CONFIRM_MESSAGE, classify, Risk,
             CONFIRM_PARAM, CONFIRM_TOKEN_PARAM, issue_confirmation_token,
         )
         confirm = bool(args.pop(CONFIRM_PARAM, False))
         confirm_token = str(args.pop(CONFIRM_TOKEN_PARAM, ""))
         face_verify = bool(args.pop("face_verify", False))
+        # Do not redeem a one-shot token until the matching human approval exists.
+        if confirm and classify(name, args) == Risk.HIGH and not self._has_human_confirmation(confirm_token):
+            return ToolResult(ok=True, content="Action blocked: human user has not verbally approved this yet.", error_kind="confirmation")
         if needs_confirmation(name, args, confirm=confirm, confirm_token=confirm_token):
             token = issue_confirmation_token(name, args) if not confirm else ""
             print(f"[FRIDAY] ⛔ {name} blocked — confirmation required")
             self.ui.write_log(f"SECURITY: '{describe(name, args)}' requires your approval.")
-            self._human_confirmed = False
+            if token: self._request_card_confirmation(
+                f"{describe(name, args)}\n\n{json.dumps(_sanitize(name, args), ensure_ascii=False, indent=2, default=str)}", token)
             return ToolResult(
                 ok=True,
                 content=CONFIRM_MESSAGE.format(desc=describe(name, args),
@@ -1910,7 +1912,7 @@ class FridayLive:
                 error_kind="confirmation",
             )
         # Defense-in-depth: if confirm is asserted, require human verification (fail-closed)
-        if confirm and not getattr(self, "_human_confirmed", False):
+        if not self._consume_human_confirmation(confirm, confirm_token):
             print(f"[FRIDAY] ⛔ {name} rejected — no human consent detected.")
             self.ui.write_log(f"SECURITY: '{name}' blocked — no verbal consent.")
             return ToolResult(
@@ -1920,8 +1922,6 @@ class FridayLive:
             )
         if confirm:
             self.ui.write_log(f"SECURITY: '{name}' approved by user.")
-        self._human_confirmed = False
-
         if face_verify:
             # Imported lazily, like every other action module (see
             # _build_tool_handlers): binding the name at module scope here was
@@ -2097,16 +2097,19 @@ class FridayLive:
 
         # ── Safety gate: high-risk actions need explicit user confirmation ──
         from safety import (
-            needs_confirmation, describe, CONFIRM_MESSAGE,
+            needs_confirmation, describe, CONFIRM_MESSAGE, classify, Risk,
             CONFIRM_PARAM, CONFIRM_TOKEN_PARAM, issue_confirmation_token, sanitize,
         )
         confirm = bool(args.pop(CONFIRM_PARAM, False))
         confirm_token = str(args.pop(CONFIRM_TOKEN_PARAM, ""))
+        if confirm and classify(name, args) == Risk.HIGH and not self._has_human_confirmation(confirm_token):
+            return types.FunctionResponse(id=fc.id, name=name, response={"result": "Action blocked: human user has not approved this exact action."})
         if needs_confirmation(name, args, confirm=confirm, confirm_token=confirm_token):
             token = issue_confirmation_token(name, args) if not confirm else ""
             print(f"[FRIDAY] ⛔ {name} blocked — confirmation required")
             self.ui.write_log(f"SECURITY: '{describe(name, args)}' requires your approval.")
-            self._human_confirmed = False
+            if token: self._request_card_confirmation(
+                f"{describe(name, args)}\n\n{json.dumps(sanitize(name, args), ensure_ascii=False, indent=2, default=str)}", token)
             log_tool(name, args, error="confirmation required")
             if not self.ui.muted:
                 self.ui.set_state("LISTENING")
@@ -2116,7 +2119,7 @@ class FridayLive:
                     desc=describe(name, args), param=CONFIRM_PARAM)
                     + (f"\n[token: {token}]" if token else "")}
             )
-        if confirm and not getattr(self, "_human_confirmed", False):
+        if not self._consume_human_confirmation(confirm, confirm_token):
             print(f"[FRIDAY] ⛔ {name} rejected — no human consent detected.")
             self.ui.write_log(f"SECURITY: '{name}' blocked — no verbal consent.")
             return types.FunctionResponse(
@@ -2125,9 +2128,6 @@ class FridayLive:
             )
         if confirm:
             self.ui.write_log(f"SECURITY: '{name}' approved by user.")
-        self._human_confirmed = False
-
-
         try:
             # Uniform dispatch through the shared handler table so every
             # declared tool gets a timeout and works in both voice and
@@ -2742,9 +2742,7 @@ class FridayLive:
                             full_in = " ".join(in_buf).strip()
                             if full_in:
                                 self.ui.write_log(f"You: {full_in}")
-                                _words = set(re.findall(r"\w+", full_in.lower()))
-                                _affirmative = {"yes", "yeah", "yep", "sure", "ok", "okay", "proceed", "allow", "approve", "ha", "albatta", "evet", "olur"}
-                                if _words & _affirmative:
+                                if self._is_explicit_approval(full_in):
                                     self._mark_human_confirmed()
                             in_buf = []
 
@@ -2974,68 +2972,62 @@ def _tk_exception_handler(exc_type, exc_value, tb):
     traceback.print_exception(exc_type, exc_value, tb)
 
 
-def main():
+def main(argv=None):
+    import argparse
+    parser = argparse.ArgumentParser(description='FRIDAY voice assistant')
+    parser.add_argument('--headless', action='store_true', help='Run without showing the native island or tray')
+    args = parser.parse_args(argv)
     _ensure_core_deps()
     log_file = setup_logger(BASE_DIR)
     log(f"Base dir: {BASE_DIR}\nLog file: {log_file}")
-    ui = make_ui("face.png")
+    ui = make_ui('face.png', headless=args.headless)
+    task_ref = {}
+    task_lock = threading.Lock()
 
     def runner():
-        # The tray icon owns a Win32 message loop, so it must be created from
-        # the thread that owns the UI's event loop (the main thread), never from
-        # this worker. We hand it back through `root.after`, which is
-        # thread-safe in the Siri implementation.
         ui.wait_for_api_key()
+        if ui._closed.is_set(): return
         friday = FridayLive(ui)
-        try:
+        if not args.headless:
             ui.root.after(0, friday.attach_tray)
-        except Exception:
-            friday.attach_tray()
+        async def run_voice():
+            with task_lock:
+                task_ref['loop'] = asyncio.get_running_loop()
+                task_ref['task'] = asyncio.current_task()
+            if ui._closed.is_set(): return
+            await friday.run()
         try:
-            asyncio.run(friday.run())
-        except KeyboardInterrupt:
-            print("\n🔴 Shutting down...")
+            asyncio.run(run_voice())
+        except asyncio.CancelledError:
+            pass
+        except Exception:
+            traceback.print_exc()
+            ui.write_log('ERR: The assistant stopped unexpectedly.')
 
-    threading.Thread(target=runner, daemon=True).start()
-    try:
-        ui.root.report_callback_exception = _tk_exception_handler
-    except Exception:
-        pass
+    worker = threading.Thread(target=runner, daemon=True, name='FridayVoice')
+    worker.start()
+    ui.root.report_callback_exception = _tk_exception_handler
     try:
         ui.root.mainloop()
     except KeyboardInterrupt:
-        # Should be rare: FridayUI.run() installs a SIGINT handler that routes
-        # Ctrl+C to Controller.request_quit(). This path remains for an
-        # interrupt that lands before the handler is installed.
-        print("\n🛑 Stopping Friday (Ctrl+C)...")
-        _graceful_shutdown(ui)
-        print("👋 Shut down cleanly. See you, sir!")
+        ui.quit()
+    finally:
+        ui._closed.set()
+        with task_lock:
+            loop, task = task_ref.get('loop'), task_ref.get('task')
+            if loop and task and not loop.is_closed():
+                loop.call_soon_threadsafe(task.cancel)
+        worker.join(timeout=3)
+        try:
+            from actions.system_tray import stop as stop_tray
+            stop_tray()
+        except Exception:
+            pass
 
 
 def _graceful_shutdown(ui) -> None:
-    """Stop the tray, restore ducked audio, close the windows. Never raises.
-
-    Shared by the Ctrl+C path and the normal exit so the two cannot drift:
-    both used to be inline and only one of them stopped the tray.
-    """
-    controller = getattr(ui, "controller", None)
-    if controller is not None:
-        try:
-            # shutdown() restores audio ducking, stops the tray and closes the
-            # windows, and is idempotent.
-            controller.shutdown()
-        except Exception as exc:
-            print(f"[FRIDAY] ⚠️ controller shutdown: {exc}")
-    else:  # pragma: no cover - controller-less fallback
-        try:
-            from actions.system_tray import stop as _tray_stop
-            _tray_stop()
-        except Exception:
-            pass
-    try:
-        ui.root.destroy()
-    except Exception:
-        pass
+    """Request an orderly UI shutdown."""
+    ui.quit()
 
 
 if __name__ == "__main__":
