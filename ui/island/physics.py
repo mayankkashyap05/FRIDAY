@@ -62,3 +62,44 @@ class Spring:
         if self.settled:
             self.set(self.target)
         return self.value
+
+
+class Tracked(Spring):
+    """Spring on expansion and follow Coucou's 340 ms curve on contraction."""
+    def __init__(self, value):
+        super().__init__(value, .42, .74)
+        self._curve_elapsed = None
+        self._curve_from = self.value
+        self._curve_duration = .34
+
+    @property
+    def settled(self):
+        return self._curve_elapsed is None and super().settled
+
+    def set(self, value):
+        self._curve_elapsed = None
+        super().set(value)
+
+    def animate_to(self, target):
+        target = float(target)
+        if target == self.target:
+            return
+        if target < self.value:
+            self._curve_from = self.value
+            self._curve_elapsed = 0.0
+            self.target = target
+            self.velocity = 0.0
+        else:
+            self._curve_elapsed = None
+            self.configure(.42, .74)
+            self.target = target
+
+    def step(self, dt):
+        if self._curve_elapsed is None:
+            return super().step(dt)
+        self._curve_elapsed = min(self._curve_duration, self._curve_elapsed + max(0.0, dt))
+        progress = self._curve_elapsed / self._curve_duration
+        self.value = self._curve_from + (self.target - self._curve_from) * close_curve(progress)
+        if progress >= 1:
+            self.set(self.target)
+        return self.value

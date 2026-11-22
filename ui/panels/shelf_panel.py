@@ -18,6 +18,7 @@ class ShelfPanel(Panel):
             try: size = p.stat().st_size
             except OSError: continue
             item = QListWidgetItem(f'{p.name} · {size:,} bytes'); item.setData(Qt.UserRole, str(p)); self.files.addItem(item); existing.add(str(p))
+            self.files.setCurrentItem(item)
     def _selected(self):
         item = self.files.currentItem()
         if not item: self.result.setText('Select a file first.'); return None

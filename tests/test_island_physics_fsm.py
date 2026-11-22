@@ -48,3 +48,17 @@ def test_greeting_reveal_and_force():
     fsm.force_hidden(); fsm.reveal(); assert fsm.state == 'petit'
     fsm.force_home(); assert fsm.state == 'home'
     fsm.force_petit(); assert fsm.state == 'petit'
+
+
+def test_tracked_close_curve_is_monotonic_and_finishes_in_340ms():
+    from ui.island.physics import Tracked
+    tracked = Tracked(640)
+    tracked.animate_to(240)
+    samples = []
+    for _ in range(34):
+        samples.append(tracked.step(.01))
+    assert all(a >= b >= 240 for a, b in zip(samples, samples[1:]))
+    assert tracked.settled and tracked.value == 240
+    tracked.animate_to(640)
+    tracked.step(.016)
+    assert 240 < tracked.value < 640
