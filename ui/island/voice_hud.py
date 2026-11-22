@@ -59,9 +59,12 @@ class VoiceHUD(QWidget):
         self._anchor()
         win32_overlay.configure_overlay(self)
 
-    def closeEvent(self, event):
+    def shutdown(self):
         self._timer.stop()
         self._fullscreen_timer.stop()
+
+    def closeEvent(self, event):
+        self.shutdown()
         super().closeEvent(event)
 
     def set_user_visible(self, visible):
@@ -105,7 +108,7 @@ class VoiceHUD(QWidget):
         self.state = state
         if state in ('resting', 'listening', 'working', 'speaking', 'muted', 'error', 'success'):
             self._activity_scene = state
-        sizes = {'resting': (240, 48), 'hover': (640, 160), 'chat': (640, 260), 'media': (640, 220), 'tasks': (640, 220), 'vision': (640, 220), 'shelf': (640, 220), 'settings': (640, 260), 'write': (640, 200), 'face_out': (184, 48)}
+        sizes = {'resting': (240, 48), 'hover': (640, 160), 'chat': (640, 260), 'media': (640, 220), 'tasks': (640, 220), 'vision': (640, 220), 'shelf': (640, 220), 'settings': (640, 260), 'write': (640, 200), 'face_out': (184, 96)}
         w, h = sizes.get(state, (380, 64))
         for spring, target in ((self.width_spring, w), (self.height_spring, h), (self.shoulder_spring, 0 if state == 'face_out' else 1)):
             if immediate: spring.set(target)
@@ -184,7 +187,9 @@ class VoiceHUD(QWidget):
     def current_path(self):
         w = self.width_spring.value; h = self.height_spring.value
         y = 18 * (1 - max(0, min(1, self.shoulder_spring.value)))
-        return notch_path(QRectF((self.width()-w)/2, y, w, h), 16, min(18, h/2), self.shoulder_spring.value)
+        shoulder = max(0, min(1, self.shoulder_spring.value))
+        corner = min(18 * shoulder + h/2 * (1-shoulder), h/2)
+        return notch_path(QRectF((self.width()-w)/2, y, w, h), 16, corner, shoulder)
 
     def _animate(self):
         now = time.monotonic(); dt = now - self._last; self._last = now
@@ -211,7 +216,12 @@ class VoiceHUD(QWidget):
         delta = QCursor.pos() - self.mapToGlobal(QPoint(int(cx), int(cy)))
         look = (0, 0) if self.preview_mode else gaze(delta.x(), delta.y())
         blink = 1 if self.preview_mode else self._blink.value(time.monotonic()-self._epoch)
-        paint_eyes(p, cx, cy, colour=readable_eye_colour(self.eye_colour, background), scale=1.0 if not expanded else 1.3, blink=blink, look=look, halo=self.state in ('resting', 'listening', 'dictation'), dim=self.state == 'muted')
+        face_out = self.state == 'face_out'
+        paint_eyes(p, cx, cy, colour=readable_eye_colour(self.eye_colour, background),
+                   scale=2.0 if face_out else (1.3 if expanded else 1.0),
+                   spacing=14 if face_out else 13, blink=blink, look=look,
+                   halo=self.state in ('resting', 'listening', 'dictation', 'face_out'),
+                   dim=self.state == 'muted')
         p.setPen(QColor(pal['ink'])); p.setFont(QFont('Segoe UI', 10))
         if expanded:
             self._paint_expanded(p, left, w, h, pal)

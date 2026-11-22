@@ -28,17 +28,17 @@ class Blink:
         return max(.08, abs(2*t-1))
 
 
-def paint_eyes(painter, cx, cy, *, colour='#ffffff', scale=1.0, blink=1.0, look=(0, 0), halo=False, dim=False):
+def paint_eyes(painter, cx, cy, *, colour='#ffffff', scale=1.0, blink=1.0, look=(0, 0), halo=False, dim=False, spacing=13):
     if halo:
         grad = QRadialGradient(cx, cy, 40*scale)
-        grad.setColorAt(0, QColor(56,130,246,85)); grad.setColorAt(1, QColor(56,130,246,0))
+        grad.setColorAt(0, QColor(255,255,255,32)); grad.setColorAt(1, QColor(255,255,255,0))
         painter.setPen(QColor(0, 0, 0, 0)); painter.setBrush(grad)
         painter.drawEllipse(QRectF(cx-40*scale, cy-40*scale, 80*scale, 80*scale))
     c = QColor(colour)
     if dim: c.setAlpha(100)
     painter.setPen(QColor(0, 0, 0, 0)); painter.setBrush(c)
     w, h = 7*scale, 14*scale*blink
-    for offset in (-13, 13):
+    for offset in (-spacing, spacing):
         x = cx + (offset + look[0]*2)*scale - w/2
         y = cy + look[1]*2*scale - h/2
         painter.drawRoundedRect(QRectF(x, y, w, h), w/2, w/2)

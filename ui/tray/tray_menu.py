@@ -38,4 +38,11 @@ class TrayMenu:
         self.ui.show(); self.ui.controller.hud.set_scene('settings')
 
     def close(self):
+        if self.icon is None:
+            return
         self.icon.hide()
+        self.icon.activated.disconnect(self._activated)
+        self.icon.setContextMenu(None)
+        self.icon.deleteLater()
+        self.menu.deleteLater()
+        self.icon = self.menu = None
