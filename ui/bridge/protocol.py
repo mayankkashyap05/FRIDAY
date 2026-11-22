@@ -17,6 +17,8 @@ class UiState(str, Enum):
 
     @classmethod
     def coerce(cls, value):
+        if isinstance(value, cls):
+            return value
         normalized = str(value or '').strip().upper().replace('-', '_')
         aliases = {'ONLINE': cls.LISTENING, 'PROCESSING': cls.THINKING,
                    'WORKING': cls.THINKING, 'INITIALISING': cls.IDLE,

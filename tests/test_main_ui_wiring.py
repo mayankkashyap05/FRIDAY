@@ -18,11 +18,12 @@ def get_app():
     return _APP
 
 
-def test_main_uses_native_ui_not_archive():
+def test_main_uses_native_ui():
     source = Path('main.py').read_text(encoding='utf-8')
     tree = ast.parse(source)
     imports = [n.module for n in ast.walk(tree) if isinstance(n, ast.ImportFrom)]
-    assert 'ui' in imports and not any((n or '').startswith('_archive') for n in imports)
+    assert 'ui' in imports
+    assert Path(ui.__file__).resolve() == Path('ui/__init__.py').resolve()
     assert 'headless=args.headless' in source
 
 

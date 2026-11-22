@@ -59,6 +59,11 @@ class VoiceHUD(QWidget):
         self._anchor()
         win32_overlay.configure_overlay(self)
 
+    def closeEvent(self, event):
+        self._timer.stop()
+        self._fullscreen_timer.stop()
+        super().closeEvent(event)
+
     def set_user_visible(self, visible):
         self._user_visible = bool(visible)
         if visible:
@@ -206,7 +211,7 @@ class VoiceHUD(QWidget):
         delta = QCursor.pos() - self.mapToGlobal(QPoint(int(cx), int(cy)))
         look = (0, 0) if self.preview_mode else gaze(delta.x(), delta.y())
         blink = 1 if self.preview_mode else self._blink.value(time.monotonic()-self._epoch)
-        paint_eyes(p, cx, cy, colour=readable_eye_colour(self.eye_colour, background), scale=1.0 if not expanded else 1.3, blink=blink, look=look, halo=self.state in ('listening', 'dictation'), dim=self.state == 'muted')
+        paint_eyes(p, cx, cy, colour=readable_eye_colour(self.eye_colour, background), scale=1.0 if not expanded else 1.3, blink=blink, look=look, halo=self.state in ('resting', 'listening', 'dictation'), dim=self.state == 'muted')
         p.setPen(QColor(pal['ink'])); p.setFont(QFont('Segoe UI', 10))
         if expanded:
             self._paint_expanded(p, left, w, h, pal)
@@ -231,16 +236,23 @@ class VoiceHUD(QWidget):
         p.drawText(QRectF(left+145, 15, w-165, 22), Qt.AlignVCenter, ('FRIDAY  /  ' if self.state == 'hover' else '‹  FRIDAY  /  ') + self.state.upper())
         p.setFont(QFont('Segoe UI', 10))
         if self.state == 'hover':
-            for i, label in enumerate(('Command', 'Dictate', 'Write')):
-                rect = QRectF(left+145+i*145, 52, 134, 64)
+            for rect, label in zip(self._primary_rects(left), ('Command', 'Dictate', 'Write')):
                 p.setPen(Qt.NoPen); p.setBrush(QColor(pal['card'])); p.drawRoundedRect(rect, 14, 14)
                 p.setPen(QColor(pal['ink'])); p.drawText(rect, Qt.AlignCenter, label)
             p.setPen(QColor(pal['muted']))
-            for i, label in enumerate(('Chat', 'Media', 'Tasks', 'Vision', 'Shelf', 'Settings')):
-                p.drawText(QRectF(left+145+i*70, 125, 70, 22), Qt.AlignVCenter, label)
+            for rect, label in zip(self._tab_rects(left), ('Chat', 'Media', 'Tasks', 'Vision', 'Shelf', 'Settings')):
+                p.drawText(rect, Qt.AlignCenter, label)
         else:
             p.setPen(Qt.NoPen); p.setBrush(QColor(pal['surface']))
             p.drawRoundedRect(QRectF(left+145, 42, w-160, max(30, h-55)), 14, 14)
+
+    @staticmethod
+    def _primary_rects(left):
+        return [QRectF(left+145+i*145, 52, 134, 64) for i in range(3)]
+
+    @staticmethod
+    def _tab_rects(left):
+        return [QRectF(left+145+i*70, 125, 70, 22) for i in range(6)]
 
     def enterEvent(self, event):
         if self.state == 'hover' or self.state in ('resting', 'listening', 'working', 'speaking', 'muted', 'error', 'success'): self.fsm.mouse_entered()
@@ -281,17 +293,18 @@ class VoiceHUD(QWidget):
         elif self._drag_start is not None and not self._dragged and self.state == 'hover':
             point = event.position()
             left = (self.width()-self.width_spring.value)/2
-            if 52 <= point.y() <= 116 and left+145 <= point.x() < left+580:
-                index = int((point.x()-left-145)//145)
-                if index in (0, 1, 2):
+            for index, rect in enumerate(self._primary_rects(left)):
+                if rect.contains(point):
                     target = ('listening', 'dictation', 'write')[index]
                     self.mode_requested.emit(target)
                     self.set_scene(target)
-            elif 125 <= point.y() <= 147:
-                index = int((point.x() - left - 145) // 70)
-                if 0 <= index < 6 and point.x() >= left+145:
-                    self.fsm.user_interacted()
-                    self.set_scene(('chat', 'media', 'tasks', 'vision', 'shelf', 'settings')[index])
+                    break
+            else:
+                for index, rect in enumerate(self._tab_rects(left)):
+                    if rect.contains(point):
+                        self.fsm.user_interacted()
+                        self.set_scene(('chat', 'media', 'tasks', 'vision', 'shelf', 'settings')[index])
+                        break
         if self.state == 'face_out' and self._drag_start is not None and self._dragged:
             screen = self.screen()
             if screen: self.face_out_moved.emit(screen.name(), self.x(), self.y())

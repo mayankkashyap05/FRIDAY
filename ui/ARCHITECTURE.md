@@ -40,7 +40,12 @@ current pending token. This integration still requires real-session testing.
 
 ## Known limitations
 
-Dictation does not yet paste into an external application. Not every requested
+Dictation does not yet paste into an external application. The focus-checked
+clipboard primitives and double-tap state machine in `island/dictation_paste.py`
+are not connected to the live assistant or an isolated speech recognizer. Live
+assistant audio is also sent to the model as commands, so using that transcript
+for dictation without isolating the stream is unsafe. The Windows adapter and
+clipboard format preservation require validation on Windows. Not every requested
 panel feature, eye animation or visual detail is implemented. The offscreen
 snapshot renderer exercises actual widgets but is not a native desktop test.
 Windows nonactivation, hit testing, focus, DPI, fullscreen detection, tray and

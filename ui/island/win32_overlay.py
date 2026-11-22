@@ -92,3 +92,52 @@ def foreground_is_fullscreen(widget):
         return False
     screen = info.rcMonitor
     return rect.left <= screen.left and rect.top <= screen.top and rect.right >= screen.right and rect.bottom >= screen.bottom
+
+
+def foreground_window():
+    """Return (window handle, title), or (0, '') when unavailable."""
+    if not IS_WINDOWS:
+        return 0, ''
+    user32.GetForegroundWindow.restype = wintypes.HWND
+    user32.GetWindowTextLengthW.argtypes = [wintypes.HWND]
+    user32.GetWindowTextW.argtypes = [wintypes.HWND, wintypes.LPWSTR, ctypes.c_int]
+    hwnd = user32.GetForegroundWindow()
+    if not hwnd:
+        return 0, ''
+    buffer = ctypes.create_unicode_buffer(user32.GetWindowTextLengthW(hwnd) + 1)
+    user32.GetWindowTextW(hwnd, buffer, len(buffer))
+    return int(hwnd), buffer.value
+
+
+def clipboard_sequence():
+    if not IS_WINDOWS:
+        raise RuntimeError('Clipboard sequence is only available on Windows')
+    user32.GetClipboardSequenceNumber.restype = wintypes.DWORD
+    return user32.GetClipboardSequenceNumber()
+
+
+def send_paste():
+    """Send Ctrl+V without bringing any window to the foreground."""
+    if not IS_WINDOWS:
+        raise RuntimeError('External paste is only available on Windows')
+    # INPUT must include the full union, including MOUSEINPUT, on 64-bit Windows.
+    ULONG_PTR = wintypes.WPARAM
+    class MOUSEINPUT(ctypes.Structure):
+        _fields_ = [('dx', wintypes.LONG), ('dy', wintypes.LONG), ('mouseData', wintypes.DWORD),
+                    ('dwFlags', wintypes.DWORD), ('time', wintypes.DWORD), ('dwExtraInfo', ULONG_PTR)]
+    class KEYBDINPUT(ctypes.Structure):
+        _fields_ = [('wVk', wintypes.WORD), ('wScan', wintypes.WORD), ('dwFlags', wintypes.DWORD),
+                    ('time', wintypes.DWORD), ('dwExtraInfo', ULONG_PTR)]
+    class HARDWAREINPUT(ctypes.Structure):
+        _fields_ = [('uMsg', wintypes.DWORD), ('wParamL', wintypes.WORD), ('wParamH', wintypes.WORD)]
+    class INPUTUNION(ctypes.Union):
+        _fields_ = [('mi', MOUSEINPUT), ('ki', KEYBDINPUT), ('hi', HARDWAREINPUT)]
+    class INPUT(ctypes.Structure):
+        _fields_ = [('type', wintypes.DWORD), ('data', INPUTUNION)]
+    def key(code, up=False):
+        return INPUT(1, INPUTUNION(ki=KEYBDINPUT(code, 0, 2 if up else 0, 0, 0)))
+    keys = (INPUT * 4)(key(0x11), key(0x56), key(0x56, True), key(0x11, True))
+    user32.SendInput.argtypes = [wintypes.UINT, ctypes.POINTER(INPUT), ctypes.c_int]
+    user32.SendInput.restype = wintypes.UINT
+    if user32.SendInput(len(keys), keys, ctypes.sizeof(INPUT)) != len(keys):
+        raise OSError('Windows did not accept the complete paste keystroke')
