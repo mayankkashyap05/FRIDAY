@@ -1,65 +1,50 @@
-# Native island: audit and prototype status
+# Native FRIDAY UI
 
-This is a work-in-progress standalone prototype, **not** a replacement for the
-existing FRIDAY frontend. `main.py` imports `FridayUI, make_ui` from
-`_archive.ui_legacy` (line 39). Do not switch it until the facade, callbacks,
-API-key bootstrap, confirmations and shutdown semantics are implemented.
+`python main.py` starts the Qt facade in `ui/__init__.py`. The explicit
+`--headless` option runs Qt with the offscreen platform; it does not silently
+replace the normal interface when a graphical platform is unavailable. The
+facade provides the legacy-facing state, transcript, logging, visibility,
+callback, API-key and lifecycle methods. API-key entry and all widget work run
+on the Qt thread. Logs received before the event loop are buffered with a
+fixed limit.
+
+`bridge/event_bus.py` and `bridge/bridge.py` provide bounded event delivery and
+queued dispatch to Qt. `bridge/controller.py` connects the HUD and panel
+services. `panels/common.py` runs blocking operations on bounded workers and
+posts results back to Qt. Settings are validated and written atomically by
+`settings_store.py`; QSS resources are in `themes/`. The system tray uses
+`QSystemTrayIcon` in `tray/`.
+
+High-risk tool requests are gated by the backend's one-shot, argument-bound
+confirmation tokens and a separate human approval. The chat card displays a
+sanitized description and arguments; an answer applies only to its current
+request. Approval sends a message to the assistant, which must retry the exact
+tool call with its token. A disconnected assistant cannot approve via the
+card. The existing voice/text confirmation path also binds consent to the
+current pending token. This integration still requires real-session testing.
 
 ## Reference mapping
 
-* `core/anim.ts`: spring response 0.5 s, damping fraction 0.72, 1/240 s
-  integration substeps, settle thresholds 0.01 and 0.05; `island/island.ts`
-  caps the frame delta at 0.05 s. Ported in `island/physics.py`. The reference
-  shrink uses cubic-bezier (0.45, 0, 0.2, 1), 340 ms; the curve is ported,
-  but not yet connected to the widget.
-* `core/layout.ts`: compact 288 × 32, expanded 640 × 160, with 14/22 radii;
-  `core/closed.ts`: closed minimum 80 × 24. The prototype uses the attached Hey
-  Nixi screenshot's larger visible resting notch rather than these sizes.
-* `island/fsm.ts`: hidden/petit/home/coucou, 15 s home collapse, 60 s petit
-  hide, 0.5 s hover open, 0.6 s hover close and greeting completion, 10 s
-  hovered greeting. `island/fsm.py` ports the model. `VoiceHUD` uses it for
-  hover open and close, with hover-open enabled to match the requested behavior;
-  Coucou defaults that preference to off. Not all FSM inputs are wired yet.
-* `mochi/desktop-logic.ts`: drag threshold 3 px and gaze tanh(dx/260, dy/200).
-  The prototype uses these two numbers, but not the full mascot engine or
-  desktop lifecycle. `mascot/eyes.py` draws a simplified pill rig.
-* `win32_tauri_ref/src/platform/windows.rs`: `island/win32_overlay.py` isolates
-  native style and hit-test calls. Windows behavior, mixed-DPI coordinates and
-  actual click-through have not been validated; fullscreen and focus handling
-  remain unimplemented.
+* `core/anim.ts`: spring response 0.5 s, damping 0.72, 1/240 s integration
+  substeps and settle thresholds 0.01 and 0.05. The frame delta is capped at
+  0.05 s. The 340 ms cubic-bezier shrink curve is implemented but not wired.
+* `core/layout.ts`: compact 288 × 32 and expanded 640 × 160. The resting notch
+  uses the larger proportions from the visual references.
+* `island/fsm.ts`: 15 s home collapse, 60 s petit hide, 0.5 s hover-open,
+  0.6 s hover-close and 10 s hovered greeting. Hover-open is enabled by
+  default here, unlike the reference.
+* `mochi/desktop-logic.ts`: 3 px drag threshold and tanh-based gaze. Eyes are
+  drawn as pills; the full reference mascot engine is not used.
+* `island/win32_overlay.py` isolates Windows native calls. Other platforms use
+  guarded fallbacks.
 
-## Backend contract and current bridge
+## Known limitations
 
-`bridge/protocol.py` defines a small native state and log model;
-`bridge/event_bus.py` contains a bounded, lock-protected producer queue; and
-`bridge/bridge.py` contains the Qt-thread dispatcher and model. The dispatcher
-always posts queued Qt signals, batches delivery on its owning thread and bounds
-its backlog. `bridge/controller.py` connects state, amplitude and logs to the
-prototype HUD. The demo simulates amplitude; it is not attached to FRIDAY.
-
-The legacy facade additionally exposes `root.after`, `mainloop`,
-visibility/shutdown, `write_log`, state/connection/persona, mute/silent
-toggles, speech and live transcript methods, vision/arcade callbacks,
-`on_text_command` and API-key bootstrap. `_archive/ui_legacy/{protocol,
-event_bus,bridge,controller}.py` are reference contracts only. Their Electron
-transport and rendering must not be imported into the native frontend. The
-main entry point depends on those APIs and its startup worker and tray invoke
-them cross-thread. A complete Qt facade must retain startup log buffering,
-approval and API-key handling before replacing the import.
-
-## Current limitations
-
-The demo and generated snapshots are visual prototypes only. Panel content is
-placeholder text except for display of logs sent through the standalone bridge;
-there are no backend calls. Command entry, approval flows, tray, settings
-persistence and `main.py` migration are absent. Eyes do not implement Coucou's
-full animation; drag has a simple snap zone but no persistence or inertia. The
-widget repaints continuously and does not meet the idle CPU target. Window
-activation, fullscreen behavior and input hit-testing require real Windows
-verification.
-
-The sandbox preview run uses Qt's offscreen software rasterizer with temporary
-stub GL/EGL/DBus libraries, because the container lacks those system libraries.
-The stubs are outside the repository and are not a production dependency. The
-rendered PNGs validate the QPainter prototype only; they do not validate native
-Windows composition or show functional panels.
+Dictation does not yet paste into an external application. Not every requested
+panel feature, eye animation or visual detail is implemented. The offscreen
+snapshot renderer exercises actual widgets but is not a native desktop test.
+Windows nonactivation, hit testing, focus, DPI, fullscreen detection, tray and
+live backend flows need validation on Windows. The Qt timer repaints regularly;
+no idle-CPU target has been verified. The Linux test sandbox uses temporary
+system-library stubs solely for offscreen rendering; these are not runtime
+dependencies or substitutes for desktop system libraries.

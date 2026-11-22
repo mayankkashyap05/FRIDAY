@@ -1,9 +1,8 @@
 """Regressions for the Windows 11 first-run failures.
 
 These are the errors reported from real Windows 11 runs (Python 3.13.3), plus
-the latent ones found while auditing the same code paths. The Linux sandbox
-cannot launch Electron, so each bug is pinned at the level where it *is*
-observable here: source invariants and pure-Python behaviour.
+the latent ones found while auditing the same code paths. The Linux sandbox cannot validate Win32 behavior directly; source invariants
+and pure-Python behavior are supplemented by native Windows testing.
 """
 
 from __future__ import annotations
@@ -20,36 +19,23 @@ import pytest
 REPO = Path(__file__).resolve().parent.parent
 
 
-# ── Error 1: the overlay must never be started through a shell shim ─────────
+# ── Native overlay bring-up invariants ──────────────────────────────────────
 
-def test_electron_is_spawned_from_the_real_binary_not_a_shim():
-    """Windows' ``electron.cmd`` is a cmd.exe batch file: terminating it leaves
-    the actual Electron process running. The controller must spawn
-    ``node_modules/electron/dist/electron.exe`` directly."""
-    source = (REPO / "ui" / "controller.py").read_text(encoding="utf-8")
-    assert "electron.exe" in source
-    # No string literal may name a batch shim (prose in the docstring may
-    # mention it; an executable path may not).
-    import ast
-
-    literals = [node.value for node in ast.walk(ast.parse(source))
-                if isinstance(node, ast.Constant) and isinstance(node.value, str)]
-    offenders = [value for value in literals
-                 if value.lower().endswith((".cmd", ".bat"))]
-    assert not offenders, f"never launch Electron through a shim: {offenders}"
-    spawn = source[source.index("self._electron = subprocess.Popen("):]
-    spawn = spawn[: spawn.index("\n            )")]
-    assert "[str(exe), str(self.app_dir.resolve())]" in spawn, (
-        "spawn [exe, app_dir] with no shell and no cmd.exe")
-    assert "shell=True" not in source
+def test_native_overlay_uses_shape_hit_testing_not_an_input_transparent_window():
+    source = (REPO / "ui" / "island" / "voice_hud.py").read_text(encoding="utf-8")
+    native = (REPO / "ui" / "island" / "win32_overlay.py").read_text(encoding="utf-8")
+    assert "FramelessWindowHint" in source and "WA_TranslucentBackground" in source
+    assert "WindowTransparentForInput" not in source and ".setMask(" not in source
+    assert "WM_NCHITTEST" in native and "current_path()" in native
+    assert "0x08000000" in native and "0x00000080" in native
 
 
-def test_renderer_and_electron_are_verified_before_launch():
-    """A missing build must fail loudly with the fix commands, not open a
-    blank window."""
-    source = (REPO / "ui" / "controller.py").read_text(encoding="utf-8")
-    assert "renderer_built" in source
-    assert "npm install" in source and "npm run build" in source
+def test_native_ui_has_no_external_renderer_launch():
+    source = (REPO / "ui" / "bridge" / "controller.py").read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    assert not any(isinstance(node, (ast.Import, ast.ImportFrom)) and
+                   any(alias.name == 'subprocess' for alias in node.names)
+                   for node in ast.walk(tree))
 
 
 # ── Error 2: TrayThread died importing actions.friday_wake ──────────────────

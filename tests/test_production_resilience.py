@@ -1,6 +1,8 @@
 """Tests for production hardening, audio resilience, human confirmation gate, and security."""
 import unittest
 import asyncio
+import tempfile
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 from actions import desktop
@@ -16,7 +18,9 @@ class ProductionSafetyTest(unittest.TestCase):
 
     def test_desktop_control_exec_free(self):
         # desktop_control should handle declarative commands safely
-        res = desktop.desktop_control({"action": "stats"})
+        with tempfile.TemporaryDirectory() as directory:
+            with patch.object(desktop, "_get_desktop", return_value=Path(directory)):
+                res = desktop.desktop_control({"action": "stats"})
         self.assertIn("Desktop stats", res)
 
     def test_desktop_task_dispatcher(self):
@@ -86,7 +90,8 @@ class HumanConsentVerificationTest(unittest.TestCase):
         live = main.FridayLive(ui_mock)
 
         tok = issue_confirmation_token("cmd_control", {"command": "dir"})
-        # Human explicitly says yes
+        # Associate the human approval with the exact pending call.
+        live._request_card_confirmation("run dir", tok)
         live._mark_human_confirmed()
 
         async def run():
@@ -117,7 +122,9 @@ class HumanConsentVerificationTest(unittest.TestCase):
 
         async def run():
             with patch.dict(live._tool_handlers, handlers):
-                # Human verbally approves Action A
+                # The most recently displayed request is Action A.
+                live._request_card_confirmation("delete test.txt", tok_b)
+                live._request_card_confirmation("run dir", tok_a)
                 live._mark_human_confirmed()
 
                 # Action A executes with its valid token

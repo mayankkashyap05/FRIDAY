@@ -75,10 +75,13 @@ test = [
 [project.scripts]
 friday = "main:main"
 
-# The native UI prototype is in the `ui` Python package.
+# The native UI is in the `ui` Python package.
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 norecursedirs = ["vendor", "_archive", ".venv", "node_modules"]
+[tool.setuptools.package-data]
+"ui.themes" = ["*.qss"]
+
 [tool.setuptools.packages.find]
 exclude = ["vendor*", "_archive*", "tests*"]

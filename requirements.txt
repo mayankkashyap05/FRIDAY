@@ -6,11 +6,8 @@ requests>=2.30.0,<3.0.0
 websockets>=13.0,<17.0
 
 # Desktop GUI & Automation
-# The ambient Siri overlay is an Electron + React + WebGL2 app in ui/app and
-# talks to Python over a loopback WebSocket (see ui/controller.py). Python needs
-# no GUI toolkit at all: `websockets` (above) is the transport and Pillow encodes
-# the camera frames. Node.js 20+ is required once to run:
-#     cd ui/app && npm install && npm run build
+# Native Qt desktop interface
+PySide6>=6.8.0
 pillow>=10.0.0,<13.0.0
 pyautogui>=0.9.54
 pyperclip>=1.9.0
