@@ -30,6 +30,7 @@ classifiers = [
 ]
 
 dependencies = [
+    "PySide6>=6.8.0",
     "sounddevice>=0.5.0",
     "google-genai>=1.0.0,<2.0.0",
     "websockets>=13.0,<17.0",
@@ -74,12 +75,7 @@ test = [
 [project.scripts]
 friday = "main:main"
 
-# The UI is the `ui` Python package. Its pixels live in ui/app (Electron + Vite
-# + React + WebGL2) and are built once with:
-#     cd ui/app && npm install && npm run build
-# ui/app/dist is loaded by the Electron main process at runtime.
-
-
+# The native UI prototype is in the `ui` Python package.
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
