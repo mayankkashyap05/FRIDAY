@@ -28,11 +28,14 @@ class UiController:
         self.apply_settings(self.store.values)
 
     def apply_settings(self, settings):
+        from PySide6.QtGui import QGuiApplication
         self.hud.set_theme(settings['theme'])
-        self.hud.setWindowOpacity(settings['opacity'] / 100.0)
+        if QGuiApplication.platformName() != 'offscreen':
+            self.hud.setWindowOpacity(settings['opacity'] / 100.0)
         self.hud.fsm.open_on_hover = settings['hover_to_expand']
         self.hud.animations_enabled = settings['animations']
         self.hud.hide_on_fullscreen = settings['hide_on_fullscreen']
+        self.hud.set_sound_enabled(settings.get('ui_sounds', True))
         self.hud.notch_colour = settings['notch_colour']
         self.hud.eye_colour = settings['eye_colour']
         self.hud.face_out_positions = dict(settings['face_out_positions'])
@@ -44,29 +47,41 @@ class UiController:
         try:
             self.store.update(face_out_positions=positions)
             self.hud.face_out_positions = positions
-        except OSError as exc: self.bridge.ingest(f'ERR: Cannot save position: {exc}')
+        except OSError as exc:
+            self.bridge.ingest(f'ERR: Cannot save position: {exc}')
 
     def submit_text(self, text):
         text = str(text or '').strip()
-        if not text: return
+        if not text:
+            return
         callback = self.on_text_command
         if not callback:
             self.bridge.ingest('SYS: Assistant is not connected yet.')
             return
         self.bridge.ingest(f'You: {text}')
+
         def send():
             return callback(text)
+
         def done(result, error):
-            if error: self.bridge.ingest(f'ERR: Command failed: {error}')
+            if error:
+                self.bridge.ingest(f'ERR: Command failed: {error}')
+
         self.services.run(send, done)
 
     def _mode_requested(self, mode):
-        if self.on_mode_requested: self.on_mode_requested(mode)
+        if self.on_mode_requested:
+            self.on_mode_requested(mode)
 
     def _state_changed(self, state):
-        scenes = {'IDLE': 'resting', 'LISTENING': 'listening', 'THINKING': 'working',
-                  'SPEAKING': 'speaking', 'MUTED': 'muted', 'ERROR': 'error'}
-        # Do not dismiss a panel or interrupt a user typing on backend activity.
+        scenes = {
+            'IDLE': 'resting',
+            'LISTENING': 'listening',
+            'THINKING': 'working',
+            'SPEAKING': 'speaking',
+            'MUTED': 'muted',
+            'ERROR': 'error',
+        }
         scene = scenes.get(state, 'resting')
         if self.hud.state in self.hud.panels or self.hud.state == 'hover':
             self.hud._activity_scene = scene
