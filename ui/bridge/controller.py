@@ -81,6 +81,7 @@ class UiController:
 
     def _amplitude_changed(self, level):
         self.hud.audio_level = level
+        self.hud._wake_animation()
         self.hud.update()
 
     def shutdown(self):

@@ -118,3 +118,73 @@ def test_detached_face_has_reference_capsule_proportions():
     assert bounds.width() == 184 and bounds.height() == 96
     assert not hud.current_path().contains(bounds.topLeft())
     hud.shutdown(); hud.close(); app.processEvents()
+
+
+def test_theme_selectors_and_font_warning_free(qt_app):
+    from pathlib import Path
+    from PySide6.QtCore import qInstallMessageHandler
+    messages = []
+    old = qInstallMessageHandler(lambda _type, _context, text: messages.append(text))
+    try:
+        hud = VoiceHUD()
+        for theme in ('dark', 'light'):
+            text = (Path('ui/themes') / (theme + '.qss')).read_text()
+            assert text.lstrip().startswith('* {') and 'font-size: 9pt' in text
+            hud.set_theme(theme)
+            qt_app.processEvents()
+        hud.shutdown(); hud.close()
+    finally:
+        qInstallMessageHandler(old)
+    assert not [msg for msg in messages if 'QFont::setPointSize' in msg]
+
+
+def test_idle_timer_sleeps_and_wakes(qt_app):
+    hud = VoiceHUD()
+    hud.preview_mode = True
+    hud.set_scene('resting', immediate=True)
+    hud._last_cursor = __import__('PySide6.QtGui', fromlist=['QCursor']).QCursor.pos()
+    hud._animate()
+    assert hud._timer.interval() == 150
+    hud.set_scene('hover')
+    assert hud._timer.interval() == 16
+    hud.shutdown(); hud.close()
+
+
+def test_tile_hover_press_and_tab_hit_feedback(qt_app):
+    from PySide6.QtCore import QEvent, QPointF, Qt
+    from PySide6.QtGui import QMouseEvent
+    hud = VoiceHUD(); hud.set_scene('hover', immediate=True)
+    tile = hud._primary_rects((hud.width()-640)/2)[1].center()
+    move = QMouseEvent(QEvent.MouseMove, tile, tile, Qt.NoButton, Qt.NoButton, Qt.NoModifier)
+    hud.mouseMoveEvent(move)
+    assert hud._hover_tile == 1 and hud.tile_hover_springs[1].target == 1
+    press = QMouseEvent(QEvent.MouseButtonPress, tile, tile, Qt.LeftButton, Qt.LeftButton, Qt.NoModifier)
+    hud.mousePressEvent(press)
+    assert hud.tile_press_springs[1].target == 1
+    release = QMouseEvent(QEvent.MouseButtonRelease, tile, tile, Qt.LeftButton, Qt.NoButton, Qt.NoModifier)
+    hud.mouseReleaseEvent(release)
+    assert hud.tile_press_springs[1].target == 0
+    assert hud.state == 'dictation'
+    hud.shutdown(); hud.close()
+
+
+def test_panel_remains_inset_and_hidden_on_collapse(headless_ui):
+    hud = headless_ui.hud
+    hud.set_scene('chat', immediate=True)
+    assert not hud._panel_stack.isHidden()
+    assert hud._panel_stack.geometry().right() < hud.current_path().boundingRect().right() - 5
+    hud.set_scene('resting')
+    assert hud._panel_stack.isHidden()
+    assert hud.content_alpha_spring.target == 0
+
+
+def test_mismatched_tile_press_release_does_not_activate(qt_app):
+    from PySide6.QtCore import QEvent, Qt
+    from PySide6.QtGui import QMouseEvent
+    hud = VoiceHUD(); hud.set_scene('hover', immediate=True)
+    a, b = [r.center() for r in hud._primary_rects((hud.width()-640)/2)[:2]]
+    emitted = []; hud.mode_requested.connect(emitted.append)
+    hud.mousePressEvent(QMouseEvent(QEvent.MouseButtonPress, a, a, Qt.LeftButton, Qt.LeftButton, Qt.NoModifier))
+    hud.mouseReleaseEvent(QMouseEvent(QEvent.MouseButtonRelease, b, b, Qt.LeftButton, Qt.NoButton, Qt.NoModifier))
+    assert hud.state == 'hover' and emitted == []
+    hud.shutdown(); hud.close()

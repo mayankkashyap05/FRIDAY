@@ -106,3 +106,40 @@ def test_ambiguous_or_negative_sentences_are_not_approval():
     assert main.FridayLive._is_explicit_approval('Yes, I approve!')
     assert not main.FridayLive._is_explicit_approval("Yes, but don't do it")
     assert not main.FridayLive._is_explicit_approval('I do not approve')
+
+
+def test_speaker_pcm_amplitude_and_cancel_reset(monkeypatch):
+    import asyncio
+    import struct
+    from types import SimpleNamespace
+    from unittest.mock import MagicMock
+    import main
+    import numpy as numpy
+    amplitudes = []
+    ui = MagicMock()
+    ui.muted = False
+    ui.silent_mode = False
+    ui.bridge.setAmplitude.side_effect = amplitudes.append
+    ui._dispatch.side_effect = lambda fn, *args: fn(*args)
+    class Stream:
+        def __init__(self, **kwargs): pass
+        def start(self): pass
+        def write(self, chunk): pass
+        def stop(self): pass
+        def close(self): pass
+    monkeypatch.setattr(main, 'sd', SimpleNamespace(RawOutputStream=Stream))
+    monkeypatch.setattr(main, 'np', numpy)
+    live = main.FridayLive(ui)
+    async def run():
+        live.audio_in_queue = asyncio.Queue()
+        task = asyncio.create_task(live._play_audio())
+        live.audio_in_queue.put_nowait(struct.pack('<128h', *([8192] * 128)))
+        for _ in range(100):
+            if amplitudes: break
+            await asyncio.sleep(.001)
+        task.cancel()
+        try: await task
+        except asyncio.CancelledError: pass
+    asyncio.run(run())
+    assert amplitudes[0] == pytest.approx(.75)
+    assert amplitudes[-1] == 0

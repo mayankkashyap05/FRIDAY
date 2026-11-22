@@ -14,6 +14,8 @@ class TrayMenu:
         self.icon = QSystemTrayIcon(QIcon(image))
         self.icon.setToolTip('FRIDAY')
         self.menu = QMenu()
+        self.menu.setStyleSheet(ui.hud.styleSheet())
+        ui.hud.theme_changed.connect(self._theme_changed)
         self.menu.addAction('Show / hide notch', self.toggle_visible)
         self.menu.addAction('Pull out / dock', self.toggle_dock)
         self.menu.addAction('Mute / unmute microphone', ui._toggle_mute)
@@ -23,6 +25,9 @@ class TrayMenu:
         self.icon.setContextMenu(self.menu)
         self.icon.activated.connect(self._activated)
         if QSystemTrayIcon.isSystemTrayAvailable(): self.icon.show()
+
+    def _theme_changed(self, _theme):
+        self.menu.setStyleSheet(self.ui.hud.styleSheet())
 
     def _activated(self, reason):
         if reason == QSystemTrayIcon.Trigger: self.toggle_visible()
@@ -41,6 +46,7 @@ class TrayMenu:
         if self.icon is None:
             return
         self.icon.hide()
+        self.ui.hud.theme_changed.disconnect(self._theme_changed)
         self.icon.activated.disconnect(self._activated)
         self.icon.setContextMenu(None)
         self.icon.deleteLater()

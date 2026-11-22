@@ -1,9 +1,17 @@
-* { color: #141518; font-family: "Segoe UI"; font-size: 11px; }
+* { color: #141518; font-family: "Segoe UI"; font-size: 9pt; }
 QWidget { background: transparent; }
-QPushButton, QLineEdit, QComboBox, QDateTimeEdit, QListWidget, QPlainTextEdit { background: #FFFFFF; border: 1px solid #D3D6DC; border-radius: 7px; padding: 5px; }
+QPushButton, QLineEdit, QComboBox, QDateTimeEdit, QListWidget, QPlainTextEdit { background: rgba(255, 255, 255, 0.9); border: 1px solid #D3D6DC; border-radius: 12px; padding: 5px; }
 QPushButton:hover { background: #E5E7EB; }
 QPushButton:pressed { background: #A7C7FF; }
+QLineEdit:focus, QComboBox:focus, QDateTimeEdit:focus, QPlainTextEdit:focus { border: 1px solid rgba(56, 130, 246, 0.65); }
 QLabel#panelTitle { font-weight: bold; color: #141518; }
 QScrollArea { border: 0; background: transparent; }
-QMenu { background: #F5F6F8; border: 1px solid #D3D6DC; }
+QScrollBar:vertical { background: transparent; width: 6px; margin: 0px; }
+QScrollBar:horizontal { background: transparent; height: 6px; margin: 0px; }
+QScrollBar::handle { background: #C7C7CC; border-radius: 3px; min-height: 20px; min-width: 20px; }
+QScrollBar::handle:hover { background: #AEAEB2; }
+QScrollBar::add-line, QScrollBar::sub-line { width: 0px; height: 0px; }
+QScrollBar::add-page, QScrollBar::sub-page { background: transparent; }
+QMenu { background: #F5F6F8; border: 1px solid #D3D6DC; border-radius: 10px; padding: 4px; }
+QMenu::item { padding: 6px 14px; border-radius: 6px; }
 QMenu::item:selected { background: #E5E7EB; }

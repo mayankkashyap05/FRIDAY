@@ -24,9 +24,10 @@ def main():
         gradient = QLinearGradient(0, 0, 1366, 768)
         gradient.setColorAt(0, QColor('#211091')); gradient.setColorAt(.55, QColor('#441077')); gradient.setColorAt(1, QColor('#090018'))
         painter.fillRect(0, 0, 1366, 768, gradient)
-        layer = QImage(hud.width()*2, hud.height()*2, QImage.Format_ARGB32_Premultiplied)
-        layer.setDevicePixelRatio(2); layer.fill(Qt.transparent)
-        hp = QPainter(layer); hud.render(hp, QPoint()); hp.end()
+        # Grab the widget at the offscreen platform's native DPR. Direct
+        # QWidget.render into an image misplaces opacity-effect children.
+        app.processEvents()
+        layer = hud.grab().toImage()
         painter.drawImage(QPoint((1366-hud.width())//2, 0), layer)
         painter.end()
         path = out / f'{name}.png'

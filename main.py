@@ -1378,6 +1378,7 @@ class FridayLive:
         self._last_audio_write_ts = 0.0
         # Throttle for live mic-amplitude updates pushed to the Siri orb.
         self._last_mic_amp_ts = 0.0
+        self._last_speaker_amp_ts = 0.0
         self._ready         = False
         self._phase         = PHASE_IDLE
         self._phase_lock    = threading.Lock()
@@ -1564,6 +1565,7 @@ class FridayLive:
         if value:
             self._set_phase(PHASE_SPEAKING)
         elif was:
+            self.ui._dispatch(self.ui.bridge.setAmplitude, 0.0)
             # Releasing must be unconditional. `_set_phase(PHASE_LISTENING)`
             # deliberately does nothing when muted, which left the machine (and
             # therefore audio ducking) stuck on SPEAKING for the rest of the
@@ -2647,7 +2649,7 @@ class FridayLive:
             except Exception:
                 amp = 0.0
             now = time.monotonic()
-            if now - self._last_mic_amp_ts > 0.03:
+            if not assistant_speaking and now - self._last_mic_amp_ts > 0.03:
                 self._last_mic_amp_ts = now
                 self.ui._dispatch(self.ui.bridge.setAmplitude, amp)
 
@@ -2832,6 +2834,14 @@ class FridayLive:
                 if not self._is_speaking:
                     self.set_speaking(True)
                 self._last_play_ts = time.monotonic()
+                if np is not None and self._last_play_ts - self._last_speaker_amp_ts >= 0.03:
+                    try:
+                        samples = np.frombuffer(chunk, dtype='<i2').astype(np.float32)
+                        amp = min(1.0, float(np.sqrt(np.mean(samples * samples))) / 32768.0 * 3.0) if samples.size else 0.0
+                    except (ValueError, TypeError):
+                        amp = 0.0
+                    self._last_speaker_amp_ts = self._last_play_ts
+                    self.ui._dispatch(self.ui.bridge.setAmplitude, amp)
                 await asyncio.to_thread(stream.write, chunk)
                 self._last_audio_write_ts = time.monotonic()
 
@@ -2850,6 +2860,7 @@ class FridayLive:
         except Exception as e:
             print(f"[FRIDAY] ⚠️ Audio output failed ({e}) — running in silent mode")
             self.ui.write_log(f"SYS: Speaker unavailable ({str(e)[:60]}).")
+            self.set_speaking(False)
             while True:
                 chunk = await self.audio_in_queue.get()
                 self.set_speaking(False)
