@@ -81,7 +81,7 @@ def test_hover_tabs_and_face_out_drag():
     app = QApplication.instance() or QApplication([])
     hud = VoiceHUD(); hud.set_scene('hover', immediate=True)
     left = (hud.width()-hud.width_spring.value)/2
-    local = QPointF(left+155, 135)
+    local = hud._tab_rects(left)[0].center()
     press = QMouseEvent(QEvent.MouseButtonPress, local, local, Qt.LeftButton, Qt.LeftButton, Qt.NoModifier)
     release = QMouseEvent(QEvent.MouseButtonRelease, local, local, Qt.LeftButton, Qt.NoButton, Qt.NoModifier)
     hud.mousePressEvent(press); hud.mouseReleaseEvent(release)
@@ -106,7 +106,7 @@ def test_hover_hit_areas_match_painted_tiles():
     primary = hud._primary_rects(left); tabs = hud._tab_rects(left)
     assert all(not a.intersects(b) for i, a in enumerate(primary) for b in primary[i+1:])
     assert all(not a.intersects(b) for i, a in enumerate(tabs) for b in tabs[i+1:])
-    assert not any(rect.contains(QPointF(left + 283, 80)) for rect in primary)
+    assert not any(rect.contains(QPointF(left + 43, 22)) for rect in primary)
     hud.close()
 
 

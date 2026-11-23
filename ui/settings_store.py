@@ -8,7 +8,7 @@ import threading
 
 DEFAULTS = {'opacity': 100, 'theme': 'dark', 'notch_colour': '#000000',
             'eye_colour': '#ffffff', 'hover_to_expand': True,
-            'hide_on_fullscreen': True, 'animations': True,
+            'hide_on_fullscreen': True, 'animations': True, 'ui_sounds': False,
             'dictation_style': 'Exact', 'paste_mode': 'paste', 'face_out_positions': {}}
 
 
@@ -39,7 +39,7 @@ class SettingsStore:
             c = QColor(str(value))
             if not c.isValid(): return
             value = c.name()
-        elif key in ('hover_to_expand', 'hide_on_fullscreen', 'animations'):
+        elif key in ('hover_to_expand', 'hide_on_fullscreen', 'animations', 'ui_sounds'):
             if not isinstance(value, bool): return
         elif key == 'dictation_style':
             if value not in ('Exact', 'Clean', 'Polished'): return

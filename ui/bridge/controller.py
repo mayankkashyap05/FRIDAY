@@ -32,6 +32,7 @@ class UiController:
         self.hud.setWindowOpacity(settings['opacity'] / 100.0)
         self.hud.fsm.open_on_hover = settings['hover_to_expand']
         self.hud.animations_enabled = settings['animations']
+        self.hud.sounds.enabled = settings.get('ui_sounds', False)
         self.hud.hide_on_fullscreen = settings['hide_on_fullscreen']
         self.hud.notch_colour = settings['notch_colour']
         self.hud.eye_colour = settings['eye_colour']

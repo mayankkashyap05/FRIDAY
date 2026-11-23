@@ -15,3 +15,5 @@ QScrollBar::add-page, QScrollBar::sub-page { background: transparent; }
 QMenu { background: #F5F6F8; border: 1px solid #D3D6DC; border-radius: 10px; padding: 4px; }
 QMenu::item { padding: 6px 14px; border-radius: 6px; }
 QMenu::item:selected { background: #E5E7EB; }
+
+QWidget#approvalCard { background: #FFFFFF; border: 1px solid #B47800; border-radius: 12px; }

@@ -1,3 +1,4 @@
+from html import escape
 from PySide6.QtCore import Signal
 from PySide6.QtWidgets import QPlainTextEdit, QLineEdit, QLabel, QWidget, QHBoxLayout, QPushButton
 from .common import Panel
@@ -11,14 +12,18 @@ class ChatPanel(Panel):
         self.input = QLineEdit(); self.input.setPlaceholderText('Message FRIDAY'); self.input.returnPressed.connect(self.submit); self.layout.addWidget(self.input)
         self.buttons([('Send', self.submit)])
         self._approval_callback = None
-        self.approval = QWidget(); row = QHBoxLayout(self.approval); row.setContentsMargins(0, 0, 0, 0)
+        self.approval = QWidget(); self.approval.setObjectName('approvalCard'); row = QHBoxLayout(self.approval); row.setContentsMargins(8, 8, 8, 8)
         self.approval_description = QPlainTextEdit(); self.approval_description.setReadOnly(True); self.approval_description.setMaximumHeight(85); row.addWidget(self.approval_description, 1)
         self.approve = QPushButton('Approve'); self.deny = QPushButton('Deny')
         self.approve.clicked.connect(lambda: self.answer(True)); self.deny.clicked.connect(lambda: self.answer(False))
         row.addWidget(self.approve); row.addWidget(self.deny); self.layout.addWidget(self.approval); self.approval.hide()
         self.layout.addWidget(self.result)
     def append_log(self, entry):
-        self.feed.appendPlainText(str(getattr(entry, 'text', entry)))
+        text = escape(str(getattr(entry, 'text', entry))).replace('\n', '<br>')
+        user = getattr(entry, 'channel', '') == 'user'
+        align = 'right' if user else 'left'
+        background = '#24436a' if user else '#303238'
+        self.feed.appendHtml(f'<p align="{align}"><span style="background-color:{background}; color:#F5F6F8;">&nbsp;{text}&nbsp;</span></p>')
     def submit(self):
         text = self.input.text().strip()
         if text: self.input.clear(); self.submitted.emit(text)

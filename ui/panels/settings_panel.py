@@ -17,6 +17,7 @@ class SettingsPanel(Panel):
         self.hover = QCheckBox('Expand on hover'); self.hover.setChecked(store.values['hover_to_expand']); self.layout.addWidget(self.hover)
         self.fullscreen = QCheckBox('Hide over fullscreen apps'); self.fullscreen.setChecked(store.values['hide_on_fullscreen']); self.layout.addWidget(self.fullscreen)
         self.animations = QCheckBox('Animations'); self.animations.setChecked(store.values['animations']); self.layout.addWidget(self.animations)
+        self.ui_sounds = QCheckBox('UI sounds'); self.ui_sounds.setChecked(store.values['ui_sounds']); self.layout.addWidget(self.ui_sounds)
         self.layout.addWidget(QLabel('Notch colour'))
         self.notch_colour = QComboBox()
         for colour in ('#000000', '#141518', '#1d1f23', '#242c3a'):
@@ -32,6 +33,7 @@ class SettingsPanel(Panel):
         self.hover.toggled.connect(lambda v: self.save(hover_to_expand=v))
         self.fullscreen.toggled.connect(lambda v: self.save(hide_on_fullscreen=v))
         self.animations.toggled.connect(lambda v: self.save(animations=v))
+        self.ui_sounds.toggled.connect(lambda v: self.save(ui_sounds=v))
         self.notch_colour.currentTextChanged.connect(lambda v: self.save(notch_colour=v))
         self.eye_colour.currentTextChanged.connect(lambda v: self.save(eye_colour=v))
         self.buttons([('Dock', self.dock_requested.emit), ('Pull out', self.face_out_requested.emit)])

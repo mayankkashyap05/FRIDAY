@@ -1,12 +1,13 @@
 """Translucent, top-docked FRIDAY island."""
 import time
 import math
-from PySide6.QtCore import Qt, QRectF, QTimer, Signal, QPoint, QPointF, QEvent
-from PySide6.QtGui import QColor, QPainter, QFont, QCursor, QPen, QLinearGradient, QPainterPath
+from PySide6.QtCore import Qt, QRectF, QTimer, Signal, QPoint, QPointF, QEvent, QDateTime
+from PySide6.QtGui import QColor, QPainter, QFont, QCursor, QPen, QLinearGradient, QPainterPath, QRegion, QTransform
 from PySide6.QtWidgets import QWidget, QApplication, QStackedWidget, QScrollArea, QLineEdit, QDateTimeEdit, QComboBox, QGraphicsOpacityEffect
 from .geometry import notch_path
 from .physics import Spring, Tracked
 from .fsm import IslandStateMachine
+from .audio import UiSounds
 from . import win32_overlay
 from ui.mascot.eyes import Blink, gaze, paint_eyes
 from ui.mascot.moods import PokeMood
@@ -46,6 +47,7 @@ class VoiceHUD(QWidget):
         self.panels = {}
         self._panel_stack = None
         self.preview_mode = False
+        self.sounds = UiSounds()
         self.fsm = IslandStateMachine(on_transition=self._fsm_transition)
         # Hey Nixi interaction requests hover-open; Coucou's preference defaults off.
         self.fsm.open_on_hover = True
@@ -74,6 +76,9 @@ class VoiceHUD(QWidget):
         self.poke_mood = PokeMood()
         self._hover_tile = self._hover_tab = self._pressed_tile = self._pressed_tab = -1
         self._active_tab = -1
+        self._active_mode = 0
+        self._pressed_back = False
+        self._panel_mask = None
         self._drop_active = False
         self._hover_back = False
         self._scene_started = time.monotonic()
@@ -97,6 +102,7 @@ class VoiceHUD(QWidget):
     def shutdown(self):
         self._timer.stop()
         self._fullscreen_timer.stop()
+        self.sounds.close()
 
     def closeEvent(self, event):
         self.shutdown()
@@ -140,7 +146,15 @@ class VoiceHUD(QWidget):
                 bounds = QRectF(screen.availableGeometry())
                 rect = clamp_to_screen(QRectF(pos[0], pos[1], self.width(), self.height()), bounds)
                 self.move(int(rect.x()), int(rect.y()))
-        if self.state != state: self._scene_started = time.monotonic()
+        previous = self.state
+        if previous != state:
+            self._scene_started = time.monotonic()
+            cue = ('dictation_start' if state == 'dictation' else
+                   'dictation_stop' if previous == 'dictation' else
+                   'completion' if state == 'success' else 'error' if state == 'error' else
+                   'detach' if state == 'face_out' else 'dock' if previous == 'face_out' else
+                   'expand' if state == 'hover' else 'collapse' if state == 'resting' and previous == 'hover' else None)
+            if cue and not self.preview_mode: self.sounds.play(cue)
         self.state = state
         tabs = ('chat', 'media', 'tasks', 'vision', 'shelf', 'settings')
         if state in tabs:
@@ -149,13 +163,13 @@ class VoiceHUD(QWidget):
             else: self.tab_indicator_spring.target = self._active_tab
         if state in ('resting', 'listening', 'working', 'speaking', 'muted', 'error', 'success'):
             self._activity_scene = state
-        sizes = {'resting': (240, 48), 'hover': (640, 160), 'chat': (640, 260), 'media': (640, 220), 'tasks': (640, 220), 'vision': (640, 220), 'shelf': (640, 220), 'settings': (640, 260), 'write': (640, 200), 'face_out': (184, 96)}
+        sizes = {'resting': (240, 48), 'hover': (640, 160), 'chat': (640, 260), 'media': (640, 220), 'tasks': (640, 220), 'vision': (640, 220), 'shelf': (640, 260), 'settings': (640, 260), 'write': (640, 200), 'face_out': (184, 96)}
         w, h = sizes.get(state, (380, 64))
         for spring, target in ((self.width_spring, w), (self.height_spring, h)):
             if immediate: spring.set(target)
             else: spring.animate_to(target)
         eye_x = (self.width()-w)/2+74 if state in ('hover', 'chat', 'media', 'tasks', 'vision', 'shelf', 'settings', 'write') else (self.width()/2 if state in ('resting', 'face_out') else (self.width()-w)/2+55)
-        eye_y = (min(h/2, 76) if state in ('hover', 'chat', 'media', 'tasks', 'vision', 'shelf', 'settings', 'write') else h/2) + (18 if state == 'face_out' else 0)
+        eye_y = ((42 + h - 16)/2 if state in ('hover', 'chat', 'media', 'tasks', 'vision', 'shelf', 'settings', 'write') else h/2) + (18 if state == 'face_out' else 0)
         for spring, target in ((self.shoulder_spring, 0 if state == 'face_out' else 1),
                                (self.eye_cx_spring, eye_x), (self.eye_cy_spring, eye_y),
                                (self.eye_scale_spring, 2 if state == 'face_out' else (1.3 if w > 480 else 1)),
@@ -230,6 +244,17 @@ class VoiceHUD(QWidget):
         self._panel_stack.setCurrentWidget(page)
         left = (self.width()-width)/2
         self._panel_stack.setGeometry(int(left+145), 43, max(0, int(width-166)), max(0, int(height-64)))
+        # Clip only the child stack; the top-level overlay remains unmasked for
+        # native hit testing. Coordinates are translated into stack-local space.
+        transform = QTransform().translate(-self._panel_stack.x(), -self._panel_stack.y())
+        region = QRegion(transform.map(self.current_path()).toFillPolygon().toPolygon())
+        card_path = QPainterPath()
+        card_path.addRoundedRect(QRectF(left+145, 42, max(0, width-160), max(0, height-54)), 16, 16)
+        region &= QRegion(transform.map(card_path).toFillPolygon().toPolygon())
+        region &= QRegion(self._panel_stack.rect())
+        if region != self._panel_mask:
+            self._panel_stack.setMask(region)
+            self._panel_mask = region
         self._panel_stack.show()
 
     def append_log(self, entry):
@@ -243,6 +268,7 @@ class VoiceHUD(QWidget):
         from pathlib import Path
         self.theme = theme
         self.setStyleSheet((Path(__file__).resolve().parent.parent / 'themes' / f'{theme}.qss').read_text(encoding='utf-8'))
+        if 'media' in self.panels: self.panels['media'].set_theme(theme)
         self.theme_changed.emit(theme)
         self.update()
 
@@ -330,22 +356,27 @@ class VoiceHUD(QWidget):
         w, h = self.width_spring.value, self.height_spring.value
         left = (self.width()-w)/2
         expanded = self.state in ('hover', 'chat', 'media', 'tasks', 'vision', 'shelf', 'settings', 'write') and w > 480
+        if expanded:
+            p.setPen(Qt.NoPen)
+            p.setBrush(QColor('#1a1c22' if self.theme == 'dark' else '#e5e7eb'))
+            p.drawRoundedRect(QRectF(left+18, 52, 112, max(30, h-66)), 16, 16)
         cx, cy = self.eye_cx_spring.value + self.shake_spring.value, self.eye_cy_spring.value
         elapsed = time.monotonic()-self._epoch
         look = (0, 0) if self.preview_mode else (self.gaze_x_spring.value, self.gaze_y_spring.value)
-        if self.state == 'working': look = (math.sin(elapsed * 1.7) * .45, look[1])
+        if self.state == 'working': look = (.45 + math.sin(elapsed * 1.7) * .2, -.2)
         if self.poke_mood.is_dizzy(elapsed): look = (math.sin(elapsed * 10) * .8, math.cos(elapsed * 10) * .5)
         blink = 1 if self.preview_mode else getattr(self, '_blink_value', 1)
         if self.state in ('working', 'error'): blink *= .8
+        if self.state == 'muted': blink *= .5
         scale = self.eye_scale_spring.value * self.boop_scale_spring.value
         if self.state == 'speaking': scale *= 1 + .06 * self.audio_smooth_spring.value
         if not self.preview_mode and self._timer.interval() == 16:
             cy += .4 * math.sin(elapsed * math.pi / 2)
         paint_eyes(p, cx, cy, colour=readable_eye_colour(self.eye_colour, background),
                    scale=scale, spacing=self.eye_spacing_spring.value, blink=blink, look=look,
-                   halo=self.state in ('resting', 'listening', 'dictation', 'face_out'),
-                   halo_strength=(1 + .4 * math.sin(elapsed * 2) + self.halo_spring.value) if self.state in ('listening', 'dictation') else 1,
-                   halo_colour=pal['accent'] if self.state in ('listening', 'dictation') else '#ffffff',
+                   halo=self.state in ('resting', 'listening', 'speaking', 'dictation', 'face_out'),
+                   halo_strength=(1 + .4 * math.sin(elapsed * 2) + self.halo_spring.value) if self.state in ('listening', 'speaking', 'dictation') else 1,
+                   halo_colour=pal['accent'] if self.state in ('listening', 'speaking', 'dictation') else '#ffffff',
                    dim=self.state == 'muted',
                    happy=self.state == 'success' and time.monotonic()-self._scene_started < .8)
         p.setPen(QColor(pal['ink'])); p.setFont(QFont('Segoe UI', 10))
@@ -353,8 +384,15 @@ class VoiceHUD(QWidget):
             p.save(); p.setOpacity(max(0.0, min(1.0, self.content_alpha_spring.value)))
             self._paint_expanded(p, left, w, h, pal); p.restore()
         elif self.state not in ('resting', 'face_out'):
-            labels = {'listening':'Listening', 'working':'Working', 'speaking':'Speaking', 'dictation':'Dictation', 'write':'Write a command', 'success':'Done', 'muted':'Mic muted', 'error':'Something went wrong'}
-            p.drawText(QRectF(left+95, 0, w-160, h), Qt.AlignVCenter, labels.get(self.state, self.state.title()))
+            labels = {'listening':'Listening', 'working':'Working on it', 'speaking':'Speaking', 'dictation':'Dictation', 'write':'Write a command', 'success':'Done', 'muted':'Mic muted', 'error':'Something went wrong'}
+            label = labels.get(self.state, self.state.title())
+            transcript = self.live_transcript.strip() if self.state in ('listening', 'speaking', 'dictation') else ''
+            label_rect = QRectF(left+95, 0 if not transcript else 8, w-160, h if not transcript else 24)
+            p.drawText(label_rect, Qt.AlignVCenter, label)
+            if transcript:
+                p.setFont(QFont('Segoe UI', 8)); p.setPen(QColor(pal['muted']))
+                clipped = p.fontMetrics().elidedText(transcript, Qt.ElideRight, int(w-160))
+                p.drawText(QRectF(left+95, 31, w-160, 22), Qt.AlignVCenter, clipped)
             if self.state in ('listening', 'speaking', 'dictation'):
                 self._paint_waveform(p, left+w-48, h/2, pal)
                 if self.state == 'dictation':
@@ -364,19 +402,31 @@ class VoiceHUD(QWidget):
                         p.drawEllipse(QRectF(left+190+i*9, h/2-size/2, size, size))
             elif self.state == 'working':
                 p.setPen(Qt.NoPen)
-                for i in range(5):
+                for i in range(3):
                     alpha = int(80 + 175 * (.5 + .5 * math.sin(elapsed * 4 - i * .6)))
-                    p.setBrush(QColor(255, 255, 255, alpha)); p.drawEllipse(QRectF(left+w-58+i*8, h/2-2, 4, 4))
+                    p.setBrush(QColor(255, 255, 255, alpha)); p.drawEllipse(QRectF(cx+22+i*7, cy-11-i*4, 3+i, 3+i))
             elif self.state in ('success', 'error', 'muted'):
                 colour = '#34C759' if self.state == 'success' else '#FF3B30'
                 p.setPen(QPen(QColor(colour), 2.0, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin))
                 x, y = left+w-36, h/2
                 if self.state == 'success':
-                    p.drawLine(QPointF(x-7,y), QPointF(x-2,y+5)); p.drawLine(QPointF(x-2,y+5), QPointF(x+7,y-6))
+                    progress = max(0.0, min(1.0, (time.monotonic()-self._scene_started)/.32))
+                    first = min(1.0, progress*2)
+                    p.drawLine(QPointF(x-7, y), QPointF(x-7+5*first, y+5*first))
+                    if progress > .5:
+                        second = (progress-.5)*2
+                        p.drawLine(QPointF(x-2,y+5), QPointF(x-2+9*second,y+5-11*second))
                 elif self.state == 'error':
-                    p.drawLine(QPointF(x,y-7), QPointF(x,y+2)); p.drawPoint(QPointF(x,y+7))
+                    p.setBrush(QColor('#FF3B30')); p.setPen(Qt.NoPen); p.drawEllipse(QRectF(x-10, y-10, 20, 20))
+                    p.setPen(QPen(QColor('#ffffff'), 2.0, Qt.SolidLine, Qt.RoundCap))
+                    p.drawLine(QPointF(x,y-6), QPointF(x,y+2)); p.drawPoint(QPointF(x,y+6))
                 else:
                     p.drawRoundedRect(QRectF(x-4,y-8,8,13), 4, 4); p.drawLine(QPointF(x-8,y+8), QPointF(x+8,y-8))
+        if expanded and self.state == 'tasks' and 'tasks' in self.panels:
+            p.setPen(QColor(pal['ink'])); p.setFont(QFont('Segoe UI', 10, QFont.DemiBold))
+            p.drawText(QRectF(left+18, h-67, 112, 20), Qt.AlignCenter, self.panels['tasks'].progress_text)
+            p.setPen(QColor(pal['muted'])); p.setFont(QFont('Segoe UI', 8))
+            p.drawText(QRectF(left+18, h-48, 112, 16), Qt.AlignCenter, 'Completed')
         if self._dock_preview:
             p.setBrush(Qt.NoBrush); p.setPen(QPen(QColor(56, 130, 246, 150), 2))
             p.drawPath(path)
@@ -396,33 +446,71 @@ class VoiceHUD(QWidget):
             p.drawRoundedRect(QRectF(x + i*6, cy-height/2, 3, height), 1.5, 1.5)
 
     def _paint_expanded(self, p, left, w, h, pal):
-        if self.state != 'hover' and self._hover_back:
-            p.setPen(Qt.NoPen); p.setBrush(QColor(255, 255, 255, 22))
-            p.drawRoundedRect(QRectF(left+140, 12, 83, 27), 12, 12)
-        p.setFont(QFont('Segoe UI', 9, QFont.DemiBold)); p.setPen(QColor(pal['muted']))
-        p.drawText(QRectF(left+145, 15, w-165, 22), Qt.AlignVCenter, ('FRIDAY  /  ' if self.state == 'hover' else '‹  FRIDAY  /  ') + self.state.upper())
-        p.setFont(QFont('Segoe UI', 10))
-        if self.state == 'hover':
-            for i, (rect, label) in enumerate(zip(self._primary_rects(left), ('Command', 'Dictate', 'Write'))):
-                hover = max(0, min(1, self.tile_hover_springs[i].value))
-                press = max(0, min(1, self.tile_press_springs[i].value))
-                p.save(); p.translate(rect.center()); p.scale(1-.04*press, 1-.04*press); p.translate(-rect.center())
-                p.setPen(QPen(QColor(255, 255, 255, int(20+26*hover+56*press)), 1))
-                p.setBrush(QColor(38+int(12*hover), 39+int(12*hover), 43+int(12*hover)))
-                p.drawRoundedRect(rect.adjusted(.5, .5, -.5, -.5), 14, 14)
-                self._paint_tile_icon(p, rect.center().x(), rect.top()+19, i, pal['ink'])
-                p.setPen(QColor(pal['ink'])); p.drawText(QRectF(rect.left(), rect.top()+34, rect.width(), 25), Qt.AlignCenter, label)
-                p.restore()
-            if self._active_tab >= 0:
-                indicator = QRectF(left+145+self.tab_indicator_spring.value*70, 125, 70, 22)
-                p.setPen(Qt.NoPen); p.setBrush(QColor(255, 255, 255, 26)); p.drawRoundedRect(indicator, 10, 10)
-            for i, (rect, label) in enumerate(zip(self._tab_rects(left), ('Chat', 'Media', 'Tasks', 'Vision', 'Shelf', 'Settings'))):
-                if i == self._hover_tab:
-                    p.setPen(Qt.NoPen); p.setBrush(QColor(255, 255, 255, 20)); p.drawRoundedRect(rect, 10, 10)
-                p.setPen(QColor(pal['muted'])); p.drawText(rect, Qt.AlignCenter, label)
+        # The 34px header starts 8px below the top; content begins at y=42.
+        if self.state != 'hover':
+            p.setPen(Qt.NoPen); p.setBrush(QColor(pal['surface']))
+            p.drawRoundedRect(QRectF(left+145, 42, w-160, max(30, h-55)), 16, 16)
         else:
             p.setPen(Qt.NoPen); p.setBrush(QColor(pal['surface']))
-            p.drawRoundedRect(QRectF(left+145, 42, w-160, max(30, h-55)), 14, 14)
+            p.drawRoundedRect(QRectF(left+145, 52, w-160, max(30, h-66)), 16, 16)
+            p.setFont(QFont('Segoe UI', 11, QFont.DemiBold)); p.setPen(QColor(pal['ink']))
+            p.drawText(QRectF(left+164, 65, w-200, 24), Qt.AlignVCenter, 'FRIDAY')
+            p.setFont(QFont('Segoe UI', 9)); p.setPen(QColor(pal['muted']))
+            p.drawText(QRectF(left+164, 92, w-200, 24), Qt.AlignVCenter, 'Ready when you are')
+        for i, rect in enumerate(self._primary_rects(left)):
+            hover = max(0, min(1, self.tile_hover_springs[i].value))
+            press = max(0, min(1, self.tile_press_springs[i].value))
+            active = i == self._active_mode
+            p.save(); p.translate(rect.center()); p.scale(1-.04*press, 1-.04*press); p.translate(-rect.center())
+            if active:
+                fill = QColor('#ffffff' if self.theme == 'dark' else '#141518')
+                icon = '#141518' if self.theme == 'dark' else '#ffffff'
+            else:
+                fill = QColor('#1d1f24' if self.theme == 'dark' else '#e5e7eb')
+                if hover: fill = fill.lighter(115 if self.theme == 'dark' else 95)
+                icon = pal['ink']
+            p.setPen(Qt.NoPen); p.setBrush(fill); p.drawEllipse(rect)
+            self._paint_tile_icon(p, rect.center().x(), rect.center().y(), i, icon)
+            p.restore()
+        if self.state != 'hover':
+            back = self._back_rect(left)
+            if self._hover_back:
+                p.setPen(Qt.NoPen); p.setBrush(QColor(255, 255, 255, 28)); p.drawRoundedRect(back, 12, 12)
+            p.setPen(QColor(pal['ink'])); p.setFont(QFont('Segoe UI', 15)); p.drawText(back, Qt.AlignCenter, '‹')
+        p.setPen(QColor(pal['muted'])); p.setFont(QFont('Segoe UI', 9))
+        p.drawText(QRectF(left+190, 8, 225, 28), Qt.AlignRight | Qt.AlignVCenter,
+                   QDateTime.currentDateTime().toString('ddd d MMM H:mm'))
+        tabs = self._tab_rects(left)
+        if self._active_tab >= 0 and self.state != 'hover':
+            p.setPen(Qt.NoPen); p.setBrush(QColor(255, 255, 255, 30) if self.theme == 'dark' else QColor(20, 21, 24, 25))
+            p.drawRoundedRect(QRectF(left+431+self.tab_indicator_spring.value*32, 8, 30, 28), 10, 10)
+        for i, rect in enumerate(tabs):
+            if i == self._hover_tab:
+                p.setPen(Qt.NoPen); p.setBrush(QColor(255, 255, 255, 25) if self.theme == 'dark' else QColor(20, 21, 24, 20)); p.drawRoundedRect(rect, 10, 10)
+            self._paint_tab_icon(p, rect.center(), i, pal['ink'])
+
+    @staticmethod
+    def _paint_tab_icon(p, center, index, colour):
+        p.save(); p.translate(center)
+        p.setPen(QPen(QColor(colour), 1.5, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin)); p.setBrush(Qt.NoBrush)
+        if index == 0:
+            p.drawRoundedRect(QRectF(-8, -6, 16, 11), 4, 4)
+            p.drawLine(QPointF(-3, 5), QPointF(-5, 8))
+        elif index == 1:
+            p.drawLine(QPointF(-1, -7), QPointF(-1, 5)); p.drawLine(QPointF(-1, -7), QPointF(6, -9)); p.drawLine(QPointF(6, -9), QPointF(6, 3))
+            p.drawEllipse(QRectF(-5, 3, 4, 3)); p.drawEllipse(QRectF(2, 1, 4, 3))
+        elif index == 2:
+            for y in (-6, 0, 6):
+                p.drawEllipse(QRectF(-8, y-2, 4, 4)); p.drawLine(QPointF(-1, y), QPointF(8, y))
+        elif index == 3:
+            eye = QPainterPath(QPointF(-9, 0)); eye.quadTo(0, -9, 9, 0); eye.quadTo(0, 9, -9, 0); p.drawPath(eye); p.drawEllipse(QRectF(-2, -2, 4, 4))
+        elif index == 4:
+            path = QPainterPath(QPointF(-8, -6)); path.lineTo(-1, -6); path.lineTo(1, -3); path.lineTo(8, -3); path.lineTo(8, 7); path.lineTo(-8, 7); path.closeSubpath(); p.drawPath(path)
+        else:
+            p.drawEllipse(QRectF(-6, -6, 12, 12)); p.drawEllipse(QRectF(-2, -2, 4, 4))
+            for x1,y1,x2,y2 in ((0,-9,0,-6),(0,6,0,9),(-9,0,-6,0),(6,0,9,0)):
+                p.drawLine(QPointF(x1,y1), QPointF(x2,y2))
+        p.restore()
 
     @staticmethod
     def _paint_tile_icon(p, x, y, index, colour):
@@ -441,11 +529,15 @@ class VoiceHUD(QWidget):
 
     @staticmethod
     def _primary_rects(left):
-        return [QRectF(left+145+i*145, 52, 134, 64) for i in range(3)]
+        return [QRectF(left+12+i*34, 8, 28, 28) for i in range(3)]
 
     @staticmethod
     def _tab_rects(left):
-        return [QRectF(left+145+i*70, 125, 70, 22) for i in range(6)]
+        return [QRectF(left+431+i*32, 8, 30, 28) for i in range(6)]
+
+    @staticmethod
+    def _back_rect(left):
+        return QRectF(left+118, 8, 30, 28)
 
     def enterEvent(self, event):
         self._wake_animation()
@@ -467,9 +559,10 @@ class VoiceHUD(QWidget):
             self._drag_start = event.globalPosition().toPoint(); self._window_start = self.pos(); self._dragged = False
             self._last_drag_point = self._drag_start; self._last_drag_time = time.monotonic()
             self._drag_velocity = (0.0, 0.0)
-            self._pressed_tile = self._hit_primary(event.position()) if self.state == 'hover' else -1
+            self._pressed_tile = self._hit_primary(event.position()) if self.state in ('hover', *self.panels) and self.width_spring.value > 480 else -1
             left = (self.width()-self.width_spring.value)/2
-            self._pressed_tab = next((i for i, rect in enumerate(self._tab_rects(left)) if rect.contains(event.position())), -1) if self.state == 'hover' else -1
+            self._pressed_tab = next((i for i, rect in enumerate(self._tab_rects(left)) if rect.contains(event.position())), -1) if self.state in ('hover', *self.panels) and self.width_spring.value > 480 else -1
+            self._pressed_back = self.state in self.panels and self._back_rect(left).contains(event.position())
             if self._pressed_tile >= 0:
                 self.tile_press_springs[self._pressed_tile].target = 1
                 self._wake_animation()
@@ -480,17 +573,21 @@ class VoiceHUD(QWidget):
         return next((i for i, rect in enumerate(self._primary_rects(left)) if rect.contains(point)), -1)
 
     def mouseMoveEvent(self, event):
-        if self.state in self.panels:
-            left = (self.width()-self.width_spring.value)/2
-            self._hover_back = QRectF(left+140, 12, 83, 27).contains(event.position())
-            self.update()
-        if self.state == 'hover':
+        if self.state in ('hover', *self.panels) and self.width_spring.value > 480:
+            old_hover = (self._hover_tile, self._hover_tab)
             self._hover_tile = self._hit_primary(event.position())
             left = (self.width()-self.width_spring.value)/2
             self._hover_tab = next((i for i, rect in enumerate(self._tab_rects(left)) if rect.contains(event.position())), -1)
+            self._hover_back = self.state in self.panels and self._back_rect(left).contains(event.position())
+            if old_hover != (self._hover_tile, self._hover_tab) and (self._hover_tile >= 0 or self._hover_tab >= 0):
+                self.sounds.play('hover')
+            tip = (('Command', 'Dictate', 'Write')[self._hover_tile] if self._hover_tile >= 0 else
+                   ('Chat', 'Media', 'Tasks', 'Vision', 'Shelf', 'Settings')[self._hover_tab] if self._hover_tab >= 0 else
+                   'Back' if self._hover_back else '')
+            if self.toolTip() != tip: self.setToolTip(tip)
             for i, spring in enumerate(self.tile_hover_springs): spring.target = float(i == self._hover_tile)
             self._wake_animation()
-        if self._drag_start is not None and self._pressed_tile < 0 and self._pressed_tab < 0:
+        if self._drag_start is not None and self._pressed_tile < 0 and self._pressed_tab < 0 and not self._pressed_back:
             delta = event.globalPosition().toPoint()-self._drag_start
             if delta.manhattanLength() > 3:
                 self._dragged = True
@@ -512,8 +609,9 @@ class VoiceHUD(QWidget):
 
     def mouseReleaseEvent(self, event):
         for spring in self.tile_press_springs: spring.target = 0
-        pressed_tile, pressed_tab = self._pressed_tile, self._pressed_tab
+        pressed_tile, pressed_tab, pressed_back = self._pressed_tile, self._pressed_tab, self._pressed_back
         self._pressed_tile = self._pressed_tab = -1
+        self._pressed_back = False
         self._wake_animation()
         if self._drag_start is not None and self.state == 'face_out' and self._dragged:
             pointer = event.globalPosition().toPoint()
@@ -548,9 +646,21 @@ class VoiceHUD(QWidget):
             if eye_area.contains(event.position()):
                 self.poke_mood.poke(time.monotonic()-self._epoch)
                 self.boop_scale_spring.value = .8; self.boop_scale_spring.target = 1
-        elif self._drag_start is not None and not self._dragged and self.state in self.panels and event.position().y() < 42:
-            self.set_scene('hover')
-            self.fsm.force_home()
+        elif self._drag_start is not None and not self._dragged and self.state in ('hover', *self.panels):
+            point = event.position()
+            left = (self.width()-self.width_spring.value)/2
+            if pressed_back and self._back_rect(left).contains(point):
+                self.sounds.play('click')
+                self.set_scene('hover'); self.fsm.force_home()
+            elif pressed_tile >= 0 and self._primary_rects(left)[pressed_tile].contains(point):
+                self._active_mode = pressed_tile
+                self.sounds.play('click')
+                target = ('listening', 'dictation', 'write')[pressed_tile]
+                self.mode_requested.emit(target); self.set_scene(target)
+            elif pressed_tab >= 0 and self._tab_rects(left)[pressed_tab].contains(point):
+                self.fsm.user_interacted()
+                self.sounds.play('click')
+                self.set_scene(('chat', 'media', 'tasks', 'vision', 'shelf', 'settings')[pressed_tab])
         elif self._drag_start is not None and not self._dragged and self.state in ('resting', 'listening', 'working', 'speaking', 'muted', 'error', 'success'):
             eye_area = QRectF(self.eye_cx_spring.value-36, self.eye_cy_spring.value-22, 72, 44)
             if eye_area.contains(event.position()):
@@ -560,21 +670,6 @@ class VoiceHUD(QWidget):
             else:
                 self.fsm.mouse_entered()
                 self.fsm.click()
-        elif self._drag_start is not None and not self._dragged and self.state == 'hover':
-            point = event.position()
-            left = (self.width()-self.width_spring.value)/2
-            for index, rect in enumerate(self._primary_rects(left)):
-                if index == pressed_tile and rect.contains(point):
-                    target = ('listening', 'dictation', 'write')[index]
-                    self.mode_requested.emit(target)
-                    self.set_scene(target)
-                    break
-            else:
-                for index, rect in enumerate(self._tab_rects(left)):
-                    if index == pressed_tab and rect.contains(point):
-                        self.fsm.user_interacted()
-                        self.set_scene(('chat', 'media', 'tasks', 'vision', 'shelf', 'settings')[index])
-                        break
         self._drag_start = self._window_start = None
         super().mouseReleaseEvent(event)
 

@@ -25,7 +25,8 @@ def test_native_overlay_uses_shape_hit_testing_not_an_input_transparent_window()
     source = (REPO / "ui" / "island" / "voice_hud.py").read_text(encoding="utf-8")
     native = (REPO / "ui" / "island" / "win32_overlay.py").read_text(encoding="utf-8")
     assert "FramelessWindowHint" in source and "WA_TranslucentBackground" in source
-    assert "WindowTransparentForInput" not in source and ".setMask(" not in source
+    assert "WindowTransparentForInput" not in source and "self.setMask(" not in source
+    assert "self._panel_stack.setMask(" in source
     assert "WM_NCHITTEST" in native and "current_path()" in native
     assert "0x08000000" in native and "0x00000080" in native
 
