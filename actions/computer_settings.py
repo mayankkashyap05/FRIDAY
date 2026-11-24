@@ -817,8 +817,9 @@ def computer_settings(
 
     if action == "volume_set":
         try:
-            volume_set(int(value or 50))
-            return f"Volume set to {value}%."
+            vval = 50 if value is None or value == "" else int(value)
+            volume_set(vval)
+            return f"Volume set to {vval}%."
         except Exception as e:
             return f"Could not set volume: {e}"
 
@@ -826,8 +827,9 @@ def computer_settings(
         if action == "brightness" and value is None:
             return "Brightness up or down? Say 'brightness up' or 'brightness down', sir."
         try:
-            brightness_set(int(value or 50))
-            return f"Brightness set to {value}%."
+            bval = 50 if value is None or value == "" else int(value)
+            brightness_set(bval)
+            return f"Brightness set to {bval}%."
         except Exception as e:
             return f"Could not set brightness: {e}"
 

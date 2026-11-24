@@ -1,4 +1,4 @@
-﻿import json
+import json
 import re
 import sys
 from pathlib import Path
@@ -274,8 +274,9 @@ def replan(goal: str, completed_steps: list, failed_step: dict, error: str) -> d
     import google.generativeai as genai
 
     genai.configure(api_key=_get_api_key())
+    from config.models import MODEL_FLASH
     model = genai.GenerativeModel(
-        model_name="gemini-2.5-flash",
+        model_name=MODEL_FLASH,
         system_instruction=PLANNER_PROMPT
     )
 

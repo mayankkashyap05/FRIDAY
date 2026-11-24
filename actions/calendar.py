@@ -49,7 +49,7 @@ def calendar_action(parameters: dict, response=None, player=None) -> str:
 
         if action in ("list", "upcoming", "today", "agenda"):
             max_results = int(params.get("max_results", 10) or 10)
-            tz = timezone(timedelta(hours=5))
+            tz = datetime.now().astimezone().tzinfo
             now = datetime.now(tz)
             time_min = now.isoformat()
             time_max = (now + timedelta(days=30)).isoformat()
@@ -71,9 +71,10 @@ def calendar_action(parameters: dict, response=None, player=None) -> str:
             summary = str(params.get("summary", "")).strip()
             if not summary:
                 return "I need the event title (summary), sir."
-            now = datetime.now(timezone(timedelta(hours=5)))
+            now = datetime.now().astimezone()
             start_iso = _parse_time(params.get("start"), now)
-            end_iso   = _parse_time(params.get("end"), now + timedelta(hours=1))
+            start_dt  = datetime.fromisoformat(start_iso)
+            end_iso   = _parse_time(params.get("end"), start_dt + timedelta(hours=1))
             body = {
                 "summary":     summary,
                 "start":       {"dateTime": start_iso},
@@ -97,7 +98,7 @@ def calendar_action(parameters: dict, response=None, player=None) -> str:
             query = str(params.get("summary", "")).strip().lower()
             if not query:
                 return "I need event_id or a summary to delete, sir."
-            now = datetime.now(timezone(timedelta(hours=5)))
+            now = datetime.now().astimezone()
             events = svc.events().list(
                 calendarId="primary", timeMin=now.isoformat(),
                 maxResults=50, singleEvents=True,

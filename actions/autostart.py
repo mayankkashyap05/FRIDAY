@@ -2,7 +2,10 @@
 # Friday — start automatically on Windows login (HKCU Run key)
 
 import sys
-import winreg
+try:
+    import winreg
+except ImportError:
+    winreg = None
 from pathlib import Path
 
 RUN_KEY_PATH = r"Software\Microsoft\Windows\CurrentVersion\Run"

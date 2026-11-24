@@ -228,7 +228,7 @@ def _move_mouse(x: int, y: int, duration: float = 0.3) -> str:
 def _drag(x1: int, y1: int, x2: int, y2: int, duration: float = 0.5) -> str:
     """Drags from (x1,y1) to (x2,y2)."""
     _ensure_pyautogui()
-    _pg().drag(x1 - _pg().position()[0], y1 - _pg().position()[1])
+    _pg().moveTo(x1, y1)
     _pg().dragTo(x2, y2, duration=duration)
     return f"Dragged from ({x1},{y1}) to ({x2},{y2})"
 
@@ -384,10 +384,11 @@ def _analyze_screen_for_element(description: str) -> tuple[int, int] | None:
     try:
         import google.generativeai as genai
         import io
+        import api_keys
 
-        cfg_path = API_CONFIG_PATH
-        with open(cfg_path, "r") as f:
-            api_key = json.load(f)["gemini_api_key"]
+        api_key = api_keys.next_key()
+        if not api_key:
+            return None
 
         genai.configure(api_key=api_key)
         model = genai.GenerativeModel(MODEL_FLASH_LITE)

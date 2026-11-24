@@ -105,12 +105,13 @@ def add_rule(kind: str, threshold: float, above: bool = True,
 
 
 def remove_rule(rid: int) -> str:
-    rules = _load()
-    before = len(rules)
-    rules[:] = [r for r in rules if r.get("id") != rid]
-    if len(rules) == before:
-        return f"No alert with ID {rid}, sir."
-    _save()
+    with _lock:
+        rules = _load()
+        before = len(rules)
+        rules[:] = [r for r in rules if r.get("id") != rid]
+        if len(rules) == before:
+            return f"No alert with ID {rid}, sir."
+        _save()
     return f"Alert ID {rid} removed, sir."
 
 
@@ -129,26 +130,26 @@ def list_rules() -> str:
 
 def check_rules(cooldown: float = _DEFAULT_COOLDOWN) -> list[str]:
     """Return alert texts for rules that just crossed their threshold."""
-    rules = _load()
-    alerts = []
-    now = time.time()
-    for r in rules:
-        value, label = _read_value(r.get("kind", ""))
-        if value is None:
-            continue
-        above = bool(r.get("above", True))
-        hit = value > r.get("threshold", 100) if above else value < r.get("threshold", 0)
-        if not hit:
-            continue
-        if now - float(r.get("last_fired", 0)) < cooldown:
-            continue
-        r["last_fired"] = now
-        msg = r.get("message") or (
-            f"{label} is {'above' if above else 'below'} {r['threshold']}% "
-            f"right now ({value:.0f}%).")
-        alerts.append(f"[Monitor] {msg} (ID {r['id']})")
-    if alerts:
-        with _lock:
+    with _lock:
+        rules = _load()
+        alerts = []
+        now = time.time()
+        for r in rules:
+            value, label = _read_value(r.get("kind", ""))
+            if value is None:
+                continue
+            above = bool(r.get("above", True))
+            hit = value > r.get("threshold", 100) if above else value < r.get("threshold", 0)
+            if not hit:
+                continue
+            if now - float(r.get("last_fired", 0)) < cooldown:
+                continue
+            r["last_fired"] = now
+            msg = r.get("message") or (
+                f"{label} is {'above' if above else 'below'} {r['threshold']}% "
+                f"right now ({value:.0f}%).")
+            alerts.append(f"[Monitor] {msg} (ID {r['id']})")
+        if alerts:
             _save()
     return alerts
 
@@ -292,7 +293,7 @@ def check_email_watch() -> list[str]:
         with imaplib.IMAP4_SSL("imap.gmail.com", 993, timeout=30) as conn:
             conn.login(user, pwd)
             conn.select("INBOX")
-            typ, data = conn.search(None, "ALL")
+            typ, data = conn.uid("search", None, "ALL")
             if typ != "OK" or not data or not data[0]:
                 return []
             uids = [int(u) for u in data[0].split()]

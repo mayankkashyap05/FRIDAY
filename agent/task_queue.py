@@ -92,10 +92,29 @@ class TaskQueue:
             self._queue.append(task)
             self._queue.sort(key=lambda t: (t.priority, t.created_at))
             self._tasks[task_id] = task
+            self._prune_history_locked()
             self._condition.notify()
 
         print(f"[TaskQueue] 📥 Task queued: [{task_id}] {goal[:60]}")
         return task_id
+
+    _MAX_TASK_HISTORY = 500
+
+    def _prune_history_locked(self) -> None:
+        if len(self._tasks) <= self._MAX_TASK_HISTORY:
+            return
+        terminal = (TaskStatus.COMPLETED, TaskStatus.FAILED, TaskStatus.CANCELLED)
+        finished = [
+            (tid, t.completed_at or t.created_at)
+            for tid, t in self._tasks.items()
+            if t.status in terminal
+        ]
+        if len(finished) <= self._MAX_TASK_HISTORY:
+            return
+        finished.sort(key=lambda item: item[1])
+        excess = len(self._tasks) - self._MAX_TASK_HISTORY
+        for tid, _ in finished[:excess]:
+            self._tasks.pop(tid, None)
 
     def cancel(self, task_id: str) -> bool:
 

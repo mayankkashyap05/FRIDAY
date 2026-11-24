@@ -123,7 +123,7 @@ def _ask_gemini(question: str, context: str) -> str:
         resp = client.models.generate_content(model=MODEL, contents=prompt)
         return (resp.text or "").strip() or "No answer, sir."
     except Exception as e:
-        if "flash" in MODEL or "429" in str(e):
+        if "429" in str(e) or "quota" in str(e).lower() or "resource_exhausted" in str(e).lower():
             try:
                 resp = client.models.generate_content(
                     model=MODEL_FLASH_LITE, contents=prompt)

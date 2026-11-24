@@ -23,8 +23,9 @@ def _clipboard_get() -> str:
             return pyperclip.paste()
         except Exception:
             pass
-    if _win_clip_get() is not None:
-        return _win_clip_get() or ""
+    val = _win_clip_get()
+    if val is not None:
+        return val
     return ""
 
 
@@ -54,10 +55,7 @@ def _win_clip_get() -> str | None:
             if not p:
                 return ""
             try:
-                size = kernel32.GlobalSize(h)
-                buf = ctypes.create_string_buffer(size)
-                kernel32.memcpy(buf, p, size)
-                return buf.value.decode("utf-8", errors="replace")
+                return ctypes.wstring_at(p)
             finally:
                 kernel32.GlobalUnlock(h)
         finally:

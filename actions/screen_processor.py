@@ -27,7 +27,9 @@ API_CONFIG_PATH = BASE_DIR / "config" / "api_keys.json"
 IMG_MAX_W = 640
 IMG_MAX_H = 360
 JPEG_Q    = 55
-VISION_MODEL = os.environ.get("FRIDAY_VISION_MODEL", "gemini-3.8-flash")
+from config.models import MODEL_FLASH
+
+VISION_MODEL = os.environ.get("FRIDAY_VISION_MODEL", MODEL_FLASH)
 
 
 def _get_api_key() -> str:

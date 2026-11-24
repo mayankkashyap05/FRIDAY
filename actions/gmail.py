@@ -145,6 +145,8 @@ def _send_gmail_api(creds, to: str, subject: str, body: str) -> str:
     import base64
     from email.mime.text import MIMEText
     svc = _gmail_service()
+    if svc is None:
+        return "Google authentication expired or missing. Please re-authenticate Google OAuth, sir."
     msg = MIMEText(body, "plain", "utf-8")
     msg["To"]      = to
     msg["Subject"] = subject
@@ -156,6 +158,8 @@ def _send_gmail_api(creds, to: str, subject: str, body: str) -> str:
 
 def _read_gmail_api(creds, limit: int) -> str:
     svc = _gmail_service()
+    if svc is None:
+        return "Google authentication expired or missing. Please re-authenticate Google OAuth, sir."
     res = svc.users().messages().list(
         userId="me", maxResults=min(int(limit or 5), 20),
         labelIds=["INBOX"], q="in:inbox").execute()
@@ -205,7 +209,12 @@ def gmail_action(
                         return "I need the message body, sir."
                     return _send_gmail_api(google_oauth.get_credentials(), to, subject, body)
                 if action in ("read", "check", "inbox", "latest"):
-                    return _read_gmail_api(google_oauth.get_credentials(), int(params.get("limit", 5)))
+                    try:
+                        limit_val = int(params.get("limit", 5) or 5)
+                    except (TypeError, ValueError):
+                        limit_val = 5
+                    return _read_gmail_api(google_oauth.get_credentials(), limit_val)
+                return f"Unknown gmail action: '{action}'. Use 'send' or 'read'."
             except Exception as e:
                 return f"Gmail API error: {e}"
     except Exception:
@@ -223,7 +232,11 @@ def gmail_action(
             return _send_gmail(cfg, to, subject, body)
 
         if action in ("read", "check", "inbox", "latest"):
-            return _read_gmail(cfg, int(params.get("limit", 5)))
+            try:
+                limit_val = int(params.get("limit", 5) or 5)
+            except (TypeError, ValueError):
+                limit_val = 5
+            return _read_gmail(cfg, limit_val)
 
         return f"Unknown Gmail action: {action}. Use 'send' or 'read', sir."
     except smtplib.SMTPAuthenticationError:

@@ -128,17 +128,20 @@ def _build_google_flights_url(
     }
     cabin_code = cabin_map.get(cabin.lower(), "1")
 
+    from urllib.parse import quote_plus
     base = "https://www.google.com/travel/flights"
+    q_orig = quote_plus(str(origin))
+    q_dest = quote_plus(str(destination))
 
     if return_date:
         url = (
-            f"{base}?q=Flights+from+{origin}+to+{destination}"
+            f"{base}?q=Flights+from+{q_orig}+to+{q_dest}"
             f"+on+{date}+returning+{return_date}"
             f"&curr=TRY"
         )
     else:
         url = (
-            f"{base}?q=Flights+from+{origin}+to+{destination}+on+{date}"
+            f"{base}?q=Flights+from+{q_orig}+to+{q_dest}+on+{date}"
             f"&curr=TRY"
         )
 
@@ -251,9 +254,16 @@ def _format_spoken(
             f"{dur_str}, {stop_str}, {price_str}."
         )
 
+    def _price_num(f: dict) -> float:
+        digits = re.sub(r"[^\d.]", "", str(f.get("price", "")))
+        try:
+            return float(digits) if digits else float("inf")
+        except ValueError:
+            return float("inf")
+
     cheapest = min(
         (f for f in flights if f.get("price")),
-        key=lambda x: re.sub(r"[^\d]", "", str(x.get("price", "99999"))) or "99999",
+        key=_price_num,
         default=None,
     )
     if cheapest:

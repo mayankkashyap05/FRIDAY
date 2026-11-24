@@ -154,7 +154,7 @@ def _normalize_voice(text) -> str:
          .replace("-", " ").replace("_", " "))
     aliases = {
         "default": "Aoede", "auto": "Aoede", "standart": "Aoede",
-        "normal": "Aoede", "classic": "Aoede",
+        "standard": "Aoede", "normal": "Aoede", "classic": "Aoede",
         "aoede": "Aoede", "charon": "Charon", "fenrir": "Fenrir",
         "kore": "Kore", "puck": "Puck", "zephyr": "Zephyr",
         "ayol": "Aoede", "erkak": "Charon",
@@ -1787,38 +1787,44 @@ class FridayLive:
             "smart_home_control":  (_smart_home, 30),
         }
 
-    async def _dispatch_tool(self, name: str, args: dict) -> ToolResult:
-        from safety import sanitize as _sanitize
+    async def _run_safety_gate(self, name: str, args: dict) -> ToolResult | None:
+        """Shared loop-guard, confirmation-token, human-consent, and face-verify gate.
+        Returns a ToolResult if the call is blocked, or None if it may proceed."""
+        from safety import (
+            needs_confirmation, describe, CONFIRM_MESSAGE, classify, Risk,
+            CONFIRM_PARAM, CONFIRM_TOKEN_PARAM, issue_confirmation_token, sanitize,
+        )
         blocked = self.loop_guard.check(name, args)
         if blocked:
             print(f"[FRIDAY] 🛑 {name} blocked by loop guard")
             return ToolResult(ok=False, content=blocked, error_kind="loop")
 
-        # ── Safety gate: high-risk actions need explicit user confirmation ──
-        from safety import (
-            needs_confirmation, describe, CONFIRM_MESSAGE, classify, Risk,
-            CONFIRM_PARAM, CONFIRM_TOKEN_PARAM, issue_confirmation_token,
-        )
         confirm = bool(args.pop(CONFIRM_PARAM, False))
         confirm_token = str(args.pop(CONFIRM_TOKEN_PARAM, ""))
         face_verify = bool(args.pop("face_verify", False))
-        # Do not redeem a one-shot token until the matching human approval exists.
+
         if confirm and classify(name, args) == Risk.HIGH and not self._has_human_confirmation(confirm_token):
-            return ToolResult(ok=True, content="Action blocked: human user has not verbally approved this yet.", error_kind="confirmation")
+            return ToolResult(
+                ok=True,
+                content="Action blocked: human user has not verbally approved this yet.",
+                error_kind="confirmation",
+            )
         if needs_confirmation(name, args, confirm=confirm, confirm_token=confirm_token):
             token = issue_confirmation_token(name, args) if not confirm else ""
             print(f"[FRIDAY] ⛔ {name} blocked — confirmation required")
             self.ui.write_log(f"SECURITY: '{describe(name, args)}' requires your approval.")
-            if token: self._request_card_confirmation(
-                f"{describe(name, args)}\n\n{json.dumps(_sanitize(name, args), ensure_ascii=False, indent=2, default=str)}", token)
+            if token:
+                self._request_card_confirmation(
+                    f"{describe(name, args)}\n\n{json.dumps(sanitize(name, args), ensure_ascii=False, indent=2, default=str)}",
+                    token,
+                )
+            log_tool(name, args, error="confirmation required")
             return ToolResult(
                 ok=True,
-                content=CONFIRM_MESSAGE.format(desc=describe(name, args),
-                                               param=CONFIRM_PARAM)
+                content=CONFIRM_MESSAGE.format(desc=describe(name, args), param=CONFIRM_PARAM)
                 + (f"\n[token: {token}]" if token else ""),
                 error_kind="confirmation",
             )
-        # Defense-in-depth: if confirm is asserted, require human verification (fail-closed)
         if not self._consume_human_confirmation(confirm, confirm_token):
             print(f"[FRIDAY] ⛔ {name} rejected — no human consent detected.")
             self.ui.write_log(f"SECURITY: '{name}' blocked — no verbal consent.")
@@ -1830,9 +1836,6 @@ class FridayLive:
         if confirm:
             self.ui.write_log(f"SECURITY: '{name}' approved by user.")
         if face_verify:
-            # Imported lazily, like every other action module (see
-            # _build_tool_handlers): binding the name at module scope here was
-            # a NameError waiting for the first face-verified tool call.
             from actions.vision_gesture import vision_gesture
 
             identity = await run_sync_tool(
@@ -1846,6 +1849,13 @@ class FridayLive:
                     content="Face identity verification failed. The requested action was not executed.",
                     error_kind="identity",
                 )
+        return None
+
+    async def _dispatch_tool(self, name: str, args: dict) -> ToolResult:
+        from safety import sanitize as _sanitize
+        gate_result = await self._run_safety_gate(name, args)
+        if gate_result is not None:
+            return gate_result
 
         entry = self._tool_handlers.get(name)
         if entry is None:
@@ -1992,49 +2002,14 @@ class FridayLive:
         result = "Done."
 
         # ── Loop guard: stop identical-arg / ping-pong tool loops in live mode ──
-        blocked = self.loop_guard.check(name, args)
-        if blocked:
-            print(f"[FRIDAY] 🛑 {name} blocked by loop guard")
+        gate_result = await self._run_safety_gate(name, args)
+        if gate_result is not None:
             if not self.ui.muted:
                 self.ui.set_state("LISTENING")
             return types.FunctionResponse(
                 id=fc.id, name=name,
-                response={"result": blocked}
+                response={"result": gate_result.content}
             )
-
-        # ── Safety gate: high-risk actions need explicit user confirmation ──
-        from safety import (
-            needs_confirmation, describe, CONFIRM_MESSAGE, classify, Risk,
-            CONFIRM_PARAM, CONFIRM_TOKEN_PARAM, issue_confirmation_token, sanitize,
-        )
-        confirm = bool(args.pop(CONFIRM_PARAM, False))
-        confirm_token = str(args.pop(CONFIRM_TOKEN_PARAM, ""))
-        if confirm and classify(name, args) == Risk.HIGH and not self._has_human_confirmation(confirm_token):
-            return types.FunctionResponse(id=fc.id, name=name, response={"result": "Action blocked: human user has not approved this exact action."})
-        if needs_confirmation(name, args, confirm=confirm, confirm_token=confirm_token):
-            token = issue_confirmation_token(name, args) if not confirm else ""
-            print(f"[FRIDAY] ⛔ {name} blocked — confirmation required")
-            self.ui.write_log(f"SECURITY: '{describe(name, args)}' requires your approval.")
-            if token: self._request_card_confirmation(
-                f"{describe(name, args)}\n\n{json.dumps(sanitize(name, args), ensure_ascii=False, indent=2, default=str)}", token)
-            log_tool(name, args, error="confirmation required")
-            if not self.ui.muted:
-                self.ui.set_state("LISTENING")
-            return types.FunctionResponse(
-                id=fc.id, name=name,
-                response={"result": CONFIRM_MESSAGE.format(
-                    desc=describe(name, args), param=CONFIRM_PARAM)
-                    + (f"\n[token: {token}]" if token else "")}
-            )
-        if not self._consume_human_confirmation(confirm, confirm_token):
-            print(f"[FRIDAY] ⛔ {name} rejected — no human consent detected.")
-            self.ui.write_log(f"SECURITY: '{name}' blocked — no verbal consent.")
-            return types.FunctionResponse(
-                id=fc.id, name=name,
-                response={"result": "Action blocked: human user has not verbally approved this yet. Ask the user for permission first."}
-            )
-        if confirm:
-            self.ui.write_log(f"SECURITY: '{name}' approved by user.")
         try:
             # Uniform dispatch through the shared handler table so every
             # declared tool gets a timeout.
@@ -2083,9 +2058,7 @@ class FridayLive:
                 except (TypeError, ValueError):
                     return "I need `seconds` as a number."
                 message = str(args.get("message", "Reminder")).strip() or "Reminder"
-                sid = len(self._schedules) + 1
-                if any(s.get("id") == sid and not s.get("fired") for s in self._schedules):
-                    sid = max((s.get("id", 0) for s in self._schedules), default=0) + 1
+                sid = max((s.get("id", 0) for s in self._schedules), default=0) + 1
                 self._schedules.append({
                     "id": sid, "fire_at": now + seconds,
                     "message": message, "fired": False,

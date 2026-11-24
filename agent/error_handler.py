@@ -153,7 +153,8 @@ def generate_fix(step: dict, error: str, fix_suggestion: str) -> dict:
     import google.generativeai as genai
 
     genai.configure(api_key=_get_api_key())
-    model = genai.GenerativeModel(model_name="gemini-2.0-flash")
+    from config.models import MODEL_FLASH
+    model = genai.GenerativeModel(model_name=MODEL_FLASH)
 
     prompt = f"""A task step failed. Generate a replacement step.
 

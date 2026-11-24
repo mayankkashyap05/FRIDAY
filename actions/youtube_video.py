@@ -400,9 +400,11 @@ def _handle_play(parameters: dict, player) -> str:
     if len(thumbnails) >= 2:
         x, y = thumbnails[1]
         pyautogui.click(x, y)
+        return f"Playing YouTube video for: {query}"
     elif len(thumbnails) == 1:
         x, y = thumbnails[0]
         pyautogui.click(x, y)
+        return f"Playing YouTube video for: {query}"
     else:
         screen_w, screen_h = pyautogui.size()
         pyautogui.click(screen_w // 2, int(screen_h * 0.45))
@@ -413,7 +415,7 @@ def _handle_summarize(parameters: dict, player, speak) -> str:
     if not _TRANSCRIPT_OK:
         return "youtube-transcript-api is not installed. Run: pip install youtube-transcript-api"
 
-    url = _ask_for_url("Please paste the YouTube video URL:")
+    url = str(parameters.get("url") or "").strip() or _ask_for_url("Please paste the YouTube video URL:")
     if not url:
         return "No URL provided, sir. Summary cancelled."
     if not _is_valid_youtube_url(url):

@@ -192,7 +192,7 @@ def register_hotkeys(callbacks: dict) -> int:
 
 
 def stop():
-    global _tray_icon, _tray_thread
+    global _tray_icon, _tray_thread, _hotkeys_registered
     if _tray_icon is not None:
         try:
             _tray_icon.stop()

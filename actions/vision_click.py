@@ -36,19 +36,21 @@ def _get_api_key() -> str:
     return next_key()
 
 
-def _screenshot_jpeg() -> bytes:
+def _screenshot_jpeg() -> tuple[bytes, int, int, int, int]:
     if not _MSS:
         raise RuntimeError("mss is not installed.")
     with mss.mss() as sct:
         shot      = sct.grab(sct.monitors[1])
+        orig_w, orig_h = shot.size
         png_bytes = mss.tools.to_png(shot.rgb, shot.size)
     if _PIL:
         img = Image.open(io.BytesIO(png_bytes)).convert("RGB")
         img.thumbnail([1280, 1280], Image.BILINEAR)
+        img_w, img_h = img.size
         buf = io.BytesIO()
         img.save(buf, format="JPEG", quality=88)
-        return buf.getvalue()
-    return png_bytes
+        return buf.getvalue(), orig_w, orig_h, img_w, img_h
+    return png_bytes, orig_w, orig_h, orig_w, orig_h
 
 
 def _find_coordinates(image_bytes: bytes, target: str) -> tuple[int, int] | None:
@@ -98,8 +100,17 @@ def vision_click_action(
                 "button', 'the search box'.")
 
     try:
-        img  = _screenshot_jpeg()
+        shot = _screenshot_jpeg()
+        if isinstance(shot, tuple):
+            img, orig_w, orig_h, img_w, img_h = shot
+        else:
+            img = shot
+            orig_w = orig_h = img_w = img_h = 0
         x, y = _find_coordinates(img, target)
+        if orig_w > 0 and img_w > 0:
+            x = max(0, min(orig_w - 1, round(x * orig_w / img_w)))
+        if orig_h > 0 and img_h > 0:
+            y = max(0, min(orig_h - 1, round(y * orig_h / img_h)))
     except Exception as e:
         return f"Vision click failed: {e}"
 
