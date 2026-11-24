@@ -51,7 +51,7 @@ def main():
             p.fillRect(image.rect(), grad)
             app.processEvents(); p.drawImage(QPoint((1366-hud.width())//2, 0), hud.grab().toImage())
             if opts.get('search'):
-                popup.open_below(hud); popup.input.setText(''); app.processEvents(); p.drawImage(popup.pos(), popup.grab().toImage()); popup.hide()
+                popup.open_below(hud, immediate=True); popup.input.setText(''); app.processEvents(); p.drawImage(popup.pos(), popup.grab().toImage()); popup.hide()
             p.end()
         path = out / f'{name}.png'
         if not image.save(str(path)): raise RuntimeError(f'Cannot save {path}')

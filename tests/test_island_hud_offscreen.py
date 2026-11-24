@@ -185,7 +185,7 @@ def test_search_popup_uses_in_bounds_shadow_and_safe_offscreen_focus(qt_app):
     messages = []
     previous = qInstallMessageHandler(lambda _type, _context, message: messages.append(message))
     try:
-        popup.set_theme('dark'); popup.open_below(hud); qt_app.processEvents()
+        popup.set_theme('dark'); popup.open_below(hud, immediate=True); qt_app.processEvents()
         visible_top_center = popup.mapToGlobal(QPoint(PAD_X + PILL_WIDTH // 2, PAD_TOP))
         expected = hud.mapToGlobal(QPoint(hud.width() // 2, int(round(hud.height_spring.value)) + 14))
         assert visible_top_center == expected
