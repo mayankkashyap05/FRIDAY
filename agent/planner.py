@@ -33,10 +33,13 @@ open_app
   app_name: string (required)
 
 web_search
-  query: string (required) — write a clear, focused search query
-  mode: "search" or "compare" (optional, default: search)
-  items: list of strings (optional, for compare mode)
+  query: string — write a clear, focused search query
+  mode: "search" | "news" | "compare" | "quick" (optional, default: search)
+  items: list of strings or comma-separated string (for compare mode)
   aspect: string (optional, for compare mode)
+  time_range: "day" | "week" | "month" | "year" (optional)
+  region: string e.g. in-en, us-en (optional)
+  max_results: 1-10 (optional, default 5), include_sources: boolean (optional)
 
 game_updater
   action: "update" | "install" | "list" | "download_status" | "schedule" (required)
@@ -67,7 +70,8 @@ daily_briefing
   city: string (optional) — weather defaults to saved memory
 
 wake_word
-  action: "start" | "stop" | "status" (required) — hands-free 'Hey Friday' listener
+  action: "start" | "stop" | "status" | "pause" | "resume" | "set_threshold" | "devices" | "diagnostics" | "record" | "train" (required)
+  threshold: 0.1-0.99, cooldown: seconds, device: int, clips: int (all optional)
 
 cmd_control
   task: string (required) — natural language description of what to do
@@ -131,7 +135,8 @@ youtube_video
   query: string, url: string, index: int, seconds: number, offset: number, timestamp: string, volume: 0-100, speed: 0.25-4.0, category: general|music|gaming|movies|podcasts, include_shorts: boolean, region: string (all optional)
 
 weather_report
-  city: string (required)
+  city: string (optional — defaults to saved memory city)
+  time: "now" | "tonight" | "tomorrow" | "week" | "weekend" | weekday, units: metric|imperial, include_aqi: boolean, open_browser: boolean (all optional)
 
 flight_finder
   origin: string (required)

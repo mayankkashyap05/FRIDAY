@@ -293,27 +293,40 @@ TOOL_DECLARATIONS = [
     },
     {
         "name": "web_search",
-        "description": "Searches the web for any information.",
+        "description": (
+            "Searches the web with grounded sources: concise answers, news, "
+            "quick voice-ready answers, and structured comparisons."
+        ),
         "parameters": {
             "type": "OBJECT",
             "properties": {
-                "query":  {"type": "STRING", "description": "Search query"},
-                "mode":   {"type": "STRING", "description": "search (default) or compare"},
-                "items":  {"type": "ARRAY", "items": {"type": "STRING"}, "description": "Items to compare"},
-                "aspect": {"type": "STRING", "description": "price | specs | reviews"}
+                "query":   {"type": "STRING", "description": "Search query"},
+                "mode":    {"type": "STRING", "description": "search | news | compare | quick | answer"},
+                "items":   {"type": "ARRAY", "items": {"type": "STRING"},
+                            "description": "Items to compare (a comma-separated string also works)"},
+                "aspect":  {"type": "STRING", "description": "price | specs | reviews | general"},
+                "time_range": {"type": "STRING", "description": "day | week | month | year"},
+                "region":  {"type": "STRING", "description": "Search region e.g. in-en, us-en, wt-wt"},
+                "max_results": {"type": "INTEGER", "description": "1-10 fallback results (default 5)"},
+                "include_sources": {"type": "BOOLEAN", "description": "Append up to 5 citations (default true)"},
+                "fresh":   {"type": "BOOLEAN", "description": "Bypass the 5-minute search cache"},
             },
-            "required": ["query"]
+            "required": []
         }
     },
     {
         "name": "weather_report",
-        "description": "Gets real-time weather information for a city.",
+        "description": "Gets live Open-Meteo weather, forecasts and optional air quality.",
         "parameters": {
             "type": "OBJECT",
             "properties": {
-                "city": {"type": "STRING", "description": "City name"}
+                "city": {"type": "STRING", "description": "City name; omit for saved city"},
+                "time": {"type": "STRING", "description": "now | today | tonight | morning | tomorrow | week | weekend | weekday"},
+                "units": {"type": "STRING", "description": "metric (default) or imperial"},
+                "include_aqi": {"type": "BOOLEAN", "description": "Include US AQI and PM2.5"},
+                "open_browser": {"type": "BOOLEAN", "description": "Also open Google Weather (default false)"},
             },
-            "required": ["city"]
+            "required": []
         }
     },
     {
@@ -892,8 +905,17 @@ TOOL_DECLARATIONS = [
         "parameters": {
             "type": "OBJECT",
             "properties": {
-                "action": {"type": "STRING", "description": "start | stop | status | record (default: status)"},
-                "clips":  {"type": "INTEGER", "description": "Number of clips to record for 'record' (default: 5)"}
+                "action": {
+                    "type": "STRING",
+                    "description": (
+                        "start | stop | status | pause | resume | set_threshold | "
+                        "devices | diagnostics | record | train (default: status)"
+                    ),
+                },
+                "clips":     {"type": "INTEGER", "description": "Number of clips to record for 'record' (default: 5)"},
+                "threshold": {"type": "NUMBER", "description": "Detection threshold 0.1-0.99 for set_threshold"},
+                "cooldown":  {"type": "NUMBER", "description": "Post-trigger cooldown in seconds"},
+                "device":    {"type": "INTEGER", "description": "Optional microphone device index"},
             },
             "required": []
         }
