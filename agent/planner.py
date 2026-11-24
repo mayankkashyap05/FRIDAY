@@ -127,8 +127,8 @@ desktop_control
   task: string (optional)
 
 youtube_video
-  action: "play" | "summarize" | "trending" (required)
-  query: string (for play)
+  action: "open" | "search" | "play" | "pause" | "resume" | "toggle_play" | "seek" | "forward" | "rewind" | "restart" | "next" | "previous" | "volume" | "mute" | "unmute" | "speed" | "fullscreen" | "theater" | "miniplayer" | "captions" | "skip_ad" | "now_playing" | "summarize" | "get_info" | "trending" | "close" (required)
+  query: string, url: string, index: int, seconds: number, offset: number, timestamp: string, volume: 0-100, speed: 0.25-4.0, category: general|music|gaming|movies|podcasts, include_shorts: boolean, region: string (all optional)
 
 weather_report
   city: string (required)
