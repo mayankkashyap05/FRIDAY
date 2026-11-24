@@ -1,7 +1,14 @@
 """Compact, activatable Search or Ask pill shown from the resting island."""
-from PySide6.QtCore import Qt, Signal, QEvent, QPropertyAnimation, QEasingCurve
-from PySide6.QtGui import QColor, QPainter, QPen
-from PySide6.QtWidgets import QWidget, QLineEdit, QToolButton, QHBoxLayout, QGraphicsDropShadowEffect
+from PySide6.QtCore import Qt, Signal, QEvent, QPropertyAnimation, QEasingCurve, QRectF, QPoint
+from PySide6.QtGui import QColor, QPainter, QPen, QLinearGradient, QGuiApplication
+from PySide6.QtWidgets import QWidget, QLineEdit, QToolButton, QHBoxLayout
+
+
+PAD_X = 24
+PAD_TOP = 16
+PAD_BOTTOM = 28
+PILL_WIDTH = 460
+PILL_HEIGHT = 56
 
 
 class _MicrophoneButton(QToolButton):
@@ -35,7 +42,7 @@ class SearchBarPopup(QWidget):
         self._closing = False
         self.setObjectName('searchBarPopup')
         self.setAttribute(Qt.WA_TranslucentBackground)
-        self.setFixedSize(460, 58)
+        self.setFixedSize(PAD_X * 2 + PILL_WIDTH, PAD_TOP + PILL_HEIGHT + PAD_BOTTOM)
         self.input = QLineEdit(self)
         self.input.setObjectName('searchInput')
         self.input.installEventFilter(self)
@@ -44,11 +51,12 @@ class SearchBarPopup(QWidget):
         self._base_input_style = 'QLineEdit { border: 0; background: transparent; padding: 0 4px; font-family: Segoe UI; font-size: 15px; font-weight: 500; selection-background-color: #6588ff; } QLineEdit:focus { border-bottom: 1px solid #8da8ff; }'
         self.input.setStyleSheet(self._base_input_style)
         self.microphone = _MicrophoneButton(self)
-        layout = QHBoxLayout(self); layout.setContentsMargins(32, 7, 16, 7); layout.setSpacing(8)
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(PAD_X + 32, PAD_TOP + 7, PAD_X + 16, PAD_BOTTOM + 7)
+        layout.setSpacing(8)
         layout.addWidget(self.input, 1); layout.addWidget(self.microphone)
         self.input.returnPressed.connect(self._submit)
         self.microphone.clicked.connect(self._microphone)
-        shadow = QGraphicsDropShadowEffect(self); shadow.setBlurRadius(28); shadow.setOffset(0, 8); shadow.setColor(QColor(0, 0, 0, 100)); self.setGraphicsEffect(shadow)
         self._geometry_animation = QPropertyAnimation(self, b'geometry', self)
         self._geometry_animation.setDuration(190)
         self._geometry_animation.setEasingCurve(QEasingCurve.OutCubic)
@@ -67,12 +75,19 @@ class SearchBarPopup(QWidget):
         if hud is not None: self.hud = hud
         owner = self.hud
         if owner:
-            center = owner.mapToGlobal(owner.rect().center())
-            # Position pill immediately below the docked notch with 14 px breathing room.
-            self.move(center.x() - self.width() // 2, owner.mapToGlobal(owner.rect().bottomLeft()).y() + 14)
+            center = owner.mapToGlobal(QPoint(owner.width() // 2, 0))
+            notch_height = int(round(getattr(getattr(owner, 'height_spring', None), 'value', 48)))
+            # Keep the visible pill 14 px below the island; transparent padding
+            # belongs outside that visual gap and remains inside this layered window.
+            visible_top = center.y() + notch_height + 14
+            self.move(center.x() - self.width() // 2, visible_top - PAD_TOP)
         target = self.geometry()
         self._closing = False
-        self.show(); self.raise_(); self.activateWindow(); self.input.setFocus(Qt.PopupFocusReason)
+        self.show()
+        if QGuiApplication.platformName() != 'offscreen':
+            self.raise_()
+            self.activateWindow()
+        self.input.setFocus(Qt.PopupFocusReason)
         self._geometry_animation.stop()
         self._geometry_animation.setStartValue(target.translated(0, -8))
         self._geometry_animation.setEndValue(target)
@@ -112,13 +127,32 @@ class SearchBarPopup(QWidget):
             self.dismiss()
 
     def paintEvent(self, event):
-        p = QPainter(self); p.setRenderHint(QPainter.Antialiasing)
-        from PySide6.QtCore import QRectF
-        from PySide6.QtGui import QLinearGradient
-        r = QRectF(self.rect()).adjusted(1, 1, -1, -1)
-        grad = QLinearGradient(0, 0, 0, self.height())
-        grad.setColorAt(0, QColor(self._top)); grad.setColorAt(.58, QColor(self._bottom)); grad.setColorAt(1, QColor(self._bottom))
-        p.setBrush(grad); p.setPen(QPen(self._rim, 1)); p.drawRoundedRect(r, 27, 27)
-        sheen = QLinearGradient(0, 1, 0, 20); sheen.setColorAt(0, QColor(255,255,255,28 if self.theme == 'dark' else 70)); sheen.setColorAt(1, QColor(255,255,255,0))
-        p.setBrush(sheen); p.setPen(Qt.NoPen); p.drawRoundedRect(r.adjusted(2,1,-2,-30), 24, 24)
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing)
+        # Every shadow pixel is painted by this window, clipped to its bounds.
+        # No graphics effect may expand the layered-window dirty rectangle.
+        p.setClipRect(self.rect())
+        pill = QRectF(PAD_X, PAD_TOP, PILL_WIDTH, PILL_HEIGHT)
+        for spread in range(14, 0, -1):
+            shadow = pill.adjusted(-spread, -spread * 0.65, spread, spread + 5)
+            alpha = int(1 + 25 * (1.0 - spread / 15.0) ** 2)
+            p.setPen(Qt.NoPen)
+            p.setBrush(QColor(0, 0, 0, alpha))
+            p.drawRoundedRect(shadow, 28 + spread, 28 + spread)
+
+        inner = pill.adjusted(0.5, 0.5, -0.5, -0.5)
+        grad = QLinearGradient(0, pill.top(), 0, pill.bottom())
+        grad.setColorAt(0.0, QColor(self._top))
+        grad.setColorAt(0.58, QColor(self._bottom))
+        grad.setColorAt(1.0, QColor(self._bottom))
+        p.setBrush(grad)
+        p.setPen(QPen(self._rim, 1))
+        p.drawRoundedRect(inner, PILL_HEIGHT / 2, PILL_HEIGHT / 2)
+
+        sheen = QLinearGradient(0, pill.top() + 1, 0, pill.top() + 22)
+        sheen.setColorAt(0.0, QColor(255, 255, 255, 28 if self.theme == 'dark' else 70))
+        sheen.setColorAt(1.0, QColor(255, 255, 255, 0))
+        p.setBrush(sheen)
+        p.setPen(Qt.NoPen)
+        p.drawRoundedRect(pill.adjusted(2, 1, -2, -PILL_HEIGHT + 23), 25, 25)
         p.end()

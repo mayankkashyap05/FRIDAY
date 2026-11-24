@@ -171,3 +171,30 @@ def test_legacy_scene_names_are_compact_compatibility_aliases(qt_app):
         hud.set_scene(scene, immediate=True)
         assert hud.state == 'resting' and hud.width_spring.value == 240
     hud.shutdown(); hud.close()
+
+
+def test_search_popup_uses_in_bounds_shadow_and_safe_offscreen_focus(qt_app):
+    from PySide6.QtCore import QPoint, qInstallMessageHandler
+    from ui.bridge.controller import UiController
+    from ui.island.search_bar import PAD_X, PAD_TOP, PAD_BOTTOM, PILL_WIDTH, PILL_HEIGHT
+    hud = VoiceHUD(); controller = UiController(hud)
+    popup = controller.search_popup
+    assert popup.graphicsEffect() is None
+    assert popup.size().width() == PAD_X * 2 + PILL_WIDTH
+    assert popup.size().height() == PAD_TOP + PILL_HEIGHT + PAD_BOTTOM
+    messages = []
+    previous = qInstallMessageHandler(lambda _type, _context, message: messages.append(message))
+    try:
+        popup.set_theme('dark'); popup.open_below(hud); qt_app.processEvents()
+        visible_top_center = popup.mapToGlobal(QPoint(PAD_X + PILL_WIDTH // 2, PAD_TOP))
+        expected = hud.mapToGlobal(QPoint(hud.width() // 2, int(round(hud.height_spring.value)) + 14))
+        assert visible_top_center == expected
+        assert not popup.grab().isNull()
+        popup.set_theme('light'); qt_app.processEvents()
+        assert not popup.grab().isNull()
+        controller.show_settings('General'); qt_app.processEvents()
+        controller.search_popup.dismiss(); controller.settings_window.hide()
+    finally:
+        qInstallMessageHandler(previous)
+    assert not [message for message in messages if 'does not support raise' in message]
+    controller.shutdown(); hud.close()
