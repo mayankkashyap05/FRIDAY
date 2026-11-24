@@ -125,15 +125,15 @@ class ApiKeysExistTest(unittest.TestCase):
     def setUp(self):
         import tempfile
         from pathlib import Path
-        import _archive.ui_legacy as ui_legacy
+        import ui
         self._tmp = tempfile.TemporaryDirectory()
-        self._old_file = ui_legacy.API_FILE
+        self._old_file = ui.API_FILE
         self._old_env = os.environ.get("FRIDAY_GEMINI_API_KEY")
         self._old_env2 = os.environ.get("FRIDAY_GEMINI_API_KEYS")
         os.environ.pop("FRIDAY_GEMINI_API_KEY", None)
         os.environ.pop("FRIDAY_GEMINI_API_KEYS", None)
-        ui_legacy.API_FILE = Path(self._tmp.name) / "api_keys.json"
-        self.ui = ui_legacy
+        ui.API_FILE = Path(self._tmp.name) / "api_keys.json"
+        self.ui = ui
 
     def tearDown(self):
         self.ui.API_FILE = self._old_file

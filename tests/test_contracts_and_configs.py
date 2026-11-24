@@ -46,7 +46,10 @@ def test_config_models_exports_and_no_stale_models():
     stale_patterns = ("gemini-2.5-flash-lite", "gemini-3.8-flash", "gemini-2.0-flash")
     for py_file in ROOT.rglob("*.py"):
         rel = py_file.relative_to(ROOT).as_posix()
-        if rel.startswith(("tests/", "_archive/", ".venv/")) or rel == "config/models.py":
+        if (
+            rel.startswith(("tests/", "_archive/", ".venv/", "venv/", "vendor/", "versions/", "node_modules/", ".git/"))
+            or rel == "config/models.py"
+        ):
             continue
         text = py_file.read_text(encoding="utf-8", errors="ignore")
         for stale in stale_patterns:
