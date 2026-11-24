@@ -30,7 +30,9 @@ ABSOLUTE RULES:
 AVAILABLE TOOLS AND THEIR PARAMETERS:
 
 open_app
-  app_name: string (required)
+  app_name: string (required) — app name or safe http(s)/ms-settings URL
+  action: "open" | "focus" | "is_running" | "status" | "list" (optional)
+  focus_if_running: bool (optional), refresh: bool (optional), args: list (optional)
 
 web_search
   query: string — write a clear, focused search query
@@ -120,21 +122,38 @@ vision_gesture
 
 screen_process
   text: string (required) — what to analyze or ask about the screen
-  angle: "screen" | "camera" (optional)
+  angle: "screen" | "window" | "region" | "camera" (optional)
+  detail: "fast" | "balanced" | "high" | "ocr" (optional, default balanced)
+  monitor: 0 (all) | 1 (primary) | 2+ (optional), region: [x,y,w,h], save_path, concise, camera_index
 
 vision_click
   target: string (required) — UI element to find on screen
   click: "left" | "double" | "triple" | "right" | "middle" | "hover", monitor: 0- N, only_coords, type_text, press_enter
 
 send_message
-  receiver: string (required)
+  receiver: string (required) — contact, phone number or @username
   message_text: string (required)
-  platform: string (required)
+  platform: string (optional, default whatsapp), send: bool (default true), dry_run: bool, web: bool
 
 reminder
-  date: string YYYY-MM-DD (required)
-  time: string HH:MM (required)
   message: string (required)
+  action: "set" | "list" | "delete" | "clear" (optional, default set)
+  date: string YYYY-MM-DD, time: string HH:MM or "3:30 PM", when: "in 15 minutes" | "tomorrow 09:00"
+  in_minutes / in_hours / in_seconds: number, repeat: "once" | "daily" | "weekly"
+
+read_pdf
+  path: string (required), action: "preview" | "summary" | "search" | "metadata" | "pages"
+  pages: "1-3" | "5" | "1,3", layout: bool, visual: bool, password: string, query: string
+
+pdf_qa
+  path: string (required), question: string (required)
+  pages, layout, visual, password (all optional)
+
+smart_home_control
+  action: "turn_on" | "turn_off" | "toggle" | "set_level" | "set_temperature" | "set_color" |
+          "open" | "close" | "lock" | "unlock" | "activate" | "status" | "health" | "discover"
+  device: id/name/room/group (optional), value: level or temperature
+  room, color, temperature, hvac_mode, domain, query (optional)
 
 desktop_control
   action: "wallpaper" | "organize" | "clean" | "list" | "task" (required)

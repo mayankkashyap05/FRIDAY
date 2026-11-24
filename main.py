@@ -285,8 +285,13 @@ TOOL_DECLARATIONS = [
             "properties": {
                 "app_name": {
                     "type": "STRING",
-                    "description": "Exact name of the application (e.g. 'WhatsApp', 'Chrome', 'Spotify')"
-                }
+                    "description": "Application name or a safe http(s)/ms-settings URL"
+                },
+                "action": {"type": "STRING", "description": "open | focus | is_running | status | list (default: open)"},
+                "focus_if_running": {"type": "BOOLEAN", "description": "Focus an existing window instead of launching a duplicate"},
+                "url": {"type": "STRING", "description": "Optional http(s) or ms-settings URL to open"},
+                "args": {"type": "ARRAY", "items": {"type": "STRING"}, "description": "Safe arguments for an explicit executable"},
+                "refresh": {"type": "BOOLEAN", "description": "Rebuild the cached Windows app index"}
             },
             "required": ["app_name"]
         }
@@ -335,11 +340,14 @@ TOOL_DECLARATIONS = [
         "parameters": {
             "type": "OBJECT",
             "properties": {
-                "receiver":     {"type": "STRING", "description": "Recipient contact name"},
-                "message_text": {"type": "STRING", "description": "The message to send"},
-                "platform":     {"type": "STRING", "description": "Platform: WhatsApp, Telegram, etc."}
+                "receiver":     {"type": "STRING", "description": "Contact name, phone number, or @username"},
+                "message_text": {"type": "STRING", "description": "The message to send (Unicode is safe)"},
+                "platform":     {"type": "STRING", "description": "whatsapp | instagram | telegram | other app (default: whatsapp)"},
+                "send":         {"type": "BOOLEAN", "description": "Press Enter to send (default true)"},
+                "dry_run":      {"type": "BOOLEAN", "description": "Draft only; never press Enter"},
+                "web":          {"type": "BOOLEAN", "description": "Use wa.me web deep link instead of the desktop app"}
             },
-            "required": ["receiver", "message_text", "platform"]
+            "required": ["receiver", "message_text"]
         }
     },
     {
@@ -348,11 +356,17 @@ TOOL_DECLARATIONS = [
         "parameters": {
             "type": "OBJECT",
             "properties": {
-                "date":    {"type": "STRING", "description": "Date in YYYY-MM-DD format"},
-                "time":    {"type": "STRING", "description": "Time in HH:MM format (24h)"},
-                "message": {"type": "STRING", "description": "Reminder message text"}
+                "action":     {"type": "STRING", "description": "set | list | delete | clear (default: set)"},
+                "date":       {"type": "STRING", "description": "Date in YYYY-MM-DD format"},
+                "time":       {"type": "STRING", "description": "Time in HH:MM or 3:30 PM"},
+                "when":       {"type": "STRING", "description": "'in 15 minutes', 'tomorrow 09:00', ISO-8601"},
+                "in_minutes": {"type": "NUMBER", "description": "Minutes from now"},
+                "in_hours":   {"type": "NUMBER", "description": "Hours from now"},
+                "in_seconds": {"type": "NUMBER", "description": "Seconds from now"},
+                "repeat":     {"type": "STRING", "description": "once | daily | weekly (default: once)"},
+                "message":    {"type": "STRING", "description": "Reminder message text"}
             },
-            "required": ["date", "time", "message"]
+            "required": ["message"]
         }
     },
     {
@@ -407,8 +421,14 @@ TOOL_DECLARATIONS = [
         "parameters": {
             "type": "OBJECT",
             "properties": {
-                "angle": {"type": "STRING", "description": "'screen' to capture display, 'camera' for webcam. Default: 'screen'"},
-                "text":  {"type": "STRING", "description": "The question or instruction about the captured image"}
+                "angle": {"type": "STRING", "description": "screen | window | region | camera (default: screen)"},
+                "text":  {"type": "STRING", "description": "The question or instruction about the captured image"},
+                "detail": {"type": "STRING", "description": "fast | balanced | high | ocr (default: balanced)"},
+                "monitor": {"type": "INTEGER", "description": "0 = all monitors, 1 = primary (default), 2+ = secondary"},
+                "region": {"type": "ARRAY", "items": {"type": "INTEGER"}, "description": "[x, y, width, height] for angle=region"},
+                "save_path": {"type": "STRING", "description": "Optional path to save the captured JPEG"},
+                "concise": {"type": "BOOLEAN", "description": "2-3 sentence voice answer (default true)"},
+                "camera_index": {"type": "INTEGER", "description": "Optional webcam index"}
             },
             "required": ["text"]
         }
@@ -1006,20 +1026,26 @@ TOOL_DECLARATIONS = [
     {
         "name": "smart_home_control",
         "description": (
-            "Controls smart home devices (lights, switches, plugs, thermostats) registered "
-            "in config/smart_home.json. Supports Home Assistant, a custom webhook, or a "
-            "simulated mode for testing. Actions: turn_on, turn_off, toggle, set_level, "
-            "status. Use for 'turn on the living room light', 'set brightness to 50', "
-            "'what is the state of the AC'."
+            "Controls smart home devices registered in config/smart_home.json (Home Assistant, "
+            "webhook or simulated). Actions: turn_on, turn_off, toggle, set_level, "
+            "set_temperature, set_color, open, close, lock, unlock, activate, status, "
+            "health, discover. Use for 'turn on the bedroom lights', 'set brightness to 50', "
+            "'set the AC to 24', 'what devices are available'."
         ),
         "parameters": {
             "type": "OBJECT",
             "properties": {
-                "action": {"type": "STRING", "description": "turn_on | turn_off | toggle | set_level | status (default: status)"},
-                "device": {"type": "STRING", "description": "Device id or name from smart_home.json"},
-                "value":  {"type": "NUMBER", "description": "Level for set_level (e.g. brightness percent 0-100)"}
+                "action": {"type": "STRING", "description": "turn_on | turn_off | toggle | set_level | set_temperature | set_color | open | close | lock | unlock | activate | status | health | discover"},
+                "device": {"type": "STRING", "description": "Device name/id, room, or group such as 'bedroom lights'"},
+                "value":  {"type": "NUMBER", "description": "Level, percent, or temperature"},
+                "room": {"type": "STRING", "description": "Restrict control to a room/area"},
+                "color": {"type": "STRING", "description": "Named colour or #RRGGBB"},
+                "temperature": {"type": "NUMBER", "description": "Target temperature"},
+                "hvac_mode": {"type": "STRING", "description": "heat | cool | auto | off"},
+                "domain": {"type": "STRING", "description": "Filter discovery/control by HA domain"},
+                "query": {"type": "STRING", "description": "Filter discovery results"}
             },
-            "required": ["action"]
+            "required": []
         }
     },
     {
@@ -1054,7 +1080,13 @@ TOOL_DECLARATIONS = [
         "parameters": {
             "type": "OBJECT",
             "properties": {
-                "path": {"type": "STRING", "description": "PDF file name or full path"}
+                "path": {"type": "STRING", "description": "PDF file name or full path"},
+                "action": {"type": "STRING", "description": "preview | summary | search | metadata | pages (default: preview)"},
+                "pages": {"type": "STRING", "description": "e.g. '1-3', '5', '1, 3-4'"},
+                "layout": {"type": "BOOLEAN", "description": "Use layout-preserving text extraction"},
+                "visual": {"type": "BOOLEAN", "description": "Send the PDF to Gemini for visual reading"},
+                "password": {"type": "STRING", "description": "Password for encrypted PDFs"},
+                "query": {"type": "STRING", "description": "Search term for action=search"}
             },
             "required": ["path"]
         }
@@ -1071,7 +1103,11 @@ TOOL_DECLARATIONS = [
             "type": "OBJECT",
             "properties": {
                 "path":     {"type": "STRING", "description": "PDF file name or full path"},
-                "question": {"type": "STRING", "description": "Question about the document's content"}
+                "question": {"type": "STRING", "description": "Question about the document's content"},
+                "pages":    {"type": "STRING", "description": "Only these pages, e.g. '2-5'"},
+                "layout":   {"type": "BOOLEAN", "description": "Use layout-preserving extraction"},
+                "visual":   {"type": "BOOLEAN", "description": "Read scanned pages with Gemini vision"},
+                "password": {"type": "STRING", "description": "Password for encrypted PDFs"}
             },
             "required": ["path", "question"]
         }
@@ -1807,6 +1843,8 @@ class FridayLive:
                 action=args.get("action", "status"),
                 device=args.get("device"),
                 value=args.get("value"),
+                **{k: args[k] for k in ("room", "color", "temperature", "hvac_mode",
+                                        "domain", "query") if k in args},
             )
 
         def _lazy(mod, fn, *extra_args, **extra_kwargs):
