@@ -23,13 +23,20 @@ VIDEO_ID = "dQw4w9WgXcQ"
 
 @pytest.fixture(autouse=True)
 def _clean_youtube_state(monkeypatch):
-    """Keep the module-level search cache and controller singleton isolated."""
+    """Keep module-level caches, controller singleton and env switches isolated."""
     with yt._SEARCH_CACHE_LOCK:
         previous = yt._LAST_SEARCH_RESULTS[:]
         yt._LAST_SEARCH_RESULTS.clear()
+    with yt._LAST_PLAYED_LOCK:
+        previous_played = dict(yt._LAST_PLAYED_VIDEO)
+        yt._LAST_PLAYED_VIDEO.clear()
+    for name in ("FRIDAY_YOUTUBE_MODE", "FRIDAY_CHROME_CDP_URL",
+                 "FRIDAY_YOUTUBE_PROFILE_DIR"):
+        monkeypatch.delenv(name, raising=False)
     monkeypatch.setattr(yt, "_yt_controller", None)
     yield
     yt._cache_results(previous)
+    yt._remember_played_video(previous_played)
 
 
 class FakeController:
@@ -48,6 +55,9 @@ class FakeController:
     def current_url(self) -> str:
         return self._url
 
+    def safe_current_url(self) -> str:
+        return self._url
+
     def start(self) -> bool:
         return True
 
@@ -63,9 +73,9 @@ class FakeController:
         self._call("open", url)
         return f"Opened {url or 'YouTube'}."
 
-    def play_url(self, url, start_seconds=None):
-        self._call("play_url", url, start_seconds)
-        return "Playing 'Test Video'."
+    def play_url(self, url, start_seconds=None, title=None, channel=None):
+        self._call("play_url", url, start_seconds, title=title, channel=channel)
+        return f"Playing '{title or 'Test Video'}'."
 
     def search_dom(self, query):
         self._call("search_dom", query)
@@ -517,7 +527,9 @@ class FakeVideoPage:
     """Minimal Playwright-like page implementing only the JS surface we use."""
 
     def __init__(self, *, paused=False, duration=200, volume=80, muted=False,
-                 speed=1.0, current=30, clickable=()):
+                 speed=1.0, current=30, clickable=(), has_video=True,
+                 blocked=False, captcha_form=False, title="Fake Video",
+                 url=f"https://www.youtube.com/watch?v={VIDEO_ID}"):
         self.paused = paused
         self.duration = duration
         self.volume = volume
@@ -525,26 +537,68 @@ class FakeVideoPage:
         self.speed = speed
         self.current = current
         self.clickable = tuple(clickable)
+        self.has_video = has_video
+        self.blocked = blocked
+        self.captcha_form = captcha_form
+        self.title = title
+        self.url = url
+        self.features = {"fullscreen": False, "theater": False,
+                         "miniplayer": False, "captions": False}
         self.evaluated = []
         self.clicks = []
         self.waits = []
         self.play_calls = 0
         self.keyboard = SimpleNamespace(press=AsyncMock())
 
+    def is_closed(self):
+        return False
+
+    async def title(self):
+        return "unusual traffic - Google" if self.blocked else f"{self.title} - YouTube"
+
+    async def inner_text(self, selector):
+        return "This page has been flagged for unusual traffic." if self.blocked else ""
+
+    async def goto(self, url, **kwargs):
+        self.url = url
+        return None
+
+    async def bring_to_front(self):
+        return None
+
+    async def wait_for_selector(self, selector, timeout=None, state=None):
+        if self.blocked or not self.has_video:
+            raise TimeoutError("no selector")
+        return SimpleNamespace(selector=selector)
+
     async def evaluate(self, script, arg=None):
         self.evaluated.append((script, arg))
+        if "hasVideo: !!v" in script:
+            return {"ok": True, "hasVideo": self.has_video and not self.blocked,
+                    "youtube": "youtube" in self.url.lower(), "url": self.url}
+        if "ytd-watch-metadata" in script and "querySelector" in script:
+            return {"ok": True, "title": self.title, "href": self.url}
+        if "enabled: active};" in script:
+            return {"ok": True, "name": arg["name"],
+                    "enabled": self.features.get(arg["name"], False)}
+        if "const explicit = arg.enabled" in script:
+            name = arg["name"]
+            wanted = arg["enabled"]
+            self.clicks.append(f"feature:{name}:{wanted}")
+            self.features[name] = (not self.features[name]) if wanted is None else bool(wanted)
+            return {"ok": True, "name": name, "clicked": True}
         if "const titleEl = document.querySelector" in script:
             return self._state()
         if "if (!v.paused) v.pause();" in script:
             self.paused = True
             return {"ok": True, "paused": self.paused, "currentTime": self.current,
-                    "title": "Fake Video"}
+                    "title": self.title}
         if "await v.play();" in script:
             if "if (v.paused)" not in script or self.paused:
                 self.play_calls += 1
                 self.paused = False
             return {"ok": True, "paused": self.paused, "currentTime": self.current,
-                    "title": "Fake Video"}
+                    "title": self.title}
         if "v.currentTime = target;" in script:
             target = (self.current if arg["relative"] else 0) + arg["value"]
             self.current = max(0, min(self.duration, target))
@@ -564,23 +618,21 @@ class FakeVideoPage:
         if "v.playbackRate = rate;" in script:
             self.speed = max(0.25, min(4.0, arg["value"]))
             return {"ok": True, "speed": self.speed}
-        if "const selectors = {" in script:
-            wanted = arg["enabled"]
-            self.clicks.append(f"feature:{arg['name']}:{wanted}")
-            return {"ok": True, "name": arg["name"], "enabled": True if wanted is None else wanted}
         return {}
 
     def _state(self):
-        return {"ok": True, "title": "Fake Video", "channel": "Fake Channel",
+        return {"ok": True, "title": self.title, "channel": "Fake Channel",
                 "currentTime": self.current, "duration": self.duration,
                 "paused": self.paused, "volume": self.volume, "muted": self.muted,
-                "speed": self.speed, "url": "https://www.youtube.com/watch?v=fake"}
+                "speed": self.speed, "url": self.url}
 
     def locator(self, selector):
         page = self
 
         class Locator:
             async def count(self):
+                if selector == "#captcha-form":
+                    return 1 if page.captcha_form else 0
                 return 1 if selector in page.clickable else 0
 
             async def is_visible(self):
@@ -606,6 +658,16 @@ class _NoBrowserController(yt._YouTubeController):
 
     async def _get_page(self):
         return self._page
+
+
+class _SyncNoBrowserController(_NoBrowserController):
+    """Adapter so dispatcher tests can await coroutine controller methods."""
+
+    def is_active(self) -> bool:
+        return True
+
+    def run(self, coroutine, timeout=35):
+        return asyncio.run(coroutine)
 
 
 def test_pause_is_deterministic_and_idempotent():
@@ -659,7 +721,7 @@ def test_feature_toggle_and_skip_ad_click():
     controller = _NoBrowserController(page)
     assert asyncio.run(controller.feature("captions", True)) == "Captions on."
     assert asyncio.run(controller.skip_ad(wait_ms=2000)) == "Skipped ad."
-    assert page.waits == [2000]
+    assert page.waits == [250, 2000]
     assert ".ytp-skip-ad-button" in page.clicks
 
 
@@ -904,3 +966,222 @@ print('IMPORT_OK')
     )
     assert result.returncode == 0, result.stderr
     assert "IMPORT_OK" in result.stdout
+
+
+# ---------------------------------------------------------------------------
+# Anti-bot / CAPTCHA and honest-state regressions
+# ---------------------------------------------------------------------------
+
+def test_is_blocked_page_detects_sorry_redirect_and_captcha_form():
+    sorry = FakeVideoPage(
+        url="https://www.google.com/sorry/index?continue=https://www.youtube.com/watch?v=x"
+    )
+    assert asyncio.run(yt._is_blocked_page(sorry)) is True
+    assert asyncio.run(yt._is_blocked_page(FakeVideoPage(captcha_form=True))) is True
+    assert asyncio.run(yt._is_blocked_page(FakeVideoPage(blocked=True))) is True
+    assert asyncio.run(yt._is_blocked_page(FakeVideoPage())) is False
+
+
+@pytest.mark.parametrize("action,extra", [
+    ("play", {"url": f"https://www.youtube.com/watch?v={VIDEO_ID}"}),
+    ("pause", {}),
+    ("seek", {"timestamp": 90}),
+    ("volume", {"volume": 25}),
+    ("fullscreen", {}),
+    ("next", {}),
+    ("now_playing", {}),
+])
+def test_captcha_page_never_reports_fake_success(monkeypatch, action, extra):
+    page = FakeVideoPage(
+        blocked=True,
+        url="https://www.google.com/sorry/index?continue=https://www.youtube.com/watch",
+    )
+    controller = _SyncNoBrowserController(page)
+    monkeypatch.setattr(yt, "_get_controller", lambda create=True: controller)
+
+    result = yt.youtube_video(dict(extra, action=action))
+    assert result == yt.CAPTCHA_MESSAGE
+    for fake_success in ("Paused", "Seeked", "Volume set", "Fullscreen on", "Playing '"):
+        assert fake_success not in result
+
+
+@pytest.mark.parametrize("method,args", [
+    ("pause", ()), ("resume", ()), ("seek", (10, False)),
+    ("volume", ()), ("speed", (1.5,)), ("feature", ("fullscreen",)),
+    ("feature", ("captions",)), ("next", ()), ("now_playing", ()),
+])
+def test_missing_video_element_returns_honest_error(method, args):
+    controller = _NoBrowserController(FakeVideoPage(has_video=False))
+    assert asyncio.run(getattr(controller, method)(*args)) == yt.NO_VIDEO_MESSAGE
+
+
+def test_non_youtube_page_with_video_element_returns_honest_error():
+    controller = _NoBrowserController(FakeVideoPage(url="https://example.com/watch"))
+    assert asyncio.run(controller.pause()) == yt.NO_VIDEO_MESSAGE
+
+
+class _FakePersistentContext:
+    def __init__(self):
+        self.pages = []
+        self.init_scripts = []
+
+    async def add_init_script(self, script):
+        self.init_scripts.append(script)
+
+    async def new_page(self):
+        page = FakeVideoPage()
+        self.pages.append(page)
+        return page
+
+
+class _FakeChromium:
+    def __init__(self, context, fail_first=False):
+        self.context = context
+        self.calls = []
+        self.fail_first = fail_first
+
+    async def launch_persistent_context(self, **kwargs):
+        self.calls.append(kwargs)
+        if self.fail_first and len(self.calls) == 1:
+            raise RuntimeError("channel not installed")
+        return self.context
+
+
+def test_persistent_context_launch_arguments(monkeypatch, tmp_path):
+    monkeypatch.setenv("FRIDAY_YOUTUBE_PROFILE_DIR", str(tmp_path / "profile"))
+    monkeypatch.setattr(yt, "_get_default_browser_name", lambda: "msedge")
+    context = _FakePersistentContext()
+    chromium = _FakeChromium(context)
+    controller = yt._YouTubeController()
+    controller._playwright = SimpleNamespace(chromium=chromium)
+
+    asyncio.run(controller._launch_browser_if_needed())
+
+    kwargs = chromium.calls[0]
+    assert kwargs["channel"] == "msedge"          # detected real browser first
+    assert kwargs["user_data_dir"] == str(tmp_path / "profile")
+    assert kwargs["viewport"] is None
+    assert "user_agent" not in kwargs             # no stale UA/Client-Hints mismatch
+    assert kwargs["ignore_default_args"] == ["--enable-automation"]
+    for flag in ("--disable-blink-features=AutomationControlled", "--start-maximized",
+                 "--autoplay-policy=no-user-gesture-required", "--no-first-run",
+                 "--no-default-browser-check"):
+        assert flag in kwargs["args"]
+    assert "navigator, 'webdriver'" in context.init_scripts[0]
+    assert "undefined" in context.init_scripts[0]
+
+
+def test_persistent_context_falls_back_from_detected_channel_to_chrome(monkeypatch, tmp_path):
+    monkeypatch.setenv("FRIDAY_YOUTUBE_PROFILE_DIR", str(tmp_path / "profile"))
+    monkeypatch.setattr(yt, "_get_default_browser_name", lambda: "msedge")
+    chromium = _FakeChromium(_FakePersistentContext(), fail_first=True)
+    controller = yt._YouTubeController()
+    controller._playwright = SimpleNamespace(chromium=chromium)
+
+    asyncio.run(controller._launch_browser_if_needed())
+    assert [call.get("channel") for call in chromium.calls[:2]] == ["msedge", "chrome"]
+
+
+def test_cdp_attachment_reuses_existing_youtube_tab(monkeypatch):
+    monkeypatch.setenv("FRIDAY_CHROME_CDP_URL", "http://127.0.0.1:9222")
+    page = FakeVideoPage(url=f"https://www.youtube.com/watch?v={VIDEO_ID}")
+    context = SimpleNamespace(pages=[page])
+    browser = SimpleNamespace(contexts=[context], is_connected=lambda: True)
+    seen = {}
+
+    class Chromium:
+        async def connect_over_cdp(self, url):
+            seen["url"] = url
+            return browser
+
+    controller = yt._YouTubeController()
+    controller._playwright = SimpleNamespace(chromium=Chromium())
+    assert asyncio.run(controller._get_page()) is page
+    assert seen["url"] == "http://127.0.0.1:9222"
+    assert controller._cdp is True
+
+
+def test_native_mode_uses_webbrowser_and_never_starts_playwright(monkeypatch):
+    monkeypatch.setenv("FRIDAY_YOUTUBE_MODE", "native")
+    opened = []
+    monkeypatch.setattr(yt.webbrowser, "open", lambda url: opened.append(url))
+    monkeypatch.setattr(yt.requests, "get", fake_get(
+        initial_data_html([video_renderer(VIDEO_ID, "Lo-fi Beats")])
+    ))
+    monkeypatch.setattr(yt, "_YouTubeController",
+                        lambda: pytest.fail("Playwright must not be used in native mode"))
+
+    result = yt.youtube_video({"action": "play", "query": "lo-fi"})
+    assert "Opened YouTube video in your browser" in result
+    assert opened == [f"https://www.youtube.com/watch?v={VIDEO_ID}"]
+
+    gw = types.ModuleType("pygetwindow")
+    gw.getWindowsWithTitle = lambda title: []
+    monkeypatch.setitem(sys.modules, "pygetwindow", gw)
+    monkeypatch.setattr("actions.media_control.media_control_action",
+                        lambda params: "Pressed play/pause, sir.")
+    assert "media controls" in yt.youtube_video({"action": "pause"})
+
+
+def test_native_mode_search_opens_resolved_watch_url(monkeypatch):
+    monkeypatch.setenv("FRIDAY_YOUTUBE_MODE", "native")
+    opened = []
+    monkeypatch.setattr(yt.webbrowser, "open", lambda url: opened.append(url))
+    monkeypatch.setattr(yt.requests, "get", fake_get(
+        initial_data_html([video_renderer(VIDEO_ID, "Top Result")])
+    ))
+    monkeypatch.setattr(yt, "_YouTubeController",
+                        lambda: pytest.fail("Playwright must not be used in native mode"))
+
+    result = yt.youtube_video({"action": "search", "query": "topic"})
+    assert "Top Result" in result
+    assert opened == [f"https://www.youtube.com/watch?v={VIDEO_ID}"]
+
+
+def test_profile_lock_falls_back_to_default_browser(monkeypatch):
+    opened = []
+
+    class LockedController(FakeController):
+        def run(self, awaited):
+            raise RuntimeError("persistent profile is locked by another process")
+
+    monkeypatch.setattr(yt, "_get_controller", lambda create=True: LockedController())
+    monkeypatch.setattr(yt.webbrowser, "open", lambda url: opened.append(url))
+
+    yt.youtube_video({"action": "open"})
+    yt.youtube_video({"action": "play", "url": f"https://youtu.be/{VIDEO_ID}"})
+    assert opened[0] == "https://www.youtube.com"
+    assert opened[1] == f"https://www.youtube.com/watch?v={VIDEO_ID}"
+
+
+def test_known_title_is_preserved_and_last_played_feeds_get_info(monkeypatch):
+    monkeypatch.setattr(yt.requests, "get", fake_get(
+        initial_data_html([video_renderer(VIDEO_ID, "Resolved Search Title")])
+    ))
+    controller = _SyncNoBrowserController(FakeVideoPage(title=""))
+    monkeypatch.setattr(yt, "_get_controller", lambda create=True: controller)
+
+    result = yt.youtube_video({"action": "play", "query": "lo-fi"})
+    assert result == "Playing 'Resolved Search Title'."
+    assert result != "Playing 'the video'."
+    assert yt._LAST_PLAYED_VIDEO["title"] == "Resolved Search Title"
+
+    controller.active = False
+    seen = []
+    monkeypatch.setattr(yt, "_scrape_video_info",
+                        lambda video_id: seen.append(video_id) or {"title": "Info"})
+    assert "Title: Info" in yt.youtube_video({"action": "get_info"})
+    assert seen == [VIDEO_ID]
+
+
+def test_fullscreen_toggle_reads_real_dom_state_and_volume_is_exact():
+    page = FakeVideoPage()
+    controller = _NoBrowserController(page)
+    assert asyncio.run(controller.feature("fullscreen")) == "Fullscreen on."
+    assert asyncio.run(controller.feature("fullscreen")) == "Fullscreen off."
+    assert asyncio.run(controller.volume(level=25)) == "Volume set to 25%."
+    assert asyncio.run(controller.volume(level=0)) == "Volume set to 0% (muted)."
+
+
+def test_http_headers_use_a_modern_chrome_user_agent():
+    assert "Chrome/136.0.0.0" in yt.HEADERS["User-Agent"]

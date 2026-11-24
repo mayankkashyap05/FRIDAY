@@ -28,6 +28,8 @@ ui/app/.vite/
 
 # Local runtime state
 data/
+# Persistent Chrome/Edge profile for YouTube (cookies/cache) — never commit.
+data/youtube_profile/
 documents/
 out/
 build/
