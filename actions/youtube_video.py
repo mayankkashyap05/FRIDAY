@@ -13,6 +13,7 @@ from __future__ import annotations
 import asyncio
 import concurrent.futures
 import json
+import os
 import platform
 import re
 import shutil
@@ -63,7 +64,7 @@ HEADERS = {
     "User-Agent": (
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
         "AppleWebKit/537.36 (KHTML, like Gecko) "
-        "Chrome/120.0.0.0 Safari/537.36"
+        "Chrome/136.0.0.0 Safari/537.36"
     ),
     "Accept-Language": "en-US,en;q=0.9",
 }
@@ -73,6 +74,93 @@ HEADERS = {
 SEARCH_COOKIES = {"CONSENT": "YES+cb", "SOCS": "CAI"}
 YOUTUBE_HOME = "https://www.youtube.com"
 SEARCH_ENDPOINT = "https://www.youtube.com/results?search_query={query}&hl=en"
+
+CAPTCHA_MESSAGE = (
+    "YouTube is asking for a quick Google verification (CAPTCHA) in the browser "
+    "window, sir. Please complete it once — FRIDAY uses a persistent browser "
+    "profile so it will remember your verification."
+)
+NO_VIDEO_MESSAGE = "No YouTube video is currently loaded in FRIDAY's player, sir."
+
+# A real, persistent browser profile avoids the ephemeral-context fingerprint
+# that sends Playwright sessions to Google's /sorry interstitial.
+_LAST_PLAYED_LOCK = threading.RLock()
+_LAST_PLAYED_VIDEO: dict[str, str] = {}
+
+
+def _youtube_profile_dir() -> Path:
+    configured = os.environ.get("FRIDAY_YOUTUBE_PROFILE_DIR", "").strip()
+    return Path(configured).expanduser() if configured else BASE_DIR / "data" / "youtube_profile"
+
+
+def _native_mode() -> bool:
+    return os.environ.get("FRIDAY_YOUTUBE_MODE", "").strip().lower() == "native"
+
+
+def _cdp_url() -> str:
+    return os.environ.get("FRIDAY_CHROME_CDP_URL", "").strip()
+
+
+def _remember_played_video(info: dict) -> None:
+    with _LAST_PLAYED_LOCK:
+        _LAST_PLAYED_VIDEO.clear()
+        _LAST_PLAYED_VIDEO.update({
+            "video_id": str(info.get("video_id") or ""),
+            "title": str(info.get("title") or ""),
+            "channel": str(info.get("channel") or ""),
+            "url": str(info.get("url") or ""),
+        })
+
+
+def _last_played_video() -> dict:
+    with _LAST_PLAYED_LOCK:
+        return dict(_LAST_PLAYED_VIDEO)
+
+
+async def _is_blocked_page(page) -> bool:
+    """Detect Google's /sorry CAPTCHA interstitial without false positives."""
+    try:
+        if "/sorry" in str(getattr(page, "url", "")).lower():
+            return True
+    except Exception:
+        pass
+    try:
+        title = (await page.title() or "").lower()
+        if "unusual traffic" in title or ("captcha" in title and "google" in title):
+            return True
+    except Exception:
+        pass
+    for selector in ("#captcha-form", 'iframe[src*="recaptcha"]'):
+        try:
+            locator = page.locator(selector).first
+            if await locator.count():
+                return True
+        except Exception:
+            continue
+    try:
+        body = await page.evaluate("() => (document.body && document.body.innerText) || ''")
+        if body and "unusual traffic" in str(body).lower():
+            return True
+    except Exception:
+        pass
+    try:
+        body_text = await page.inner_text("body")
+        if body_text and "unusual traffic" in str(body_text).lower():
+            return True
+    except Exception:
+        pass
+    return False
+
+
+def _is_youtube_page(url: str) -> bool:
+    try:
+        host = urlparse(str(url or "")).hostname or ""
+    except Exception:
+        return False
+    host = host.lower()
+    return any(host == domain or host.endswith("." + domain)
+               for domain in ("youtube.com", "youtu.be"))
+
 
 LANGUAGE_PRIORITY = [
     "en", "hi", "tr", "de", "fr", "es", "it", "pt",
@@ -198,6 +286,26 @@ def _find_browser_executable(prog_id: str) -> tuple[str, str | None, str | None]
     if "chrome" in (prog_id or "").lower() or not prog_id:
         return "chromium", None, "chrome"
     return "chromium", None, None
+
+
+def _browser_launch_candidates() -> list[dict]:
+    """Launch order: detected real browser, Chrome, Edge, bundled Chromium."""
+    detected = (_get_default_browser_name() or "").strip().lower()
+    if detected in ("chrome", "msedge"):
+        preferred = {"channel": detected}
+    elif detected in ("opera", "brave", "vivaldi"):
+        exe = (shutil.which(detected) or shutil.which(detected + ".exe") or
+               shutil.which("brave-browser") or shutil.which("opera-stable"))
+        preferred = {"executable_path": exe} if exe else {}
+    else:
+        preferred = {}
+
+    candidates = [preferred] if preferred else []
+    for channel in ("chrome", "msedge", None):
+        candidate = {"channel": channel} if channel else {}
+        if candidate not in candidates:
+            candidates.append(candidate)
+    return candidates
 
 
 def open_browser() -> None:
@@ -914,6 +1022,48 @@ _VIDEO_PREFIX = """const v = document.querySelector('video.html5-main-video') ||
             document.querySelector('video');
   if (!v) return {ok: false};"""
 
+_ENV_JS = """() => {
+  const v = document.querySelector('video.html5-main-video') || document.querySelector('video');
+  const host = (location.hostname || '').toLowerCase();
+  const youtube = host === 'youtube.com' || host.endsWith('.youtube.com') ||
+                  host === 'youtu.be' || host.endsWith('.youtu.be');
+  return {ok: true, hasVideo: !!v, youtube: youtube, url: location.href};
+}"""
+
+_TITLE_JS = """() => {
+  const selectors = [
+    'h1.ytd-watch-metadata yt-formatted-string',
+    'h1.style-scope.ytd-watch-metadata',
+    '.ytp-title-link', 'h1.title'
+  ];
+  let title = '';
+  for (const selector of selectors) {
+    const node = document.querySelector(selector);
+    if (node && node.textContent && node.textContent.trim()) {
+      title = node.textContent.trim();
+      break;
+    }
+  }
+  if (!title) title = (document.title || '').replace(/\\s*-\\s*YouTube\\s*$/i, '').trim();
+  return {ok: true, title: title, href: location.href};
+}"""
+
+_FEATURE_STATE_JS = """(arg) => {
+  const v = document.querySelector('video.html5-main-video') || document.querySelector('video');
+  if (!v) return {ok: false};
+  let active = false;
+  if (arg.name === 'fullscreen') active = !!document.fullscreenElement;
+  else if (arg.name === 'theater') active = !!document.querySelector(
+      'ytd-watch-flexy[theater], body.ytp-theater-mode');
+  else if (arg.name === 'miniplayer') active = !!document.querySelector(
+      'ytd-miniplayer, body.ytp-miniplayer-mode');
+  else if (arg.name === 'captions') {
+    const tracks = v.textTracks || [];
+    for (const track of tracks) { if (track.mode === 'showing') active = true; }
+  }
+  return {ok: true, name: arg.name, enabled: active};
+}"""
+
 _PAUSE_JS = """() => {""" + _VIDEO_PREFIX + """
   if (!v.paused) v.pause();
   return {ok: true, paused: !!v.paused, currentTime: Number(v.currentTime) || 0,
@@ -974,20 +1124,23 @@ _FEATURE_JS = """(arg) => {""" + _VIDEO_PREFIX + """
   };
   const button = document.querySelector(selectors[arg.name]);
   if (!button) return {ok: false, name: arg.name};
-
-  let active = false;
-  if (arg.name === 'fullscreen') active = !!document.fullscreenElement;
-  else if (arg.name === 'theater') active = !!document.querySelector(
-      'ytd-watch-flexy[theater], body.ytp-theater-mode');
-  else if (arg.name === 'miniplayer') active = !!document.querySelector(
-      'ytd-miniplayer, body.ytp-miniplayer-mode');
-  else if (arg.name === 'captions') {
-    const tracks = v.textTracks || [];
-    for (const track of tracks) { if (track.mode === 'showing') active = true; }
+  const explicit = arg.enabled !== null && arg.enabled !== undefined;
+  if (explicit) {
+    // Explicit on/off: click only when the current state differs.
+    let active = false;
+    if (arg.name === 'fullscreen') active = !!document.fullscreenElement;
+    else if (arg.name === 'theater') active = !!document.querySelector(
+        'ytd-watch-flexy[theater], body.ytp-theater-mode');
+    else if (arg.name === 'miniplayer') active = !!document.querySelector(
+        'ytd-miniplayer, body.ytp-miniplayer-mode');
+    else if (arg.name === 'captions') {
+      const tracks = v.textTracks || [];
+      for (const track of tracks) { if (track.mode === 'showing') active = true; }
+    }
+    if (active === !!arg.enabled) return {ok: true, name: arg.name, clicked: false};
   }
-  const wanted = arg.enabled === null || arg.enabled === undefined ? !active : !!arg.enabled;
-  if (wanted !== active) button.click();
-  return {ok: true, name: arg.name, enabled: wanted};
+  button.click();
+  return {ok: true, name: arg.name, clicked: true};
 }"""
 
 _SKIP_AD_SELECTORS = (
@@ -1022,6 +1175,7 @@ class _YouTubeController:
         self._exe_path = None
         self._channel = None
         self._last_url = ""
+        self._cdp = False
 
     # -- thread plumbing -----------------------------------------------------
 
@@ -1073,43 +1227,120 @@ class _YouTubeController:
     # -- browser lifecycle ---------------------------------------------------
 
     async def _launch_browser_if_needed(self):
-        if self._browser and self._browser.is_connected():
+        """Attach over CDP or launch a persistent, real-browser profile."""
+        if self._cdp and self._browser and self._browser.is_connected():
             return self._browser
+        if self._context is not None and not self._cdp:
+            return self._context
         if self._playwright is None:
             await self._init()
 
-        engine_name, exe_path, channel = _find_browser_executable(_get_default_browser_id())
-        # YouTube keyboard shortcuts and .ytp controls are Chromium-specific;
-        # always prefer a Chromium engine even when another browser is default.
-        if engine_name != "chromium":
-            engine_name, exe_path, channel = "chromium", None, None
-        engine = getattr(self._playwright, engine_name, None) or self._playwright.chromium
-        args = ["--start-maximized", "--autoplay-policy=no-user-gesture-required"]
-        launch_kwargs = {"headless": False, "args": args}
-        if exe_path:
-            launch_kwargs["executable_path"] = exe_path
-        elif channel:
-            launch_kwargs["channel"] = channel
+        cdp = _cdp_url()
+        if cdp:
+            try:
+                self._browser = await self._playwright.chromium.connect_over_cdp(cdp)
+                self._cdp = True
+                contexts = getattr(self._browser, "contexts", []) or []
+                self._context = contexts[0] if contexts else await self._browser.new_context()
+                return self._browser
+            except Exception as exc:
+                print(f"[YouTube] CDP attach failed ({exc}); using persistent profile")
 
+        profile = _youtube_profile_dir()
         try:
-            self._browser = await engine.launch(**launch_kwargs)
+            profile.mkdir(parents=True, exist_ok=True)
         except Exception as exc:
-            print(f"[YouTube] Browser launch failed ({exc}); using bundled Chromium")
-            self._browser = await self._playwright.chromium.launch(
-                headless=False, args=args
-            )
-        self._engine, self._exe_path, self._channel = engine_name, exe_path, channel
-        return self._browser
+            print(f"[YouTube] Could not create browser profile directory: {exc}")
+
+        last_error = None
+        for candidate in _browser_launch_candidates():
+            launch_kwargs = {
+                "user_data_dir": str(profile),
+                "headless": False,
+                "args": [
+                    "--disable-blink-features=AutomationControlled",
+                    "--start-maximized",
+                    "--autoplay-policy=no-user-gesture-required",
+                    "--no-first-run",
+                    "--no-default-browser-check",
+                ],
+                "ignore_default_args": ["--enable-automation"],
+                "viewport": None,
+            }
+            launch_kwargs.update(candidate)
+            try:
+                # No user_agent override: Client Hints must match the real browser.
+                self._context = await self._playwright.chromium.launch_persistent_context(
+                    **launch_kwargs
+                )
+                await self._context.add_init_script(
+                    "Object.defineProperty(navigator, 'webdriver', {get: () => undefined});"
+                )
+                self._browser = getattr(self._context, "browser", None)
+                self._engine = "chromium"
+                self._channel = candidate.get("channel")
+                self._exe_path = candidate.get("executable_path")
+                return self._browser or self._context
+            except Exception as exc:
+                last_error = exc
+                print(f"[YouTube] Persistent browser launch failed ({exc}); trying next")
+
+        raise RuntimeError(
+            "Could not launch a persistent Chromium profile "
+            f"(profile may be locked by another process): {last_error}"
+        )
 
     async def _get_page(self):
         await self._launch_browser_if_needed()
         if self._page is None or self._page.is_closed():
-            if self._context is None:
-                self._context = await self._browser.new_context(
-                    viewport=None, user_agent=HEADERS["User-Agent"]
-                )
-            self._page = await self._context.new_page()
+            pages = []
+            if self._context is not None:
+                try:
+                    pages = list(getattr(self._context, "pages", []) or [])
+                except Exception:
+                    pages = []
+            for candidate in pages:
+                try:
+                    if not candidate.is_closed() and "youtube" in str(candidate.url).lower():
+                        self._page = candidate
+                        break
+                except Exception:
+                    continue
+            if self._page is None or self._page.is_closed():
+                if pages and not pages[0].is_closed():
+                    self._page = pages[0]
+                elif self._context is not None:
+                    self._page = await self._context.new_page()
+                else:
+                    self._page = await self._browser.new_page()
         return self._page
+
+    async def _guard(self, page):
+        """Return (page, None) only for a real YouTube page with a <video>."""
+        if await _is_blocked_page(page):
+            return None, CAPTCHA_MESSAGE
+        try:
+            env = await page.evaluate(_ENV_JS) or {}
+        except Exception:
+            env = {}
+        if not env.get("hasVideo") or not env.get("youtube"):
+            return None, NO_VIDEO_MESSAGE
+        return page, None
+
+    async def safe_current_url(self) -> str:
+        """Current watch URL only when it is YouTube and not a /sorry page."""
+        page = self._page
+        if page is None:
+            return ""
+        try:
+            if page.is_closed():
+                return ""
+        except Exception:
+            pass
+        if await _is_blocked_page(page):
+            return ""
+        url = str(getattr(page, "url", "") or self._last_url or "")
+        return url if _is_youtube_page(url) and _extract_video_id(url) else ""
 
     async def _dismiss_popups(self, page) -> None:
         """Dismiss consent/cookie and sign-in nags; never fail if absent."""
@@ -1152,7 +1383,7 @@ class _YouTubeController:
 
     async def _goto(self, url: str) -> str:
         page = await self._get_page()
-        await page.goto(url, wait_until="domcontentloaded", timeout=30000)
+        await page.goto(url, wait_until="domcontentloaded", timeout=20000)
         self._last_url = url
         await self._dismiss_popups(page)
         try:
@@ -1174,21 +1405,69 @@ class _YouTubeController:
     async def open(self, url: str | None = None) -> str:
         target = url if url and _is_valid_youtube_url(url) else YOUTUBE_HOME
         await self._goto(target)
+        page = await self._get_page()
+        if await _is_blocked_page(page):
+            return CAPTCHA_MESSAGE
         return "Opened YouTube." if target == YOUTUBE_HOME else f"Opened {target}."
 
-    async def play_url(self, url: str, start_seconds=None) -> str:
+    async def play_url(self, url: str, start_seconds=None, title=None, channel=None) -> str:
+        """Play a resolved URL; ``title`` comes from the search result if known."""
+        return await self._play_url(
+            url, title=title, channel=channel, start_seconds=start_seconds
+        )
+
+    async def _play_url(self, url: str, title=None, channel=None, start_seconds=None) -> str:
         target = _append_timestamp(url, start_seconds)
         await self._goto(target)
         page = await self._get_page()
+        if await _is_blocked_page(page):
+            return CAPTCHA_MESSAGE
+
+        try:
+            await page.wait_for_selector(
+                "video.html5-main-video, video", timeout=5000, state="attached"
+            )
+        except Exception:
+            if await _is_blocked_page(page):
+                return CAPTCHA_MESSAGE
+            return NO_VIDEO_MESSAGE
+
+        page, error = await self._guard(page)
+        if error:
+            return error
+
+        try:
+            await page.evaluate(_RESUME_JS)  # ensure playback actually starts
+        except Exception:
+            pass
         await self._skip_ad_if_available(page, wait_ms=2000)
+
+        try:
+            title_info = await page.evaluate(_TITLE_JS) or {}
+        except Exception:
+            title_info = {}
         state = await self._state(page)
-        title = state.get("title") or "the video"
-        return f"Playing '{title}'."
+        live_title = str(title_info.get("title") or "").strip()
+        resolved_title = str(title or "").strip()
+        final_title = live_title or resolved_title or str(state.get("title") or "").strip()
+        if not final_title:
+            return NO_VIDEO_MESSAGE
+
+        _remember_played_video({
+            "video_id": _extract_video_id(target) or "",
+            "title": final_title,
+            "channel": str(channel or state.get("channel") or ""),
+            "url": target,
+        })
+        return f"Playing '{final_title}'."
 
     async def search_dom(self, query: str, max_results: int = 20) -> list[dict]:
         """Live-search fallback for blocked HTTP requests."""
         await self._goto(SEARCH_ENDPOINT.format(query=quote_plus(query)))
         page = await self._get_page()
+        if await _is_blocked_page(page):
+            print("[YouTube] Search page is blocked by a Google verification")
+            return []
         try:
             await page.wait_for_selector("a#video-title", timeout=10000)
         except Exception:
@@ -1224,11 +1503,14 @@ class _YouTubeController:
 
     @staticmethod
     def _state_line(state: dict, verb: str) -> str:
-        title = state.get("title") or "the video"
+        title = state.get("title") or _last_played_video().get("title") or "the video"
         return f"{verb} '{title}' at {_format_time(state.get('currentTime', 0))}."
 
     async def pause(self) -> str:
         page = await self._get_page()
+        page, error = await self._guard(page)
+        if error:
+            return error
         try:
             result = await page.evaluate(_PAUSE_JS) or {}
         except Exception:
@@ -1239,10 +1521,16 @@ class _YouTubeController:
             except Exception:
                 pass
             result = await self._state(page)
-        return self._state_line(result, "Paused")
+            if not result.get("ok"):
+                return NO_VIDEO_MESSAGE
+        after = await self._state(page)
+        return self._state_line(after or result, "Paused")
 
     async def resume(self) -> str:
         page = await self._get_page()
+        page, error = await self._guard(page)
+        if error:
+            return error
         try:
             result = await page.evaluate(_RESUME_JS) or {}
         except Exception:
@@ -1253,27 +1541,33 @@ class _YouTubeController:
             except Exception:
                 pass
             result = await self._state(page)
-        return self._state_line(result, "Resumed")
+            if not result.get("ok"):
+                return NO_VIDEO_MESSAGE
+        after = await self._state(page)
+        return self._state_line(after or result, "Resumed")
 
     async def toggle(self) -> str:
         page = await self._get_page()
+        page, error = await self._guard(page)
+        if error:
+            return error
         state = await self._state(page)
         if not state.get("ok"):
-            try:
-                await page.keyboard.press("k")
-            except Exception:
-                pass
-            state = await self._state(page)
+            return NO_VIDEO_MESSAGE
         was_paused = bool(state.get("paused", True))
         result = await (self.resume() if was_paused else self.pause())
+        if result in (CAPTCHA_MESSAGE, NO_VIDEO_MESSAGE):
+            return result
         after = await self._state(page)
-        if after.get("ok"):
-            verb = "Paused" if after.get("paused") else "Playing"
-            return self._state_line(after, verb)
-        return result.replace("Resumed", "Playing", 1)
+        if not after.get("ok"):
+            return NO_VIDEO_MESSAGE
+        return self._state_line(after, "Paused" if after.get("paused") else "Playing")
 
     async def seek(self, value: float = 0, relative: bool = False) -> str:
         page = await self._get_page()
+        page, error = await self._guard(page)
+        if error:
+            return error
         try:
             result = await page.evaluate(
                 _SEEK_JS, {"value": float(value), "relative": bool(relative)}
@@ -1281,7 +1575,6 @@ class _YouTubeController:
         except Exception:
             result = {}
         if not result.get("ok"):
-            # Keyboard fallback: j/l jump 10s on YouTube.
             key = "l" if relative and value > 0 else "j" if relative and value < 0 else None
             if key:
                 try:
@@ -1289,11 +1582,17 @@ class _YouTubeController:
                         await page.keyboard.press(key)
                 except Exception:
                     pass
-            return f"Seeked to {_format_time(value)}."
-        return f"Seeked to {_format_time(result.get('currentTime', 0))}."
+        after = await self._state(page)
+        if not after.get("ok") and not result.get("ok"):
+            return NO_VIDEO_MESSAGE
+        actual = after.get("currentTime", result.get("currentTime", 0))
+        return f"Seeked to {_format_time(actual)}."
 
     async def volume(self, level=None, delta=None) -> str:
         page = await self._get_page()
+        page, error = await self._guard(page)
+        if error:
+            return error
         payload = {"set": None, "delta": None}
         if level is not None:
             payload["set"] = _number(level, 0)
@@ -1314,32 +1613,49 @@ class _YouTubeController:
                     await page.keyboard.press("volumedown")
                 except Exception:
                     pass
-            return "Volume updated."
-        percent = int(result.get("volume", 0))
-        return f"Volume set to {percent}%{' (muted)' if result.get('muted') else ''}."
+        after = await self._state(page)
+        if not after.get("ok") and not result.get("ok"):
+            return NO_VIDEO_MESSAGE
+        percent = int(after.get("volume", result.get("volume", 0)))
+        muted = bool(after.get("muted", result.get("muted", False)))
+        return f"Volume set to {percent}%{' (muted)' if muted else ''}."
 
     async def mute(self, muted: bool = True) -> str:
         page = await self._get_page()
+        page, error = await self._guard(page)
+        if error:
+            return error
         try:
-            await page.evaluate(_MUTE_JS, {"muted": bool(muted)})
+            result = await page.evaluate(_MUTE_JS, {"muted": bool(muted)}) or {}
         except Exception:
+            result = {}
+        if not result.get("ok"):
             try:
                 await page.keyboard.press("m")
             except Exception:
                 pass
-        return "Muted." if muted else "Unmuted."
+        after = await self._state(page)
+        if not after.get("ok") and not result.get("ok"):
+            return NO_VIDEO_MESSAGE
+        return "Muted." if after.get("muted", result.get("muted", muted)) else "Unmuted."
 
     async def speed(self, rate: float = 1.0) -> str:
         page = await self._get_page()
+        page, error = await self._guard(page)
+        if error:
+            return error
         rate = _clamp(_number(rate, 1.0), 0.25, 4.0)
         try:
-            await page.evaluate(_SPEED_JS, {"value": rate})
+            result = await page.evaluate(_SPEED_JS, {"value": rate}) or {}
         except Exception:
-            pass
-        return f"Playback speed set to {rate:g}x."
+            result = {}
+        after = await self._state(page)
+        if not after.get("ok") and not result.get("ok"):
+            return NO_VIDEO_MESSAGE
+        actual = _number(after.get("speed", result.get("speed")), rate)
+        return f"Playback speed set to {actual:g}x."
 
-    async def _click_player_button(self, selectors, shortcuts):
-        page = await self._get_page()
+    async def _click_player_button(self, page, selectors, shortcuts):
         for selector in selectors:
             try:
                 button = page.locator(selector).first
@@ -1358,28 +1674,27 @@ class _YouTubeController:
 
     async def _navigate_playlist(self, direction: str) -> str:
         page = await self._get_page()
+        page, error = await self._guard(page)
+        if error:
+            return error
+        before = await self._state(page)
         if direction == "next":
-            clicked = await self._click_player_button(
-                (".ytp-next-button",), ("Shift+N",)
-            )
+            acted = await self._click_player_button(page, (".ytp-next-button",), ("Shift+N",))
             verb = "next"
         else:
-            clicked = await self._click_player_button(
-                (".ytp-prev-button",), ("Shift+P",)
-            )
+            acted = await self._click_player_button(page, (".ytp-prev-button",), ("Shift+P",))
             verb = "previous"
-        if not clicked:
+        if not acted:
+            return f"No {verb} video is available, sir."
+        for _ in range(2):
             try:
-                await page.go_back()
+                await page.wait_for_timeout(600)
             except Exception:
-                pass
-        try:
-            await page.wait_for_timeout(1200)
-        except Exception:
-            pass
-        state = await self._state(page)
-        title = state.get("title") or "unknown title"
-        return f"Playing {verb} video: {title}."
+                break
+            after = await self._state(page)
+            if after.get("url") != before.get("url") or after.get("title") != before.get("title"):
+                return f"Playing {verb} video: {after.get('title') or 'unknown title'}."
+        return f"No {verb} video is available, sir."
 
     async def next(self) -> str:
         return await self._navigate_playlist("next")
@@ -1389,31 +1704,53 @@ class _YouTubeController:
 
     async def feature(self, name: str, enabled=None) -> str:
         page = await self._get_page()
+        page, error = await self._guard(page)
+        if error:
+            return error
         key = {"fullscreen": "f", "theater": "t", "miniplayer": "i",
                "captions": "c"}.get(name, "f")
         try:
-            result = await page.evaluate(
+            clicked = await page.evaluate(
                 _FEATURE_JS, {"name": name, "enabled": enabled}
             ) or {}
         except Exception:
-            result = {}
-        if not result.get("ok"):
-            await self._click_player_button((), (key,))
-            result = {"enabled": enabled is None}
-        state = "on" if result.get("enabled") else "off"
-        return f"{name.capitalize()} {state}."
+            clicked = {}
+        if not clicked.get("ok"):
+            try:
+                await page.keyboard.press(key)
+            except Exception:
+                pass
+        try:
+            await page.wait_for_timeout(250)
+        except Exception:
+            pass
+        try:
+            state = await page.evaluate(_FEATURE_STATE_JS, {"name": name}) or {}
+        except Exception:
+            state = {}
+        if not state.get("ok"):
+            return f"Could not verify {name} state in the player, sir."
+        return f"{name.capitalize()} {'on' if state.get('enabled') else 'off'}."
 
     async def skip_ad(self, wait_ms: int = 0) -> str:
         page = await self._get_page()
+        page, error = await self._guard(page)
+        if error:
+            return error
         clicked = await self._skip_ad_if_available(page, wait_ms=wait_ms)
         return "Skipped ad." if clicked else "No skippable ad found."
 
     async def now_playing(self) -> str:
-        state = await self._state()
+        page = await self._get_page()
+        page, error = await self._guard(page)
+        if error:
+            return error
+        state = await self._state(page)
         if not state.get("ok"):
-            return "No YouTube video is currently loaded in FRIDAY's player, sir."
-        title = state.get("title") or "unknown title"
-        channel = state.get("channel")
+            return NO_VIDEO_MESSAGE
+        remembered = _last_played_video()
+        title = state.get("title") or remembered.get("title") or "unknown title"
+        channel = state.get("channel") or remembered.get("channel")
         line = f"Now playing: '{title}'"
         if channel:
             line += f" by {channel}"
@@ -1432,7 +1769,14 @@ class _YouTubeController:
         return line
 
     async def close(self) -> str:
-        if self._browser:
+        # A persistent context owns the browser; close it instead of a missing
+        # context.browser handle. For CDP this only detaches from the user's browser.
+        if self._context:
+            try:
+                await self._context.close()
+            except Exception:
+                pass
+        elif self._browser:
             try:
                 await self._browser.close()
             except Exception:
@@ -1440,6 +1784,7 @@ class _YouTubeController:
         self._browser = None
         self._context = None
         self._page = None
+        self._cdp = False
         self._last_url = ""
         if self._playwright:
             try:
@@ -1459,8 +1804,14 @@ _yt_controller: _YouTubeController | None = None
 
 
 def _get_controller(create: bool = True):
-    """Return the shared controller, starting its thread only when requested."""
+    """Return the shared controller, starting its thread only when requested.
+
+    In native mode Playwright is bypassed completely so FRIDAY always uses the
+    user's real, signed-in default browser.
+    """
     global _yt_controller
+    if _native_mode():
+        return None
     with _CONTROLLER_LOCK:
         if _yt_controller is None and create:
             _yt_controller = _YouTubeController()
@@ -1567,6 +1918,7 @@ def _handle_search(params: dict, player=None, speak=None) -> str:
         return "Tell me what you'd like to search for on YouTube, sir."
     include_shorts = bool(params.get("include_shorts", False))
     results = _search_youtube_videos(query, include_shorts=include_shorts)
+    browser_failed = False
     if not results:
         controller = _get_controller(create=False)
         if controller is not None:
@@ -1574,12 +1926,17 @@ def _handle_search(params: dict, player=None, speak=None) -> str:
                 controller.start()
                 results = controller.run(controller.search_dom(query))
             except Exception as exc:
+                browser_failed = True
                 print(f"[YouTube] DOM search fallback failed: {exc}")
     if not results:
-        if params.get("open") or params.get("open_results"):
+        if (_native_mode() or browser_failed or params.get("open")
+                or params.get("open_results")):
             webbrowser.open(SEARCH_ENDPOINT.format(query=quote_plus(query)))
             return f"Opened YouTube search for '{query}' in your browser."
         return f"No YouTube results found for '{query}', sir."
+    if _native_mode():
+        # Native mode never starts Playwright: open the resolved result directly.
+        webbrowser.open(results[0]["url"])
     if params.get("open") or params.get("open_results"):
         controller = _get_controller()
         if controller is not None:
@@ -1606,6 +1963,8 @@ def _handle_play(params: dict, player=None, speak=None) -> str:
         seconds = _parse_timestamp(params.get("seconds"))
 
     chosen_url = ""
+    chosen_title = ""
+    chosen_channel = ""
     if url:
         if not _is_valid_youtube_url(url):
             return "That doesn't appear to be a valid YouTube URL, sir."
@@ -1627,6 +1986,8 @@ def _handle_play(params: dict, player=None, speak=None) -> str:
         if index > len(results):
             return f"I only found {len(results)} results for '{query}', sir."
         chosen_url = results[index - 1]["url"]
+        chosen_title = str(results[index - 1].get("title") or "")
+        chosen_channel = str(results[index - 1].get("channel") or "")
     elif params.get("index") is not None or params.get("position") is not None:
         cached = _get_cached_results()
         if not cached:
@@ -1634,6 +1995,8 @@ def _handle_play(params: dict, player=None, speak=None) -> str:
         if index > len(cached):
             return f"I only have {len(cached)} results from the last search, sir."
         chosen_url = cached[index - 1].get("url") or cached[index - 1]["video_id"]
+        chosen_title = str(cached[index - 1].get("title") or "")
+        chosen_channel = str(cached[index - 1].get("channel") or "")
     else:
         controller = _get_controller(create=False)
         if controller is not None and controller.is_active():
@@ -1648,7 +2011,9 @@ def _handle_play(params: dict, player=None, speak=None) -> str:
     controller = _get_controller()
     if controller is not None:
         try:
-            return controller.run(controller.play_url(chosen_url, seconds))
+            return controller.run(controller.play_url(
+                chosen_url, seconds, title=chosen_title, channel=chosen_channel
+            ))
         except Exception as exc:
             print(f"[YouTube] Managed playback failed: {exc}")
     webbrowser.open(target)
@@ -1823,18 +2188,25 @@ def _handle_now_playing(params: dict, player=None, speak=None) -> str:
 def _resolve_info_url(params: dict) -> str | None:
     url = str(params.get("url") or "").strip()
     if url:
-        return url if _is_valid_youtube_url(url) else None
-    controller = _get_controller(create=False)
-    if controller is not None and controller.is_active():
-        current = controller.current_url()
-        if current and _is_valid_youtube_url(current):
-            return current
+        if "/sorry" in url.lower() or not _is_valid_youtube_url(url):
+            return None
+        return url
     query = str(params.get("query") or "").strip()
     if query:
         results = _search_youtube_videos(query, max_results=1)
         if results:
             return results[0]["url"]
-    return None
+    controller = _get_controller(create=False)
+    if controller is not None and controller.is_active():
+        try:
+            # safe_current_url() rejects /sorry interstitials and other hosts.
+            current = controller.run(controller.safe_current_url())
+            if current and _is_valid_youtube_url(current):
+                return current
+        except Exception as exc:
+            print(f"[YouTube] Could not read active tab URL: {exc}")
+    remembered = _last_played_video().get("url", "")
+    return remembered if remembered and _is_valid_youtube_url(remembered) else None
 
 
 def _handle_summarize(params: dict, player=None, speak=None) -> str:
