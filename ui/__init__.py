@@ -119,6 +119,7 @@ class FridayUI:
         self.state_machine = self.bridge
         self.controller.on_text_command = self._forward_text_command
         self.controller.on_mode_requested = self._on_mode_requested
+        self.controller.on_quit = self.quit
         self.hud.panels['settings'].mute_requested.connect(self._toggle_mute)
         self.hud.panels['settings'].quit_requested.connect(self.quit)
         self.root = _RootAdapter(self)
@@ -271,7 +272,7 @@ class FridayUI:
                 self._dispatch(setattr, self.hud.fsm, 'pinned', False)
                 return callback(approved)
             self.hud.panels['chat'].request_confirmation(description, answered)
-            self.hud.set_scene('chat')
+            self.controller.show_settings('Chat')
             self.hud.set_user_visible(True)
             self._visible = True
         self._dispatch(show_confirmation)
@@ -292,7 +293,7 @@ class FridayUI:
         self._dispatch(self.hud.panels['vision'].set_frame, copied)
     def open_vision_preview(self):
         self.vision_preview_open = True; self.vision_mode = 'PREVIEW'
-        self._dispatch(self.hud.set_scene, 'vision')
+        self._dispatch(self.controller.show_settings, 'Vision')
     def close_vision_preview(self): self.vision_preview_open = False; self.vision_mode = 'STANDBY'
     def set_arcade_frame(self, frame):
         if self.arcade_open and frame is not None:
@@ -304,7 +305,7 @@ class FridayUI:
     def set_arcade_pose(self, arms_raised, lean=0.):
         if self.arcade_open: self.set_vision_signal(f"Arms {'raised' if arms_raised else 'down'} · lean {float(lean):.2f}")
     def open_vision_arcade(self):
-        self.arcade_open = True; self.vision_mode = 'ARCADE'; self._dispatch(self.hud.set_scene, 'vision')
+        self.arcade_open = True; self.vision_mode = 'ARCADE'; self._dispatch(self.controller.show_settings, 'Vision')
     def close_vision_arcade(self): self.arcade_open = False; self.vision_mode = 'STANDBY'
 
 

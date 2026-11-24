@@ -95,13 +95,31 @@ def test_tasks_refresh_cancel_reminder_and_settings_persistence(window, monkeypa
 
 
 def test_confirmation_card_displays_full_details_and_answers_once(window):
-    hud, _ = window
+    hud, controller = window
     panel = hud.panels['chat']; calls = []
     details = 'Delete this file: ' + 'a' * 200
     panel.request_confirmation(details, calls.append)
+    controller.show_settings('Chat')
+    assert controller.settings_window.current_tab == 'Chat'
+    assert controller.settings_window.isVisible()
     assert panel.approval_description.toPlainText() == details
     panel.approve.click(); panel.deny.click()
     assert calls == [True]
     panel.request_confirmation('Other request', calls.append)
     panel.deny.click()
     assert calls == [True, False]
+
+
+def test_settings_hub_navigation_theme_and_ui_sound_persistence(window, tmp_path):
+    hud, controller = window
+    hub = controller.settings_window
+    assert hub.TABS == ('General', 'Chat', 'Media', 'Tasks', 'Vision', 'Shelf')
+    for index, name in enumerate(hub.TABS):
+        assert hub.select_tab(name) == name and hub.stack.currentIndex() == index
+    panel = hud.panels['settings']
+    panel.save(theme='light', ui_sounds=False)
+    assert hud.theme == 'light' and hud.sound_enabled is False
+    assert controller.search_popup.theme == 'light'
+    assert panel.store.values['ui_sounds'] is False
+    hub.close()
+    assert not hub.isVisible()

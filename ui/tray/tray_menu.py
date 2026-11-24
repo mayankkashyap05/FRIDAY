@@ -40,7 +40,7 @@ class TrayMenu:
         self.ui.controller.hud.set_scene('resting' if self.ui.controller.hud.state == 'face_out' else 'face_out')
 
     def open_settings(self):
-        self.ui.show(); self.ui.controller.hud.set_scene('settings')
+        self.ui.show(); self.ui.controller.show_settings('General')
 
     def close(self):
         if self.icon is None:

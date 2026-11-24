@@ -25,10 +25,6 @@ class SettingsPanel(Panel):
         self.opacity.setValue(store.values['opacity'])
         self.layout.addWidget(self.opacity)
 
-        self.hover = QCheckBox('Expand on hover')
-        self.hover.setChecked(store.values['hover_to_expand'])
-        self.layout.addWidget(self.hover)
-
         self.fullscreen = QCheckBox('Hide over fullscreen apps')
         self.fullscreen.setChecked(store.values['hide_on_fullscreen'])
         self.layout.addWidget(self.fullscreen)
@@ -57,7 +53,6 @@ class SettingsPanel(Panel):
 
         self.theme.currentTextChanged.connect(lambda v: self.save(theme=v))
         self.opacity.valueChanged.connect(lambda v: self.save(opacity=v))
-        self.hover.toggled.connect(lambda v: self.save(hover_to_expand=v))
         self.fullscreen.toggled.connect(lambda v: self.save(hide_on_fullscreen=v))
         self.animations.toggled.connect(lambda v: self.save(animations=v))
         self.ui_sounds.toggled.connect(lambda v: self.save(ui_sounds=v))
