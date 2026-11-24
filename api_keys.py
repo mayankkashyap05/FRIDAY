@@ -171,7 +171,7 @@ async def aio_generate(model, contents, config=None, api_version=None):
 
 
 def generate_with_retry(model, contents, config=None, api_version=None):
-    """Sync version of aio_generate (for transcribe_voice and legacy modules)."""
+    """Sync version of aio_generate (for synchronous action modules)."""
     from google import genai
 
     keys = get_all_keys()

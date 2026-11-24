@@ -16,7 +16,7 @@ Platforma quyidagilarni bajara olishi kerak:
 - QR va barcode skanerlash;
 - rasmni tavsiflash va rasm haqida savollarga javob berish;
 - segmentation, background removal va anomaly detection;
-- aniqlangan hodisalarni dashboard, voice, Telegram va desktop notification orqali yetkazish.
+- aniqlangan hodisalarni dashboard, voice va desktop notification orqali yetkazish.
 
 ## Hozirgi holat
 
@@ -312,8 +312,7 @@ Unknown person detected
 - barcha yuzlarni blur qilish;
 - noma’lum yuzlarni blur qilish;
 - screenshot’dan oldin avtomatik blur;
-- recording’da privacy mode;
-- Telegram’ga yuborishdan oldin yuzlarni yashirish.
+- recording’da privacy mode.
 
 Face embedding’lar local va himoyalangan holda saqlanadi. Roziliksiz face recognition ishlatilmaydi.
 
@@ -443,7 +442,6 @@ Alert kanallari:
 
 - dashboard;
 - ovozli ogohlantirish;
-- Telegram;
 - desktop notification;
 - log;
 - screenshot.
@@ -540,7 +538,6 @@ Maqsad: Friday kamerani ko‘radi va asosiy real-time signal beradi.
 - detected object haqida javob;
 - gesture-to-command mapping;
 - screenshot analysis;
-- Telegram alert;
 - event history;
 - action confirmation;
 - safety stop.
@@ -626,7 +623,6 @@ MVP uchun minimal maqsadlar:
 - detector pipeline;
 - dashboard telemetry;
 - voice command dispatch;
-- Telegram alert;
 - model fallback.
 
 ### Manual testlar
@@ -664,7 +660,7 @@ Ko‘radi       → obyekt, odam, yuz, gesture, text
 Tushunadi     → rasm, savol, harakat va anomal holat
 Gapiradi      → natijani ovoz bilan aytadi
 Boshqaradi    → gesture va voice orqali kompyuterga action beradi
-Ogohlantiradi → dashboard, Telegram va notification orqali xabar beradi
+Ogohlantiradi → dashboard va notification orqali xabar beradi
 O‘rganadi     → custom Roboflow dataset va personal models orqali rivojlanadi
 ```
 

@@ -4,7 +4,6 @@ import asyncio
 import threading
 import json
 import sys
-import os
 import re
 import time
 import traceback
@@ -62,73 +61,6 @@ API_CONFIG_PATH = BASE_DIR / "config" / "api_keys.json"
 PROMPT_PATH     = BASE_DIR / "core" / "prompt.txt"
 LIVE_MODEL          = "models/gemini-3.1-flash-live-preview"
 THINKING_LEVEL      = "low"  # Gemini 3.1 thinking depth: minimal | low | medium | high
-TG_MODEL            = "gemini-2.5-flash"
-
-TG_HELP_TEXT = (
-    "🤖 <b>Friday — Telegram remote control</b>\n"
-    "Yozing, men bajaraman. Misollar:\n"
-    "• <code>notepadni och</code>\n"
-    "• <code>Toshkent ob-havosi</code>\n"
-    "• <code>CPU qancha</code>\n"
-    "• <code>menga eslatma qo'y 10 daqiqadan keyin</code>\n"
-    "• <code>clipboard'ni ko'rsat</code>\n"
-    "• <code>yangi email bormi</code> / <code>email yubor ...</code>\n"
-    "• <code>kalendarimni ko'rsat</code> / <code>ertaga 15:00 da uchrashuv qo'y</code>\n"
-    "• <code>google_auth</code> (Google ulash) / <code>google tekshir</code>\n\n"
-    "🎤 Ovozli xabar yuborsangiz ham tushunaman.\n"
-    "⚡ Tezkor tugmalar va <code>/status</code>, <code>/mute</code>, "
-    "<code>/unmute</code>, <code>/mode</code>, <code>/voice</code>, "
-    "<code>/screenshot</code>, <code>/help</code>."
-)
-
-TG_QUICK_KEYBOARD = {
-    "inline_keyboard": [
-        [
-            {"text": "🔍 Status", "callback_data": "/status"},
-            {"text": "🔇 Mute",  "callback_data": "/mute"},
-            {"text": "🔊 Unmute", "callback_data": "/unmute"},
-        ],
-        [
-            {"text": "🧭 Mode", "callback_data": "/mode"},
-            {"text": "🗣 Voice", "callback_data": "/voice"},
-        ],
-        [
-            {"text": "📸 Screenshot", "callback_data": "/screenshot"},
-            {"text": "❓ Help", "callback_data": "/help"},
-        ],
-    ]
-}
-
-TG_MODE_KEYBOARD = {
-    "inline_keyboard": [
-        [
-            {"text": "😐 Normal",   "callback_data": "/mode normal"},
-            {"text": "💕 Girlfriend", "callback_data": "/mode girlfriend"},
-        ],
-        [
-            {"text": "🤪 Crazy Friend", "callback_data": "/mode crazy_friend"},
-            {"text": "🎩 Butler",       "callback_data": "/mode butler"},
-        ],
-        [
-            {"text": "🤝 Friend",  "callback_data": "/mode friend"},
-            {"text": "😎 Casual",  "callback_data": "/mode casual"},
-        ],
-    ]
-}
-
-TG_VOICE_KEYBOARD = None  # built after VOICE_NAMES is defined below
-
-
-def _take_screenshot_bytes() -> bytes | None:
-    """Capture the whole screen as PNG bytes (for /screenshot)."""
-    try:
-        import io
-        import pyautogui
-        buf = io.BytesIO()
-        pyautogui.screenshot().save(buf, "PNG")
-        return buf.getvalue()
-    except Exception:
-        return None
 CHANNELS            = 1
 SEND_SAMPLE_RATE    = 16000
 RECEIVE_SAMPLE_RATE = 24000
@@ -214,16 +146,6 @@ VOICES = {
     "Zubenelgenubi": "oddiy (Casual)",
 }
 VOICE_NAMES = list(VOICES.keys())
-
-TG_VOICE_KEYBOARD = {
-    "inline_keyboard": [
-        [
-            {"text": f"🎙 {name}", "callback_data": f"/voice {name}"}
-            for name in VOICE_NAMES[i:i + 2]
-        ]
-        for i in range(0, len(VOICE_NAMES), 2)
-    ]
-}
 
 
 def _normalize_voice(text) -> str:
@@ -1397,23 +1319,6 @@ class FridayLive:
         self._schedules     = []
         self._sched_lock    = threading.Lock()
 
-        self.telegram_token = None
-        self.telegram_chat  = None
-        try:
-            _tg_cfg = json.loads(API_CONFIG_PATH.read_text(encoding="utf-8"))
-            self.telegram_token = (_tg_cfg.get("telegram_bot_token") or "").strip() or None
-            self.telegram_chat  = _tg_cfg.get("telegram_chat_id")
-        except Exception:
-            pass
-        # Environment overrides (docker / dev / CI friendly).
-        if os.environ.get("FRIDAY_TELEGRAM_TOKEN"):
-            self.telegram_token = os.environ["FRIDAY_TELEGRAM_TOKEN"].strip() or None
-        if os.environ.get("FRIDAY_TELEGRAM_CHAT_ID"):
-            try:
-                self.telegram_chat = int(os.environ["FRIDAY_TELEGRAM_CHAT_ID"])
-            except (TypeError, ValueError):
-                self.telegram_chat = os.environ["FRIDAY_TELEGRAM_CHAT_ID"]
-
         try:
             from actions.wake_word import _service as wake_service
             wake_service.configure(on_detect=self._on_wake_detect)
@@ -1946,7 +1851,7 @@ class FridayLive:
         if entry is None:
             return ToolResult(ok=False, content=f"Unknown tool: {name}", error_kind="fatal")
 
-        print(f"[Telegram] 🔧 {name} {_sanitize(name, args)}")
+        print(f"[FRIDAY] 🔧 {name} {_sanitize(name, args)}")
         fn, timeout = entry
         return await run_sync_tool(lambda: fn(args), name, timeout=timeout)
 
@@ -2132,8 +2037,7 @@ class FridayLive:
             self.ui.write_log(f"SECURITY: '{name}' approved by user.")
         try:
             # Uniform dispatch through the shared handler table so every
-            # declared tool gets a timeout and works in both voice and
-            # Telegram paths.
+            # declared tool gets a timeout.
             entry = self._tool_handlers.get(name)
             if entry is not None:
                 handler, timeout = entry
@@ -2290,330 +2194,6 @@ class FridayLive:
             except Exception as e:
                 print(f"[Email] ⚠️ {e}")
             await asyncio.sleep(interval)
-
-    # ── Telegram remote-control bot ──────────────────────────────────────────
-
-    def _telegram_context(self) -> str:
-        from datetime import datetime
-        memory     = load_memory()
-        mem_str    = format_memory_for_prompt(memory)
-        mode, mood = _get_style_from_memory(memory)
-        voice      = _get_voice_from_memory(memory)
-        now        = datetime.now()
-        parts = [
-            "[CURRENT DATE & TIME]",
-            f"Right now it is: {now.strftime('%A, %B %d, %Y — %I:%M %p')}",
-            "",
-            "[ASSISTANT MODE & MOOD]",
-            f"Mode: {mode}  Mood: {mood}  Voice: {voice}",
-            "",
-        ]
-        recent = self._rolling_digest(limit=1000)
-        if recent:
-            parts += ["[RECENT CONVERSATION]", recent, ""]
-        tg_hist = self._tg_history_context(limit=900)
-        if tg_hist:
-            parts += [
-                "[TELEGRAM CHAT HISTORY — previous exchanges with this user, "
-                "use it to stay consistent]",
-                tg_hist, "",
-            ]
-        if mem_str:
-            parts.append(mem_str)
-        parts.append(_load_system_prompt())
-        return "\n".join(parts)
-
-    def _tg_history_context(self, limit: int = 900) -> str:
-        """Flatten the last Telegram exchanges into a prompt-able string."""
-        hist = getattr(self, "_tg_history", None) or []
-        if not hist:
-            return ""
-        lines, used = [], 0
-        for role, txt in list(hist)[-8:]:
-            line = f"{'User' if role == 'user' else 'Friday'}: {txt}"
-            if used + len(line) > limit:
-                break
-            lines.append(line)
-            used += len(line)
-        return "\n".join(lines)
-
-    def _remember_tg_turn(self, role: str, text: str):
-        if not getattr(self, "_tg_history", None):
-            from collections import deque
-            self._tg_history = deque(maxlen=20)
-        text = (text or "").strip()[:500]
-        if text:
-            self._tg_history.append((role, text))
-
-    async def _telegram_run_command(self, text: str) -> str:
-        """Mini agent loop: Gemini interprets → tools run → text reply."""
-        import api_keys
-        from google.genai import types as gtypes
-        config = gtypes.GenerateContentConfig(
-            system_instruction=self._telegram_context(),
-            tools=[{"function_declarations": TOOL_DECLARATIONS}],
-            temperature=0.4,
-        )
-        contents = [gtypes.Content(parts=[gtypes.Part(text=str(text))])]
-        final = ""
-        tool_results = []
-        for _ in range(4):
-            try:
-                resp = await api_keys.aio_generate(
-                    model=TG_MODEL, contents=contents,
-                    config=config, api_version="v1beta")
-            except Exception as e:
-                msg = str(e)
-                if "429" in msg or "RESOURCE_EXHAUSTED" in msg:
-                    return ("⚠️ Barcha API kalitlari limitga yetgan "
-                            "(20 so'rov/kun). Yangi kalit qo'shing yoki "
-                            "bir necha soatdan keyin urinib ko'ring.")
-                return f"Model error: {e}"
-            if resp.text:
-                final = resp.text.strip()
-            calls = getattr(resp, "function_calls", None)
-            if not calls:
-                break
-            model_parts = (list(resp.candidates[0].content.parts)
-                           if resp.candidates else [])
-            tool_parts = []
-            for fc in calls:
-                name = fc.name
-                args = dict(fc.args or {})
-                from safety import sanitize as _sanitize
-                tr = await self._dispatch_tool(name, args)
-                raw = str(tr.content) if tr.ok else f"error: {tr.content}"
-                if tr.ok and not str(tr.content).strip():
-                    raw = f"(tool {name} returned no data)"
-                result = raw[:400]
-                tool_results.append(f"{name}: {result[:120]}")
-                print(f"[Telegram] 🔧 {name} {_sanitize(name, args)} → {str(result)[:80]}")
-                tool_parts.append(gtypes.Part(
-                    function_response=gtypes.FunctionResponse(
-                        name=name, response={"result": result})))
-            contents += [
-                gtypes.Content(role="model", parts=model_parts),
-                gtypes.Content(role="tool", parts=tool_parts),
-            ]
-        if not final:
-            if tool_results:
-                final = ("⚡ Bajarildi:\n• " +
-                         "\n• ".join(tool_results[:6]))
-            else:
-                final = "Done, sir."
-        return final
-
-    async def _telegram_quick_command(self, token, chat, text: str):
-        """Instant slash-commands and inline-keyboard callbacks.
-
-        Returns (handled, result, reply_markup); result is None | str | bytes(photo)."""
-        import telegram_bot as tg
-        low = text.lower().strip()
-        if low in ("/help", "/start", "help", "start"):
-            tg.send_message(token, chat, TG_HELP_TEXT,
-                            reply_markup=TG_QUICK_KEYBOARD)
-            return True, None, None
-        if low in ("/stop",):
-            return True, None, None
-        if low == "/status":
-            return True, await self._telegram_status(), None
-        if low == "/mute":
-            if not self.ui.muted:
-                self.ui.muted = True
-                self.ui.set_state("MUTED")
-                self.ui.write_log("SYS: Telegram: microphone muted.")
-                self.ui._safe_ui(self.ui._draw_mute_button)
-            return True, ("🔇 Mikrofon o'chirildi (MUTED). "
-                          "Endi faqat matn/Telegram orqali gapiryapman."), None
-        if low == "/unmute":
-            if self.ui.muted:
-                self.ui.muted = False
-                self.ui.set_state("LISTENING")
-                self.ui.write_log("SYS: Telegram: microphone active.")
-                self.ui._safe_ui(self.ui._draw_mute_button)
-            return True, "🎤 Mikrofon yoniq (LIVE). Gaplashavering.", None
-        if low == "/screenshot":
-            shot = await asyncio.to_thread(_take_screenshot_bytes)
-            if shot:
-                return True, shot, None
-            return True, "📸 Screenshot olishning iloji bo'lmadi (pyautogui?).", None
-        if low == "/mode" or low.startswith("/mode "):
-            mode, mood = _get_style_from_memory(load_memory())
-            rest = text.strip()[len("/mode"):].strip()
-            if not rest:
-                return True, (f"🧭 Hozirgi rejim: <b>{tg.html_escape(mode)}</b> "
-                              f"(kayfiyat: {tg.html_escape(mood)})\n"
-                              "Tanlang 👇"), TG_MODE_KEYBOARD
-            new_mode = _normalize_mode(rest)
-            if not new_mode:
-                return True, ("❌ Noto'g'ri rejim. Tanlang: normal, girlfriend, "
-                              "crazy_friend, butler, friend, casual."), None
-            update_memory({"preferences": {"assistant_mode": {"value": new_mode}}})
-            self._schedule_session_reload()
-            return True, f"🔄 Rejim o'zgartirildi: <b>{tg.html_escape(new_mode)}</b>.", None
-        if low == "/voice" or low.startswith("/voice "):
-            current = _get_voice_from_memory(load_memory())
-            rest = text.strip()[len("/voice"):].strip()
-            if not rest:
-                desc = "\n".join(f"• <b>{v}</b> — {VOICES[v]}" for v in VOICE_NAMES)
-                return True, (f"🗣 Hozirgi ovoz: <b>{tg.html_escape(current)}</b>\n"
-                              f"{desc}\nTanlang 👇"), TG_VOICE_KEYBOARD
-            new_voice = _normalize_voice(rest)
-            if not new_voice:
-                return True, ("❌ Noto'g'ri ovoz. Tanlang: " +
-                              ", ".join(VOICE_NAMES) + "."), None
-            update_memory({"preferences": {"assistant_voice": {"value": new_voice}}})
-            self._schedule_session_reload()
-            return True, (f"🎙 Ovoz o'zgartirildi: <b>{tg.html_escape(new_voice)}</b>. "
-                          "Bir necha soniyada yangi ovoz bilan ulanyapman..."), None
-        return False, None, None
-
-    async def _telegram_status(self) -> str:
-        import telegram_bot as tg
-        from datetime import datetime
-        phase   = self._current_phase().upper()
-        mode, mood = _get_style_from_memory(load_memory())
-        voice   = _get_voice_from_memory(load_memory())
-        now     = datetime.now().strftime("%A, %B %d, %Y — %I:%M %p")
-        return (
-            "📊 <b>Friday statusi</b>\n"
-            f"🕒 {tg.html_escape(now)}\n"
-            f"🎙 Mikrofon: <b>{'🔇 MUTED' if self.ui.muted else '🎤 LIVE'}</b>\n"
-            f"🔄 Holat: <b>{tg.html_escape(phase)}</b>\n"
-            f"🧭 Rejim: <b>{tg.html_escape(mode)}</b>  |  "
-            f"Kayfiyat: <b>{tg.html_escape(mood)}</b>\n"
-            f"🗣 Ovoz: <b>{tg.html_escape(voice)}</b>"
-        )
-
-    async def _telegram_handle_text(self, token, chat, text: str):
-        import telegram_bot as tg
-        handled, result, reply_markup = await self._telegram_quick_command(token, chat, text)
-        if handled:
-            if isinstance(result, bytes):
-                tg.send_photo(token, chat, result,
-                              caption="📸 Hozirgi ekran, sir.")
-            elif result:
-                tg.send_message(token, chat, tg.html_escape(str(result)),
-                                reply_markup=reply_markup)
-            return
-        tg.send_typing(token, chat)
-        placeholder = tg.send_message(token, chat, "⏳ ...") or {}
-        msg_id = placeholder.get("message_id")
-        answer = await self._telegram_run_command(text)
-        safe   = tg.html_escape(answer)
-        if msg_id:
-            tg.edit_message(token, chat, msg_id, safe)
-        else:
-            tg.send_message(token, chat, safe)
-        self._remember_tg_turn("user", text)
-        self._remember_tg_turn("ai", answer)
-
-    async def _telegram_handle_voice(self, token, chat, voice, caption: str = ""):
-        import telegram_bot as tg
-        file_id = (voice or {}).get("file_id")
-        if not file_id:
-            tg.send_message(token, chat, "That audio wasn't readable, sir.")
-            return
-        tg.send_typing(token, chat)
-        placeholder = tg.send_message(token, chat, "🎧 ...") or {}
-        msg_id = placeholder.get("message_id")
-
-        def _edit(text: str):
-            safe = tg.html_escape(text)
-            if msg_id:
-                tg.edit_message(token, chat, msg_id, safe)
-            else:
-                tg.send_message(token, chat, safe)
-
-        audio = await asyncio.to_thread(tg.download_file, token, file_id)
-        if not audio:
-            _edit("Couldn't download the voice message, sir.")
-            return
-        try:
-            api_key = _get_api_key()
-            transcript = await asyncio.to_thread(
-                tg.transcribe_voice, api_key, audio)
-        except Exception as e:
-            _edit(f"Voice transcription failed: {tg.html_escape(str(e))}")
-            return
-        if not transcript:
-            _edit("I couldn't hear anything, sir.")
-            return
-        if caption:
-            transcript = caption
-        _edit(f"📝 <i>Eshitildi:</i> {tg.html_escape(transcript[:300])}")
-        answer = await self._telegram_run_command(transcript)
-        _edit(tg.html_escape(answer))
-        self._remember_tg_turn("user", transcript)
-        self._remember_tg_turn("ai", answer)
-
-    async def _telegram_loop(self):
-        import telegram_bot as tg
-        token = self.telegram_token
-        if not token:
-            return
-        chat = self.telegram_chat
-        if not chat:
-            print("[Telegram] ⚠️ telegram_chat_id not configured in config/api_keys.json — polling disabled.")
-            self.ui.write_log("SYS: Telegram disabled (no chat_id).")
-            return
-        if not await asyncio.to_thread(tg.ping_bot, token):
-            print("[Telegram] ⚠️ Bot token rejected — check config/api_keys.json.")
-            return
-        offset_path = BASE_DIR / "config" / "telegram_offset.txt"
-
-        def _load_offset() -> int:
-            try:
-                return int(offset_path.read_text(encoding="utf-8").strip())
-            except Exception:
-                return 0
-
-        def _save_offset(off: int):
-            try:
-                offset_path.write_text(str(off), encoding="utf-8")
-            except Exception:
-                pass
-
-        print("[Telegram] 🤖 Bot online — polling for your messages.")
-        self.ui.write_log("SYS: Telegram bot online.")
-        if not await asyncio.to_thread(tg.set_bot_commands, token):
-            print("[Telegram] ⚠️ Could not set bot command menu.")
-        offset = _load_offset()
-        while True:
-            try:
-                for upd in await asyncio.to_thread(tg.get_updates, token, offset, 25):
-                    offset = upd.get("update_id", 0) + 1
-                    _save_offset(offset)
-                    cbq = upd.get("callback_query")
-                    msg = upd.get("message") or {}
-                    if cbq:
-                        cid = (cbq.get("message") or {}).get("chat", {}).get("id")
-                    else:
-                        cid = msg.get("chat", {}).get("id")
-                    if not cid or str(cid) != str(chat):
-                        continue
-                    try:
-                        if cbq:
-                            cb_id = cbq.get("id")
-                            data  = (cbq.get("data") or "").strip()
-                            if cb_id:
-                                tg.answer_callback(token, cb_id)
-                            if data:
-                                await self._telegram_handle_text(token, chat, data)
-                            continue
-                        text  = (msg.get("text") or "").strip()
-                        voice = msg.get("voice") or msg.get("audio")
-                        cap   = (msg.get("caption") or "").strip()
-                        if voice:
-                            await self._telegram_handle_voice(token, chat, voice, cap)
-                        elif text:
-                            await self._telegram_handle_text(token, chat, text)
-                    except Exception as e:
-                        import traceback; traceback.print_exc()
-                        tg.send_message(token, chat, tg.html_escape(f"⚠️ {e}"))
-            except Exception as e:
-                print(f"[Telegram] ⚠️ {e}")
-            await asyncio.sleep(0.5)
 
     async def _send_realtime(self):
         while True:
@@ -2876,102 +2456,89 @@ class FridayLive:
     async def run(self):
         self._loop = asyncio.get_running_loop()
 
-
-
-        tg_task = None
-        if self.telegram_token:
-            tg_task = asyncio.create_task(self._telegram_loop())
-
         client = None
         backoff = 3
-        try:
-            while True:
-                try:
-                    if client is None:
-                        try:
-                            client = genai.Client(
-                                api_key=_get_api_key(),
-                                http_options={"api_version": "v1beta"}
-                            )
-                        except KeyError as ke:
-                            msg = ("No Gemini API key configured. Open "
-                                   "config/api_keys.json and add gemini_api_key.")
-                            log(msg, level="ERROR")
-                            self.ui.write_log(f"SYS: {msg}")
-                            self.ui.set_state("THINKING")
-                            self.ui.set_connecting(False)
-                            await asyncio.sleep(5)
-                            continue
-                        except Exception as ke:
-                            log(f"API client error: {ke}", level="ERROR")
-                            await asyncio.sleep(5)
-                            continue
-                    print("[FRIDAY] 🔌 Connecting...")
-                    self.ui.set_state("THINKING")
-                    self.ui.set_connecting(True)
-                    config = self._build_config()
-
-                    async with (
-                        client.aio.live.connect(model=LIVE_MODEL, config=config) as session,
-                        asyncio.TaskGroup() as tg,
-                    ):
-                        backoff = 3  # success resets the backoff
-                        self.session        = session
-                        self._loop          = asyncio.get_running_loop()
-                        self._send_lock     = asyncio.Lock()
-                        self.audio_in_queue = asyncio.Queue()
-                        self.out_queue      = asyncio.Queue(maxsize=64)
-                        self._ready         = True
-
-                        log("Gemini session CONNECTED")
-                        print("[FRIDAY] ✅ Connected.")
-                        self.ui.set_connection(True)
-                        self.ui.set_persona(*self._persona_info())
-                        self.ui.set_state("LISTENING")
-                        self.ui.write_log("SYS: Friday online.")
-
-                        tg.create_task(self._send_realtime())
-                        tg.create_task(self._listen_audio())
-                        tg.create_task(self._receive_audio())
-                        tg.create_task(self._play_audio())
-                        tg.create_task(self._watch_speaking())
-                        tg.create_task(self._scheduler_loop())
-                        tg.create_task(self._monitor_loop())
-
-                except Exception as e:
-                    log(f"Session error: {e}", level="ERROR")
-                    print(f"[FRIDAY] ⚠️ {e}")
-                    traceback.print_exc()
-                    # Rotate the key on quota/exhaustion so a dead key can't
-                    # pin the reconnect loop forever.
+        while True:
+            try:
+                if client is None:
                     try:
-                        from api_keys import mark_exhausted
-                        if client is not None and _looks_like_quota(str(e)):
-                            key = getattr(getattr(client, "_api_client", None),
-                                          "api_key", "")
-                            if key:
-                                mark_exhausted(key)
-                            client = None
-                    except Exception:
-                        pass
-
-                self._ready         = False
-                self.session        = None
-                self.out_queue      = None
-                self.audio_in_queue = None
-                self.set_speaking(False)
-                self.ui.set_connection(False)
+                        client = genai.Client(
+                            api_key=_get_api_key(),
+                            http_options={"api_version": "v1beta"}
+                        )
+                    except KeyError as ke:
+                        msg = ("No Gemini API key configured. Open "
+                               "config/api_keys.json and add gemini_api_key.")
+                        log(msg, level="ERROR")
+                        self.ui.write_log(f"SYS: {msg}")
+                        self.ui.set_state("THINKING")
+                        self.ui.set_connecting(False)
+                        await asyncio.sleep(5)
+                        continue
+                    except Exception as ke:
+                        log(f"API client error: {ke}", level="ERROR")
+                        await asyncio.sleep(5)
+                        continue
+                print("[FRIDAY] 🔌 Connecting...")
                 self.ui.set_state("THINKING")
-                log(f"Session lost — reconnecting in {backoff}s", level="WARN")
-                print(f"[FRIDAY] 🔄 Reconnecting in {backoff}s...")
-                await asyncio.sleep(backoff)
-                backoff = min(backoff * 2, 60)
-        finally:
-            if tg_task:
+                self.ui.set_connecting(True)
+                config = self._build_config()
+
+                async with (
+                    client.aio.live.connect(model=LIVE_MODEL, config=config) as session,
+                    asyncio.TaskGroup() as tg,
+                ):
+                    backoff = 3  # success resets the backoff
+                    self.session        = session
+                    self._loop          = asyncio.get_running_loop()
+                    self._send_lock     = asyncio.Lock()
+                    self.audio_in_queue = asyncio.Queue()
+                    self.out_queue      = asyncio.Queue(maxsize=64)
+                    self._ready         = True
+
+                    log("Gemini session CONNECTED")
+                    print("[FRIDAY] ✅ Connected.")
+                    self.ui.set_connection(True)
+                    self.ui.set_persona(*self._persona_info())
+                    self.ui.set_state("LISTENING")
+                    self.ui.write_log("SYS: Friday online.")
+
+                    tg.create_task(self._send_realtime())
+                    tg.create_task(self._listen_audio())
+                    tg.create_task(self._receive_audio())
+                    tg.create_task(self._play_audio())
+                    tg.create_task(self._watch_speaking())
+                    tg.create_task(self._scheduler_loop())
+                    tg.create_task(self._monitor_loop())
+
+            except Exception as e:
+                log(f"Session error: {e}", level="ERROR")
+                print(f"[FRIDAY] ⚠️ {e}")
+                traceback.print_exc()
+                # Rotate the key on quota/exhaustion so a dead key can't
+                # pin the reconnect loop forever.
                 try:
-                    tg_task.cancel()
+                    from api_keys import mark_exhausted
+                    if client is not None and _looks_like_quota(str(e)):
+                        key = getattr(getattr(client, "_api_client", None),
+                                      "api_key", "")
+                        if key:
+                            mark_exhausted(key)
+                        client = None
                 except Exception:
                     pass
+
+            self._ready         = False
+            self.session        = None
+            self.out_queue      = None
+            self.audio_in_queue = None
+            self.set_speaking(False)
+            self.ui.set_connection(False)
+            self.ui.set_state("THINKING")
+            log(f"Session lost — reconnecting in {backoff}s", level="WARN")
+            print(f"[FRIDAY] 🔄 Reconnecting in {backoff}s...")
+            await asyncio.sleep(backoff)
+            backoff = min(backoff * 2, 60)
 
 
 

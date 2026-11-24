@@ -22,7 +22,6 @@
   <a href="#-quick-start">Quick Start</a> •
   <a href="#-security--safety-model">Security Model</a> •
   <a href="#-configuration">Configuration</a> •
-  <a href="#-telegram-remote-control">Telegram Remote</a> •
   <a href="#-testing--verification">Testing</a> •
   <a href="#-roadmap">Roadmap</a> •
   <a href="#-contributing">Contributing</a>
@@ -109,7 +108,6 @@ Friday exposes **53 declarative tool definitions** to the model. Each tool is ex
 | 🛡️ **Guardian Telemetry** | Background watchdog monitoring battery level, RAM consumption, CPU spikes, disk space, and temperatures with spoken alerts. | 100% Local |
 | 📄 **Document & Web QA** | Instant question-answering over PDF, DOCX, PPTX, XLSX, and web pages with SSRF-protected HTTP fetching. | Local parsing + Cloud QA |
 | 🌐 **Headless Browser** | Automated Chromium browsing via Playwright (`actions/browser_control.py`) for live web navigation, clicking, typing, and scraping. | Local Browser |
-| 💬 **Telegram Control** | Secure remote control from any Telegram chat (`telegram_bot.py`). Supports text commands, voice note transcription, and screen snapshots. | Cloud Polling (Fail-Closed) |
 | 🏠 **Smart Home** | Integration with Home Assistant, webhooks, or local simulated smart devices. | Local / LAN |
 
 ---
@@ -175,9 +173,7 @@ Open `config/api_keys.json` and insert your Gemini API key:
 ```jsonc
 {
     "gemini_api_key": "AIzaSyYourActualKeyHere...",
-    "gemini_api_keys": [],
-    "telegram_bot_token": "",
-    "telegram_chat_id": null
+    "gemini_api_keys": []
 }
 ```
 *(Alternatively, set the `FRIDAY_GEMINI_API_KEY` environment variable in your shell).*
@@ -208,7 +204,7 @@ Because Friday possesses desktop and command execution privileges, security is t
    - Requests targeting private subnets (`10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`, `127.0.0.0/8`), link-local IPs (`169.254.0.0/16`), IPv6 loopbacks (`::1`), or cloud metadata endpoints (`metadata.google.internal`) are blocked.
    - HTTP redirect chains are inspected hop-by-hop prior to following.
 4. **Data Privacy & What Leaves Your Machine:**
-   - **What Leaves the Machine:** Encrypted audio frames (PCM 16kHz in, 24kHz out via TLS WebSocket) stream to Google Gemini Live API (`gemini-2.5-flash`) for real-time speech processing, alongside user-directed external queries (e.g. web search, Telegram polling).
+   - **What Leaves the Machine:** Encrypted audio frames (PCM 16kHz in, 24kHz out via TLS WebSocket) stream to Google Gemini Live API (`gemini-2.5-flash`) for real-time speech processing, alongside user-directed external queries (e.g. web search).
    - **What Stays 100% On-Device:** All OS automation and shell executions, OpenCV computer vision (face recognition and privacy face blurring), episodic memory (`memory/*.json`), system health watchdogs, and confirmation tokens.
 5. **Secret Redaction:**
    - Sensitive arguments (passwords, tokens, API keys) are masked before reaching log files, UI displays, or persistent memory.
@@ -225,21 +221,6 @@ All settings reside in the git-ignored `config/` directory. You can configure Fr
 | :--- | :--- | :--- |
 | `FRIDAY_GEMINI_API_KEY` | `api_keys.json -> gemini_api_key` | Primary Google Gemini API key. |
 | `FRIDAY_GEMINI_API_KEYS` | `api_keys.json -> gemini_api_keys` | Comma-separated list of keys for automatic failover on 429 quota exhaustion. |
-| `FRIDAY_TELEGRAM_TOKEN` | `api_keys.json -> telegram_bot_token` | Telegram Bot token from [@BotFather](https://t.me/BotFather). |
-| `FRIDAY_TELEGRAM_CHAT_ID` | `api_keys.json -> telegram_chat_id` | Numeric Telegram user ID authorized to control Friday. |
-
----
-
-## 💬 Telegram Remote Control
-
-Friday includes an optional, zero-port-forwarding Telegram remote control daemon:
-
-1. Create a bot with [@BotFather](https://t.me/BotFather) and copy the bot token.
-2. Obtain your numeric user ID using `@userinfobot`.
-3. Add both values to `config/api_keys.json`.
-4. Start Friday. The daemon polls Telegram using long-polling.
-
-**Fail-Closed Security:** The bot silently drops and ignores any messages coming from unauthorized chat IDs. Supported commands include `/status`, `/mute`, `/unmute`, `/mode`, `/voice`, `/screenshot`, and `/help`. Voice notes sent to the bot are transcribed and routed through the same Gemini session as local speech.
 
 ---
 

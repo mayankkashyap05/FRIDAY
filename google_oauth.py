@@ -117,7 +117,7 @@ def _result_page(ok: bool) -> bytes:
     if ok:
         title   = "Friday ulandi!"
         subtext = ("Google hisobingiz muvaffaqiyatli bog&#8216;landi. "
-                   "Endi Telegram orqali email, kalendar va Drive "
+                   "Endi Friday orqali email, kalendar va Drive "
                    "buyruqlarini bera olasiz.")
     else:
         title   = "Avtorizatsiya amalga oshmadi"
