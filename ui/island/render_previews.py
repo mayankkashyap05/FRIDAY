@@ -1,6 +1,9 @@
 """Render polished offscreen previews of the compact island and Settings Hub."""
 import os
+import sys
 os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
+if sys.platform == 'win32':
+    os.environ.setdefault('QT_QPA_FONTDIR', os.path.join(os.environ.get('WINDIR', r'C:\Windows'), 'Fonts'))
 from pathlib import Path
 from PySide6.QtCore import Qt, QPoint
 from PySide6.QtGui import QColor, QImage, QPainter, QLinearGradient

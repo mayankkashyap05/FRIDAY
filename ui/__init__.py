@@ -198,7 +198,10 @@ class FridayUI:
         self._visible = True; self._dispatch(self.hud.set_user_visible, True)
     def hide(self):
         self._visible = False; self._dispatch(self.hud.set_user_visible, False)
-    def raise_window(self): self._dispatch(self.hud.raise_)
+    def raise_window(self):
+        from PySide6.QtGui import QGuiApplication
+        if QGuiApplication.platformName() != 'offscreen':
+            self._dispatch(self.hud.raise_)
     def invoke(self): self.show(); self.set_state('LISTENING')
     def dismiss(self): self.hide()
     def _shutdown_gui(self):

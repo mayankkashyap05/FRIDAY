@@ -2,7 +2,7 @@
 from PySide6.QtCore import Qt, QSize
 from PySide6.QtWidgets import (QWidget, QHBoxLayout, QVBoxLayout, QStackedWidget,
                                QScrollArea, QPushButton, QLabel, QFrame)
-from PySide6.QtGui import QIcon, QPixmap, QPainter, QPen, QColor
+from PySide6.QtGui import QIcon, QPixmap, QPainter, QPen, QColor, QGuiApplication
 
 
 class SettingsWindow(QWidget):
@@ -74,7 +74,11 @@ class SettingsWindow(QWidget):
         return self.TABS[index]
 
     def open_tab(self, tab):
-        self.select_tab(tab); self.show(); self.raise_(); self.activateWindow()
+        self.select_tab(tab)
+        self.show()
+        if QGuiApplication.platformName() != 'offscreen':
+            self.raise_()
+            self.activateWindow()
 
     def set_theme(self, theme):
         from pathlib import Path
