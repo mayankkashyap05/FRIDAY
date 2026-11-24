@@ -73,6 +73,12 @@ def _get_api_key() -> str:
     return next_key()
 
 
+def _as_bool(value) -> bool:
+    if isinstance(value, str):
+        return value.strip().lower() in ("true", "1", "yes", "on")
+    return bool(value)
+
+
 def _language(value, default: str = "English") -> str:
     text = str(value or "").strip()
     if not text:
@@ -353,7 +359,8 @@ def translate_action(
         target = _language(params.get("to", "Latin"), "Latin")
 
     text = str(params.get("text") or "").strip()
-    if action == "clipboard" or (not text and params.get("use_clipboard")):
+    use_clipboard = _as_bool(params.get("use_clipboard", False))
+    if action == "clipboard" or (not text and use_clipboard):
         text = _clipboard_read()
 
     if action == "batch":
@@ -369,7 +376,8 @@ def translate_action(
             return "What text should I translate, sir?"
         key = _cache_key(action, text, source, target, tone)
 
-    fresh = bool(params.get("no_cache") or params.get("fresh"))
+    fresh = _as_bool(params.get("no_cache", False)) or \
+        _as_bool(params.get("fresh", False))
     if not fresh:
         cached = _cache_get(key)
         if cached:
@@ -384,7 +392,7 @@ def translate_action(
             result = _do_explain(text, source, target)
         elif action == "clipboard":
             result = _do_translate(text, source, target, tone)
-            if bool(params.get("copy")):
+            if _as_bool(params.get("copy", False)):
                 _clipboard_write(result)
                 result += " (Copied to clipboard.)"
         elif action == "batch":

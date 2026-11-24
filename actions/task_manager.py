@@ -34,6 +34,12 @@ def _need_psutil() -> bool:
     return _PSUTIL and psutil is not None
 
 
+def _as_bool(value) -> bool:
+    if isinstance(value, str):
+        return value.strip().lower() in ("true", "1", "yes", "on")
+    return bool(value)
+
+
 def _limit(params: dict, key: str, default: int, maximum: int) -> int:
     try:
         value = int(params.get(key, default) or default)
@@ -187,7 +193,8 @@ def _agent_status(params: dict) -> str:
 def _agent_cancel(params: dict) -> str:
     queue = get_queue()
     task_id = str(params.get("task_id", "")).strip()
-    cancel_all = bool(params.get("cancel_all")) or task_id.lower() in ("all", "*")
+    cancel_all = _as_bool(params.get("cancel_all", False)) or \
+        task_id.lower() in ("all", "*")
     if cancel_all:
         candidates = [str(task.get("task_id", "")) for task in
                       (queue.get_all_statuses() or [])
@@ -318,7 +325,7 @@ def _kill_process(params: dict) -> str:
         if exact:
             matches = exact
         elif len({row["name"].lower() for row in matches}) > 1 \
-                and not bool(params.get("all_matches")):
+                and not _as_bool(params.get("all_matches", False)):
             listing = ", ".join(
                 f"{row['pid']}:{row['name']}" for row in matches[:12]
             )
@@ -337,7 +344,7 @@ def _kill_process(params: dict) -> str:
 
     no_such = _ps_error("NoSuchProcess")
     denied = _ps_error("AccessDenied")
-    force = bool(params.get("force", True))
+    force = _as_bool(params.get("force", True))
     terminated, failed, messages = [], [], []
     handles = []
     for row in matches:

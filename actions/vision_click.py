@@ -284,6 +284,12 @@ def _to_screen(point: dict, geometry: dict, scale_x: float,
     return int(x), int(y)
 
 
+def _as_bool(value) -> bool:
+    if isinstance(value, str):
+        return value.strip().lower() in ("true", "1", "yes", "on")
+    return bool(value)
+
+
 def _click_mode(params: dict) -> str:
     raw = str(
         params.get("click") or params.get("button") or params.get("action") or "left"
@@ -315,10 +321,10 @@ def vision_click_action(
     except (TypeError, ValueError):
         monitor = 1
     monitor = max(0, monitor)
-    only_coords = bool(params.get("only_coords", False))
+    only_coords = _as_bool(params.get("only_coords", False))
     mode = _click_mode(params)
     type_text = str(params.get("type_text") or params.get("text") or "").strip()
-    press_enter = bool(params.get("press_enter", False))
+    press_enter = _as_bool(params.get("press_enter", False))
 
     try:
         # Default monitor uses the original zero-arg helper call so existing

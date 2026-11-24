@@ -270,3 +270,15 @@ def test_source_uses_model_constants_not_retired_ids():
     source = Path(vc.__file__).read_text(encoding="utf-8")
     assert "MODEL_FLASH" in source and "generate_with_retry" in source
     assert "gemini-2.5-flash" not in source
+
+
+def test_string_false_booleans_are_not_true(monkeypatch, _no_real_input):
+    _patch_grounding(monkeypatch, {"found": True, "box_2d": [100, 100, 200, 200]})
+    _patch_screenshot(monkeypatch)
+    result = vc.vision_click_action({
+        "target": "Icon", "only_coords": "false",
+        "type_text": "hello", "press_enter": "false",
+    })
+    assert "screen coordinates" not in result
+    assert any(call[0] == "click" for call in _no_real_input.calls)
+    assert not any(call[0] == "press" for call in _no_real_input.calls)
