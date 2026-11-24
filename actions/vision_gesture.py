@@ -7,36 +7,90 @@
 #   - cv2.QRCodeDetector: read QR / barcodes
 #
 # Modes (continuous, background thread):
-#   gesture   — count fingers, detect gestures (peace, thumbs up, point, fist, open hand)
-#   air_mouse — index finger moves the cursor, thumb+index pinch = click
-#   volume    — thumb–index pinch distance controls system volume
-#   motion    — security mode: frame-diff motion detection
-#   posture   — full-body posture reporting (arms up/down, lean, sitting/standing)
-#   focus     — warns when hand/head leaves the frame
+#   gesture, air_mouse, volume, motion, posture, objects, focus
 #
-# One-shot actions (return a value, no continuous loop):
-#   face_count — how many faces/people in frame
-#   qr         — read QR / barcode from camera
-#   snapshot   — capture one frame & summarize what's on camera
+# Optional dependencies (cv2, numpy, mediapipe, pyautogui and the vision/*
+# helpers) are all guarded so this module imports cleanly on Windows/Linux.
 
-import time
+from __future__ import annotations
+
+import json
 import math
+import os
 import threading
+import time
+from pathlib import Path
 
-import cv2
-import numpy as np
-from vision.camera_manager import CameraConfig, CameraManager
-from vision.object_detector import DetectorConfig, ObjectDetector
-from vision.ocr_engine import CodeReader, OCREngine
-from vision.face_privacy import FacePrivacyProcessor
-from vision.segmentation import ForegroundSegmenter
-from vision.understanding import SceneCaptioner, VisualQuestionAnswering
-from vision.anomaly_monitor import AnomalyMonitor
-from vision.face_recognition import FaceProfileStore, FaceRecognitionEngine
-from vision.multimodal import MultimodalVision
-from vision.recording import VisionRecorder
-from vision.opencv_face_verifier import OpenCVFaceVerifier
-from vision.event_store import VisionEventStore
+try:
+    import cv2
+except ImportError:                                    # pragma: no cover - environment
+    cv2 = None
+
+try:
+    import numpy as np
+except ImportError:                                    # pragma: no cover - environment
+    np = None
+
+try:
+    from vision.camera_manager import CameraConfig, CameraManager
+    from vision.object_detector import DetectorConfig, ObjectDetector
+    from vision.ocr_engine import CodeReader, OCREngine
+    from vision.face_privacy import FacePrivacyProcessor
+    from vision.segmentation import ForegroundSegmenter
+    from vision.understanding import SceneCaptioner, VisualQuestionAnswering
+    from vision.anomaly_monitor import AnomalyMonitor
+    from vision.face_recognition import FaceProfileStore, FaceRecognitionEngine
+    from vision.multimodal import MultimodalVision
+    from vision.recording import VisionRecorder
+    from vision.opencv_face_verifier import OpenCVFaceVerifier
+    from vision.event_store import VisionEventStore
+except Exception:                                      # pragma: no cover - environment
+    CameraConfig = CameraManager = ObjectDetector = DetectorConfig = None
+    OCREngine = CodeReader = FacePrivacyProcessor = ForegroundSegmenter = None
+    SceneCaptioner = VisualQuestionAnswering = AnomalyMonitor = None
+    FaceProfileStore = FaceRecognitionEngine = MultimodalVision = None
+    VisionRecorder = OpenCVFaceVerifier = VisionEventStore = None
+
+
+class _StubHelper:
+    """Safe no-op replacement for an unavailable vision helper."""
+
+    error = "optional vision dependency is unavailable"
+    is_recording = False
+
+    def __getattr__(self, _name):
+        return lambda *args, **kwargs: None
+
+    def detect(self, *args, **kwargs):
+        return []
+
+    def extract(self, *args, **kwargs):
+        return []
+
+    def blur(self, frame, *args, **kwargs):
+        return frame, []
+
+    def caption(self, *args, **kwargs):
+        return "Scene understanding is unavailable, sir."
+
+    def answer(self, *args, **kwargs):
+        return "Scene understanding is unavailable, sir."
+
+    def ask(self, *args, **kwargs):
+        return "Vision AI is unavailable, sir."
+
+    def verify(self, *args, **kwargs):
+        return (False, None, None)
+
+    def load(self, *args, **kwargs):
+        return False
+
+    def read(self, *args, **kwargs):
+        return []
+
+    def recent(self, *args, **kwargs):
+        return []
+
 
 _MP = None  # None=not checked yet, False=unavailable, tuple=available
 
@@ -51,11 +105,12 @@ def _get_mp():
             from mediapipe import Image as MPImage
             from mediapipe import ImageFormat as MPImageFormat
             _MP = (mp_python, mp_vision, MPImage, MPImageFormat)
-        except ImportError:
+        except Exception:
             _MP = False
     return _MP or None
 
-_PYAUTOGUI = None  # None=not checked yet, False=unavailable, True=available
+
+_PYAUTOGUI = None  # None=not checked yet, False=unavailable, module=available
 
 
 def _get_pyautogui():
@@ -65,22 +120,32 @@ def _get_pyautogui():
         try:
             import pyautogui
             _PYAUTOGUI = pyautogui
-        except ImportError:
+        except Exception:
             _PYAUTOGUI = False
     return _PYAUTOGUI or None
 
 
-BASE_DIR = __import__("pathlib").Path(__file__).resolve().parent.parent
+BASE_DIR = Path(__file__).resolve().parent.parent
 MODELS_DIR = BASE_DIR / "models"
 
-MODES = {"gesture", "air_mouse", "volume", "motion", "posture", "objects"}
+MODES = {"gesture", "air_mouse", "volume", "motion", "posture", "objects", "focus"}
 
 # ── Landmark indices ──────────────────────────────────────────────────────────
 HAND_INDEX_TIP  = 8
+HAND_INDEX_PIP  = 6
+HAND_MIDDLE_TIP = 12
+HAND_MIDDLE_PIP = 10
+HAND_RING_TIP   = 16
+HAND_RING_PIP   = 14
+HAND_PINKY_TIP  = 20
+HAND_PINKY_PIP  = 18
 HAND_THUMB_TIP  = 4
 HAND_THUMB_IP   = 3
+HAND_THUMB_CMC  = 1
 HAND_WRIST      = 0
-HAND_PINKY_PIP  = 18
+HAND_PINKY_MCP  = 17
+HAND_INDEX_MCP  = 5
+HAND_MIDDLE_MCP = 9
 
 POS_SHOULDER_L = 11
 POS_SHOULDER_R = 12
@@ -92,28 +157,130 @@ POS_HIP_L      = 23
 POS_HIP_R      = 24
 POS_NOSE       = 0
 
+PINCH_ENGAGE = 0.35
+PINCH_RELEASE = 0.48
+DRAG_AFTER_S = 0.45
+ACTIVE_MARGIN = 0.12
+GESTURE_FRAMES = 3
+MOTION_SENSITIVITY = 0.025
+FOCUS_GRACE_S = 10.0
+
+
+def _clamp(value, low=0.0, high=1.0):
+    return max(low, min(high, value))
+
 
 def _dist(a, b):
     return math.hypot(a.x - b.x, a.y - b.y)
 
 
-def _finger_count(hand) -> int:
+def _palm_scale(hand):
+    """Wrist → middle-finger MCP distance, stable across camera depth."""
+    if not hand or len(hand) <= 9:
+        return 1e-6
+    return max(_dist(hand[HAND_WRIST], hand[HAND_MIDDLE_MCP]), 1e-6)
+
+
+def _map_active_region(value, margin: float = ACTIVE_MARGIN) -> float:
+    """Map a camera-space coordinate onto the full screen, corner to corner."""
+    try:
+        value = float(value)
+        margin = float(margin)
+    except (TypeError, ValueError):
+        return 0.0
+    margin = _clamp(margin, 0.0, 0.45)
+    if margin <= 0 or margin >= 0.5:
+        return _clamp(value)
+    return _clamp((value - margin) / (1.0 - 2.0 * margin))
+
+
+class _OneEuroFilter:
+    """Casiez et al. 1€ filter: steady for slow motion, lag-free for fast motion."""
+
+    def __init__(self, min_cutoff: float = 1.0, beta: float = 0.0,
+                 d_cutoff: float = 1.0):
+        self.min_cutoff = float(min_cutoff)
+        self.beta = float(beta)
+        self.d_cutoff = float(d_cutoff)
+        self._last_time = None
+        self._last_value = None
+        self._last_derivative = 0.0
+
+    @staticmethod
+    def _alpha(cutoff: float, dt: float) -> float:
+        tau = 1.0 / (2.0 * math.pi * max(cutoff, 1e-6))
+        dt = max(dt, 1e-6)
+        return 1.0 / (1.0 + tau / dt)
+
+    @staticmethod
+    def _lowpass(value: float, alpha: float, previous: float) -> float:
+        return alpha * value + (1.0 - alpha) * previous
+
+    def __call__(self, value: float, timestamp: float | None = None) -> float:
+        now = float(timestamp) if timestamp is not None else time.monotonic()
+        value = float(value)
+        if self._last_time is None:
+            self._last_time = now
+            self._last_value = value
+            self._last_derivative = 0.0
+            return value
+        dt = max(now - self._last_time, 1e-6)
+        derivative = (value - self._last_value) / dt
+        ed = self._lowpass(
+            derivative, self._alpha(self.d_cutoff, dt), self._last_derivative
+        )
+        cutoff = self.min_cutoff + self.beta * abs(ed)
+        smoothed = self._lowpass(
+            value, self._alpha(cutoff, dt), self._last_value
+        )
+        self._last_time = now
+        self._last_value = smoothed
+        self._last_derivative = ed
+        return smoothed
+
+
+def _extended_fingers(hand, handedness=None) -> list[bool]:
+    """Return [thumb, index, middle, ring, pinky] extension flags."""
+    if not hand or len(hand) <= 20:
+        return [False] * 5
+    wrist = hand[HAND_WRIST]
+    pinky_mcp = hand[HAND_PINKY_MCP]
+
+    flags = []
+    for tip, pip in ((8, 6), (12, 10), (16, 14), (20, 18)):
+        extended = _dist(hand[tip], wrist) > _dist(hand[pip], wrist) * 1.04
+        if not extended and abs(_dist(hand[tip], wrist) -
+                                _dist(hand[pip], wrist)) < 0.01:
+            extended = hand[tip].y < hand[pip].y
+        flags.append(bool(extended))
+
+    tip = hand[HAND_THUMB_TIP]
+    ip = hand[HAND_THUMB_IP]
+    cmc = hand[HAND_THUMB_CMC]
+    side = str(handedness or "").strip().lower()
+    if side.startswith("right"):
+        direction = tip.x > ip.x
+    elif side.startswith("left"):
+        direction = tip.x < ip.x
+    else:
+        direction = _dist(tip, pinky_mcp) > _dist(ip, pinky_mcp)
+    stretch = (_dist(tip, pinky_mcp) > _dist(ip, pinky_mcp) * 1.02
+               or _dist(tip, wrist) > _dist(cmc, wrist) * 1.08)
+    thumb = bool(direction and stretch)
+    if not thumb and _dist(tip, wrist) > _dist(ip, wrist) * 1.25:
+        thumb = True
+    return [thumb] + flags
+
+
+def _finger_count(hand, handedness=None) -> int:
     """Counts extended fingers for a MediaPipe hand landmark list."""
-    if not hand:
-        return 0
-    tips = [8, 12, 16, 20]
-    mcp  = [5, 9, 13, 17]
-    count = 0
-    for tip, base in zip(tips, mcp):
-        if hand[tip].y < hand[base].y:
-            count += 1
-    # thumb: compare thumb tip x vs pinky MCP x on the same hand
-    if hand[4].x < hand[17].x:
-        count += 1
-    return count
+    return sum(1 for flag in _extended_fingers(hand, handedness) if flag)
 
 
-def _gesture_name(fingers: int, pinch: bool, point: bool) -> str:
+def _gesture_name(fingers: int, pinch: bool, point: bool,
+                  hand=None, handedness=None) -> str:
+    if hand is not None:
+        return _classify_gesture(hand, handedness)
     if pinch and fingers <= 1:
         return "pinch / grab"
     if fingers == 0:
@@ -135,70 +302,215 @@ def _gesture_name(fingers: int, pinch: bool, point: bool) -> str:
     return f"{fingers} fingers"
 
 
+def _classify_gesture(hand, handedness=None) -> str:
+    """Classify a hand using palm-scale-normalised landmark geometry."""
+    flags = _extended_fingers(hand, handedness)
+    thumb, index, middle, ring, pinky = flags
+    fingers = sum(flags)
+    scale = _palm_scale(hand)
+    if not hand or len(hand) <= 12:
+        return "fist"
+    pinch = _dist(hand[HAND_THUMB_TIP], hand[HAND_INDEX_TIP]) / scale < PINCH_ENGAGE
+    middle_pinch = _dist(hand[HAND_THUMB_TIP], hand[HAND_MIDDLE_TIP]) / scale < PINCH_ENGAGE
+
+    # A closed fist also puts thumb and index close together; require the
+    # thumb (or index) to be extended before calling it a pinch.
+    pinch = pinch and (thumb or index)
+    if pinch and middle and ring and pinky and not index:
+        return "ok sign"
+    if pinch:
+        return "pinch / grab"
+    if middle_pinch and not index and not middle:
+        return "pinch / grab"
+    if fingers == 0:
+        return "fist"
+    if fingers == 5:
+        return "open hand"
+    if thumb and not (index or middle or ring or pinky):
+        if hand[HAND_THUMB_TIP].y < hand[HAND_WRIST].y - scale * 0.4:
+            return "thumbs up"
+        if hand[HAND_THUMB_TIP].y > hand[HAND_WRIST].y + scale * 0.4:
+            return "thumbs down"
+        return "thumbs up"
+    if index and not (thumb or middle or ring or pinky):
+        return "pointing"
+    if fingers == 3:
+        return "three fingers"
+    if index and middle and not (ring or pinky):
+        return "peace sign"
+    if fingers == 4:
+        return "four fingers"
+    return _gesture_name(fingers, False, index)
+
+
 class VisionService:
     """Background-thread camera service with switchable modes."""
 
     def __init__(self):
-        self._lock      = threading.Lock()
-        self._running   = False
-        self._mode      = "gesture"
-        self._thread    = None
-        self._cap       = None
-        self._camera    = None
-        self._player    = None
-        self._speak     = None
-        self._ts        = 0
+        self._lock = threading.RLock()
+        self._running = False
+        self._mode = "gesture"
+        self._thread = None
+        self._cap = None
+        self._camera = None
+        self._player = None
+        self._speak = None
+        self._ts = 0
+        self._last_mp_ts_ms = 0
         self._last_tell = 0
-        self._holistic  = None
-        self._faces     = None
+        self._holistic = None
+        self._faces = None
         self._prev_gray = None
-        self._ready     = threading.Event()
-        self._object_detector = ObjectDetector(
-            DetectorConfig(model_path=MODELS_DIR / "yolo11n.pt")
-        )
-        self._ocr_engine = OCREngine()
-        self._code_reader = CodeReader()
-        self._privacy_processor = FacePrivacyProcessor()
-        self._segmenter = ForegroundSegmenter()
-        self._captioner = SceneCaptioner()
-        self._vqa = VisualQuestionAnswering()
-        self._anomaly_monitor = AnomalyMonitor()
-        self._event_store = VisionEventStore(BASE_DIR / "data" / "vision" / "events.db")
-        self._face_profiles = FaceProfileStore(BASE_DIR / "data" / "vision" / "face_profiles.json")
-        self._face_recognition = FaceRecognitionEngine(self._face_profiles)
-        self._opencv_identity = OpenCVFaceVerifier(
+        self._ready = threading.Event()
+        self._motion_sensitivity = MOTION_SENSITIVITY
+        self._focus_grace = FOCUS_GRACE_S
+        self._away_since = None
+        self._focus_away = False
+        self._gesture_candidate = None
+        self._gesture_frames = 0
+        self._last_gesture = ""
+        self._pinch_active = False
+        self._pinch_since = 0.0
+        self._drag_active = False
+        self._middle_pinch_active = False
+        self._volume_ema = None
+        self._last_volume = None
+        self._filters = {
+            "x": _OneEuroFilter(min_cutoff=1.2, beta=0.08, d_cutoff=1.0),
+            "y": _OneEuroFilter(min_cutoff=1.2, beta=0.08, d_cutoff=1.0),
+        }
+
+        def build(factory, *args, **kwargs):
+            if factory is None:
+                return _StubHelper()
+            try:
+                return factory(*args, **kwargs)
+            except Exception:
+                return _StubHelper()
+
+        self._object_detector = build(
+            ObjectDetector, DetectorConfig(model_path=MODELS_DIR / "yolo11n.pt")
+        ) if ObjectDetector is not None and DetectorConfig is not None else _StubHelper()
+        self._ocr_engine = build(OCREngine)
+        self._code_reader = build(CodeReader)
+        self._privacy_processor = build(FacePrivacyProcessor)
+        self._segmenter = build(ForegroundSegmenter)
+        self._captioner = build(SceneCaptioner)
+        self._vqa = build(VisualQuestionAnswering)
+        self._anomaly_monitor = build(AnomalyMonitor)
+        self._event_store = build(
+            VisionEventStore, BASE_DIR / "data" / "vision" / "events.db"
+        ) if VisionEventStore is not None else _StubHelper()
+        self._face_profiles = build(
+            FaceProfileStore, BASE_DIR / "data" / "vision" / "face_profiles.json"
+        ) if FaceProfileStore is not None else _StubHelper()
+        self._face_recognition = build(
+            FaceRecognitionEngine, self._face_profiles
+        ) if FaceRecognitionEngine is not None else _StubHelper()
+        self._opencv_identity = build(
+            OpenCVFaceVerifier,
             MODELS_DIR / "face_detection_yunet_2023mar.onnx",
             MODELS_DIR / "face_recognition_sface_2021dec.onnx",
             self._face_profiles,
-        )
-        self._multimodal = MultimodalVision()
-        self._recorder = VisionRecorder()
+        ) if OpenCVFaceVerifier is not None else _StubHelper()
+        self._multimodal = build(MultimodalVision)
+        self._recorder = build(VisionRecorder)
 
     # ── Setup / control ───────────────────────────────────────────────────────
     def configure(self, player=None, speak=None):
         self._player = player
-        self._speak  = speak
+        self._speak = speak
+
+    def _camera_index(self) -> int:
+        try:
+            cfg = json.loads((BASE_DIR / "config" / "api_keys.json").read_text(
+                encoding="utf-8"))
+        except Exception:
+            return 0
+        value = cfg.get("camera_index", cfg.get("camera", {}).get("index", 0))
+        try:
+            return max(0, int(value))
+        except (TypeError, ValueError):
+            return 0
+
+    def _open_camera(self, index=None):
+        if cv2 is None:
+            return None
+        index = self._camera_index() if index is None else int(index)
+        capture = None
+        if os.name == "nt" and hasattr(cv2, "CAP_DSHOW"):
+            try:
+                capture = cv2.VideoCapture(index, cv2.CAP_DSHOW)
+                if capture is not None and not capture.isOpened():
+                    capture.release()
+                    capture = None
+            except Exception:
+                capture = None
+        if capture is None:
+            try:
+                capture = cv2.VideoCapture(index)
+            except Exception:
+                return None
+        if capture is None:
+            return None
+        try:
+            capture.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
+            capture.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
+        except Exception:
+            pass
+        return capture
+
+    def _reset_tracking(self):
+        """Clear all temporal state when a mode changes or the loop restarts."""
+        self._prev_gray = None
+        self._gesture_candidate = None
+        self._gesture_frames = 0
+        self._pinch_active = False
+        self._pinch_since = 0.0
+        self._drag_active = False
+        self._middle_pinch_active = False
+        self._volume_ema = None
+        self._last_volume = None
+        self._away_since = None
+        self._focus_away = False
+        self._filters["x"] = _OneEuroFilter(1.2, 0.08, 1.0)
+        self._filters["y"] = _OneEuroFilter(1.2, 0.08, 1.0)
+
+    def set_mode(self, mode: str) -> str:
+        mode = str(mode or "").strip().lower()
+        if mode not in MODES:
+            return (f"Unknown vision mode: {mode}. Use: " + ", ".join(sorted(MODES)))
+        with self._lock:
+            changed = self._mode != mode
+            self._mode = mode
+        if changed:
+            self._reset_tracking()
+        return f"Vision mode switched to {mode}."
 
     def start(self, mode: str = "gesture") -> str:
         if _get_mp() is None:
             return "MediaPipe is not installed. Run: pip install mediapipe"
+        mode = str(mode or "gesture").strip().lower()
         if mode not in MODES:
-            return f"Unknown vision mode: {mode}. Use: gesture, air_mouse, volume, motion, posture, objects"
+            return "Unknown vision mode: " + ", ".join(sorted(MODES))
         with self._lock:
             already = self._running
-            self._mode = mode
+            if self._mode != mode:
+                self._mode = mode
+                self._reset_tracking()
         if not already:
             self._ready.clear()
-            self._thread = threading.Thread(target=self._loop, daemon=True, name="VisionGestureThread")
+            self._reset_tracking()
+            self._thread = threading.Thread(
+                target=self._loop, daemon=True, name="VisionGestureThread"
+            )
             self._thread.start()
-            ok = self._ready.wait(timeout=20)
-            if not ok:
+            if not self._ready.wait(timeout=20):
                 return "Camera failed to open, sir."
         return f"Vision mode active: {mode}. Say 'stop vision' when done."
 
     def stop(self) -> str:
-        # Only flag stop; the loop thread owns the capture object and releases
-        # it on exit — releasing here races with the loop's read()/release().
+        # The loop thread owns the camera object and releases it on exit.
         with self._lock:
             self._running = False
         return "Vision stopped, sir."
@@ -214,7 +526,9 @@ class VisionService:
         mp_python, mp_vision, MPImage, MPImageFormat = mp
         self._mp_image_factory = MPImage
         self._mp_image_format = MPImageFormat
-        base = mp_python.BaseOptions(model_asset_path=str(MODELS_DIR / "holistic_landmarker.task"))
+        base = mp_python.BaseOptions(
+            model_asset_path=str(MODELS_DIR / "holistic_landmarker.task")
+        )
         self._holistic = mp_vision.HolisticLandmarker.create_from_options(
             mp_vision.HolisticLandmarkerOptions(
                 base_options=base,
@@ -226,94 +540,125 @@ class VisionService:
         )
         self._faces = mp_vision.FaceDetector.create_from_options(
             mp_vision.FaceDetectorOptions(
-                base_options=mp_python.BaseOptions(model_asset_path=str(MODELS_DIR / "face_detector.tflite")),
+                base_options=mp_python.BaseOptions(
+                    model_asset_path=str(MODELS_DIR / "face_detector.tflite")
+                ),
                 running_mode=mp_vision.RunningMode.VIDEO,
             )
         )
+        return True
+
+    def _close_tools(self):
+        for name in ("_holistic", "_faces"):
+            tool = getattr(self, name, None)
+            if tool is not None:
+                try:
+                    if hasattr(tool, "close"):
+                        tool.close()
+                except Exception:
+                    pass
+                setattr(self, name, None)
 
     # ── Main loop ─────────────────────────────────────────────────────────────
     def _loop(self):
-        self._camera = CameraManager(CameraConfig(index=0, width=640, height=480))
-        if not self._camera.start():
-            print("[VisionGesture] ❌ Camera failed to open")
-            with self._lock:
-                self._running = False
-            self._ready.set()
-            return
-
+        self._reset_tracking()
+        camera_config = CameraConfig(index=self._camera_index(), width=640, height=480)
+        self._camera = CameraManager(camera_config)
         try:
-            self._build_tools()
-        except Exception as e:
-            print(f"[VisionGesture] ❌ Model load failed: {e}")
-            self._camera.stop()
-            self._camera = None
+            if not self._camera.start():
+                print("[VisionGesture] ❌ Camera failed to open")
+                return
+            if not self._build_tools():
+                print("[VisionGesture] ❌ MediaPipe unavailable")
+                return
+
+            with self._lock:
+                self._running = True
+            self._ready.set()
+            print("[VisionGesture] ✅ Camera running")
+
+            while self._running:
+                packet = self._camera.latest()
+                if packet is None or packet.sequence <= self._ts:
+                    time.sleep(0.02)
+                    continue
+                self._ts = packet.sequence
+                if self._player and getattr(self._player, "vision_preview_open", False):
+                    safe_frame, _ = self._privacy_processor.blur(packet.frame)
+                    try:
+                        self._player.set_vision_frame(safe_frame)
+                    except Exception:
+                        pass
+                if self._player and getattr(self._player, "arcade_open", False):
+                    try:
+                        self._player.set_arcade_frame(packet.frame)
+                    except Exception:
+                        pass
+                if self._recorder.is_recording:
+                    safe_frame, _ = self._privacy_processor.blur(packet.frame)
+                    self._recorder.write(safe_frame)
+                with self._lock:
+                    mode = self._mode
+                try:
+                    self._process(packet.frame, mode, self._ts)
+                except Exception as exc:
+                    print(f"[VisionGesture] ⚠️ {exc}")
+                time.sleep(0.02)
+        except Exception as exc:
+            print(f"[VisionGesture] ❌ {exc}")
+        finally:
             with self._lock:
                 self._running = False
+            if self._camera is not None:
+                try:
+                    self._camera.stop()
+                except Exception:
+                    pass
+                self._camera = None
+            self._close_tools()
+            self._prev_gray = None
             self._ready.set()
-            return
+            print("[VisionGesture] 🔴 Camera stopped")
 
-        with self._lock:
-            self._running = True
-        self._ready.set()
-        print("[VisionGesture] ✅ Camera running")
-
-        while self._running:
-            packet = self._camera.latest()
-            if packet is None or packet.sequence <= self._ts:
-                time.sleep(0.02)
-                continue
-            self._ts = packet.sequence
-            if self._player and getattr(self._player, "vision_preview_open", False):
-                safe_frame, _ = self._privacy_processor.blur(packet.frame)
-                try:
-                    self._player.set_vision_frame(safe_frame)
-                except Exception:
-                    pass
-            if self._player and getattr(self._player, "arcade_open", False):
-                try:
-                    self._player.set_arcade_frame(packet.frame)
-                except Exception:
-                    pass
-            if self._recorder.is_recording:
-                safe_frame, _ = self._privacy_processor.blur(packet.frame)
-                self._recorder.write(safe_frame)
-            with self._lock:
-                mode = self._mode
-            try:
-                self._process(packet.frame, mode, self._ts)
-            except Exception as e:
-                print(f"[VisionGesture] ⚠️ {e}")
-            time.sleep(0.02)
-
-        if self._camera:
-            self._camera.stop()
-        self._camera = None
-        print("[VisionGesture] 🔴 Camera stopped")
+    def _next_mp_ts_ms(self) -> int:
+        """MediaPipe VIDEO mode requires strictly increasing timestamps."""
+        self._last_mp_ts_ms = max(
+            self._last_mp_ts_ms + 1, int(time.monotonic() * 1000)
+        )
+        return self._last_mp_ts_ms
 
     def _process(self, frame, mode: str, ts: int):
+        if cv2 is None or self._holistic is None:
+            return
         rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-        mp_image = self._mp_image_factory(image_format=self._mp_image_format.SRGB, data=rgb)
-
-        res = self._holistic.detect_for_video(mp_image, ts * 20)
+        mp_image = self._mp_image_factory(
+            image_format=self._mp_image_format.SRGB, data=rgb
+        )
+        ts_ms = self._next_mp_ts_ms()
+        res = self._holistic.detect_for_video(mp_image, ts_ms)
         pose = res.pose_landmarks if res.pose_landmarks else None
         hands = []
         if res.right_hand_landmarks:
-            hands.append(res.right_hand_landmarks)
+            hands.append((res.right_hand_landmarks, "Right"))
         if res.left_hand_landmarks:
-            hands.append(res.left_hand_landmarks)
+            hands.append((res.left_hand_landmarks, "Left"))
+        hand_landmarks = [hand for hand, _ in hands]
 
         if mode == "gesture":
-            self._handle_gesture(hands)
+            self._handle_gesture(hand_landmarks,
+                                 hands[0][1] if hands else None)
         elif mode == "air_mouse":
-            self._handle_air_mouse(hands)
+            self._handle_air_mouse(hand_landmarks)
         elif mode == "volume":
-            self._handle_volume(hands)
+            self._handle_volume(hand_landmarks)
         elif mode == "posture":
             self._handle_posture(pose)
         elif mode == "motion":
             self._handle_motion(frame)
         elif mode == "objects":
             self._handle_objects(frame, ts)
+        elif mode == "focus":
+            self._handle_focus(pose, hand_landmarks)
 
     # ── Mode handlers ─────────────────────────────────────────────────────────
     def _tell(self, text: str, cooldown: float = 1.5):
@@ -327,26 +672,31 @@ class VisionService:
             except Exception:
                 pass
         if self._player:
-            self._player.write_log(f"Vision: {text}")
             try:
+                self._player.write_log(f"Vision: {text}")
                 self._player.set_vision_signal(text)
             except Exception:
                 pass
         print(f"[VisionGesture] 💬 {text}")
 
-    def _handle_gesture(self, hands):
+    def _handle_gesture(self, hands, handedness=None):
         if not hands:
             return
         hand = hands[0]
-        fingers = _finger_count(hand)
-        thumb = hand[HAND_THUMB_TIP]
-        idx   = hand[HAND_INDEX_TIP]
-        pinch = _dist(thumb, idx) < 0.07
-        point = not pinch and fingers == 1 and hand[HAND_INDEX_TIP].y < hand[HAND_WRIST].y
-        name  = _gesture_name(fingers, pinch, point)
-        self._tell(f"Gesture detected: {name}.", cooldown=2.0)
+        name = _classify_gesture(hand, handedness)
+        if name == self._gesture_candidate:
+            self._gesture_frames += 1
+        else:
+            self._gesture_candidate = name
+            self._gesture_frames = 1
+        if self._gesture_frames >= GESTURE_FRAMES and name != self._last_gesture:
+            self._last_gesture = name
+            self._tell(f"Gesture detected: {name}.", cooldown=0.0)
         if self._player and hasattr(self._player, "set_arcade_signal"):
-            self._player.set_arcade_signal(name, idx.x)
+            try:
+                self._player.set_arcade_signal(name, hand[HAND_INDEX_TIP].x)
+            except Exception:
+                pass
 
     def _handle_air_mouse(self, hands):
         pyautogui = _get_pyautogui()
@@ -355,30 +705,72 @@ class VisionService:
         hand = hands[0]
         idx = hand[HAND_INDEX_TIP]
         scr_w, scr_h = pyautogui.size()
-        # Kamera mirror ko'rgani uchun x ni teskari qilish:
-        # barmoq chapga yursa kursor ham chapga yurishi kerak.
-        x = int((1.0 - idx.x) * scr_w)
-        y = int(idx.y * scr_h)
+        now = time.monotonic()
+        x_norm = _map_active_region(1.0 - idx.x, ACTIVE_MARGIN)
+        y_norm = _map_active_region(idx.y, ACTIVE_MARGIN)
+        x = int(_clamp(self._filters["x"](x_norm, now), 0.0, 0.9999) * scr_w)
+        y = int(_clamp(self._filters["y"](y_norm, now), 0.0, 0.9999) * scr_h)
         try:
-            pyautogui.moveTo(x, y, duration=0.05)
+            pyautogui.moveTo(x, y, duration=0)
         except Exception:
             pass
+
+        scale = _palm_scale(hand)
         thumb = hand[HAND_THUMB_TIP]
-        if _dist(thumb, idx) < 0.06:
+        middle = hand[HAND_MIDDLE_TIP]
+        pinch = _dist(thumb, idx) / scale
+
+        if pinch < PINCH_ENGAGE:
+            if not self._pinch_active:
+                self._pinch_active = True
+                self._pinch_since = now
+                try:
+                    pyautogui.click()
+                except Exception:
+                    pass
+                self._tell("Click.", cooldown=0.6)
+            elif now - self._pinch_since >= DRAG_AFTER_S and not self._drag_active:
+                self._drag_active = True
+                try:
+                    pyautogui.mouseDown()
+                except Exception:
+                    pass
+                self._tell("Drag.", cooldown=0.6)
+        elif pinch > PINCH_RELEASE and self._pinch_active:
+            if self._drag_active:
+                try:
+                    pyautogui.mouseUp()
+                except Exception:
+                    pass
+            self._pinch_active = False
+            self._drag_active = False
+
+        middle_pinch = _dist(thumb, middle) / scale
+        if middle_pinch < PINCH_ENGAGE and not self._middle_pinch_active:
+            self._middle_pinch_active = True
             try:
-                pyautogui.click()
+                pyautogui.click(button="right")
             except Exception:
                 pass
-            self._tell("Click.", cooldown=1.0)
+            self._tell("Right click.", cooldown=0.6)
+        elif middle_pinch > PINCH_RELEASE and self._middle_pinch_active:
+            self._middle_pinch_active = False
 
     def _handle_volume(self, hands):
         if not hands:
             return
         hand = hands[0]
-        thumb = hand[HAND_THUMB_TIP]
-        idx   = hand[HAND_INDEX_TIP]
-        d = _dist(thumb, idx)
-        pct = int(max(0, min(100, (1 - d / 0.4) * 100)))
+        scale = _palm_scale(hand)
+        ratio = _dist(hand[HAND_THUMB_TIP], hand[HAND_INDEX_TIP]) / scale
+        target = int(_clamp(1.0 - ratio / 1.5, 0.0, 1.0) * 100)
+        if self._volume_ema is None:
+            self._volume_ema = float(target)
+        else:
+            self._volume_ema = 0.7 * self._volume_ema + 0.3 * target
+        pct = int(round(self._volume_ema))
+        if self._last_volume is not None and abs(pct - self._last_volume) < 3:
+            return
+        self._last_volume = pct
         try:
             from actions.computer_settings import volume_set
             volume_set(pct)
@@ -393,7 +785,7 @@ class VisionService:
             self._tell("No body detected in frame.", cooldown=5.0)
             return
         nose = pose[POS_NOSE]
-        so   = (pose[POS_SHOULDER_L], pose[POS_SHOULDER_R])
+        so = (pose[POS_SHOULDER_L], pose[POS_SHOULDER_R])
         sh_mid = ((so[0].x + so[1].x) / 2, (so[0].y + so[1].y) / 2)
         wrist_top = min(pose[POS_WRIST_L].y, pose[POS_WRIST_R].y)
         shoulder_y = min(so[0].y, so[1].y)
@@ -411,7 +803,9 @@ class VisionService:
                 self._player.set_arcade_pose(False, 0.0)
             self._tell("Body detected, neutral posture.", cooldown=8.0)
 
-    def _handle_motion(self, frame):
+    def _handle_motion(self, frame, sensitivity=None):
+        if cv2 is None or np is None:
+            return
         gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
         gray = cv2.GaussianBlur(gray, (21, 21), 0)
         if self._prev_gray is None:
@@ -420,9 +814,28 @@ class VisionService:
         diff = cv2.absdiff(self._prev_gray, gray)
         self._prev_gray = gray
         thresh = cv2.threshold(diff, 25, 255, cv2.THRESH_BINARY)[1]
-        motion_pct = (thresh > 0).mean()
-        if motion_pct > 0.15:
-            self._tell(f"Motion detected, sir. Coverage {motion_pct * 100:.0f}%.", cooldown=3.0)
+        motion_pct = float(np.mean(thresh > 0))
+        threshold = self._motion_sensitivity if sensitivity is None else float(sensitivity)
+        if motion_pct > threshold:
+            self._tell(
+                f"Motion detected, sir. Coverage {motion_pct * 100:.1f}%.",
+                cooldown=3.0,
+            )
+
+    def _handle_focus(self, pose, hands):
+        present = bool(pose or hands)
+        now = time.monotonic()
+        if present:
+            if self._focus_away:
+                self._tell("Welcome back, sir.", cooldown=0.0)
+            self._away_since = None
+            self._focus_away = False
+            return
+        if self._away_since is None:
+            self._away_since = now
+        elif not self._focus_away and now - self._away_since >= self._focus_grace:
+            self._focus_away = True
+            self._tell("You left the frame, sir. Is everything alright?", cooldown=0.0)
 
     def _handle_objects(self, frame, ts):
         events = self._object_detector.detect(frame, timestamp=time.time())
@@ -439,15 +852,52 @@ class VisionService:
             if self._player and hasattr(self._player, "set_vision_detections"):
                 self._player.set_vision_detections(events)
                 self._player.set_vision_signal(self._captioner.caption(events))
-        elif self._object_detector.error and self._player and hasattr(self._player, "set_vision_signal"):
+        elif self._object_detector.error and self._player and hasattr(
+            self._player, "set_vision_signal"
+        ):
             self._player.set_vision_signal("OBJECT DETECTION: " + self._object_detector.error)
 
     # ── One-shot actions ──────────────────────────────────────────────────────
-    def _open_camera(self):
-        cap = cv2.VideoCapture(0, cv2.CAP_DSHOW)
-        cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
-        cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
-        return cap
+    def _capture_frame(self):
+        frames = self._capture_frames(1)
+        return frames[-1] if frames else None
+
+    def _capture_frames(self, count: int = 1):
+        count = max(1, int(count or 1))
+        if self._running and self._camera is not None:
+            frames = []
+            seen = set()
+            deadline = time.monotonic() + 1.0
+            while len(frames) < count and time.monotonic() < deadline:
+                packet = self._camera.latest()
+                if packet is not None and packet.sequence not in seen:
+                    seen.add(packet.sequence)
+                    frames.append(packet.frame)
+                time.sleep(0.02)
+            if not frames:
+                packet = self._camera.latest()
+                if packet is not None:
+                    frames = [packet.frame] * count
+            return frames
+
+        cap = self._open_camera()
+        if cap is None:
+            return []
+        frames = []
+        try:
+            for _ in range(5):
+                cap.read()
+            for _ in range(count):
+                ok, frame = cap.read()
+                if ok:
+                    frames.append(frame)
+                time.sleep(0.04)
+        finally:
+            try:
+                cap.release()
+            except Exception:
+                pass
+        return frames
 
     def face_count(self) -> str:
         mp = _get_mp()
@@ -457,73 +907,52 @@ class VisionService:
         try:
             det = mp_vision.FaceDetector.create_from_options(
                 mp_vision.FaceDetectorOptions(
-                    base_options=mp_python.BaseOptions(model_asset_path=str(MODELS_DIR / "face_detector.tflite")),
+                    base_options=mp_python.BaseOptions(
+                        model_asset_path=str(MODELS_DIR / "face_detector.tflite")
+                    ),
                     running_mode=mp_vision.RunningMode.IMAGE,
                 )
             )
-            cap = self._open_camera()
             n_faces = 0
-            for _ in range(8):
-                ok, frame = cap.read()
-                if not ok:
-                    continue
+            for frame in self._capture_frames(8):
                 rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-                mp_image = MPImage(image_format=MPImageFormat.SRGB, data=rgb)
-                res = det.detect(mp_image)
+                res = det.detect(MPImage(image_format=MPImageFormat.SRGB, data=rgb))
                 if res.detections:
                     n_faces = max(n_faces, len(res.detections))
-                time.sleep(0.05)
-            cap.release()
             return f"I see {n_faces} person(s) in front of the camera, sir."
-        except Exception as e:
-            return f"Face detection failed: {e}"
+        except Exception as exc:
+            return f"Face detection failed: {exc}"
 
     def read_qr(self) -> str:
         try:
-            cap = self._open_camera()
-            qd = cv2.QRCodeDetector()
-            for _ in range(15):
-                ok, frame = cap.read()
-                if not ok:
-                    continue
-                data, *_ = qd.detectAndDecode(frame)
+            if cv2 is None:
+                return "QR reading failed: OpenCV is not installed."
+            detector = cv2.QRCodeDetector()
+            for frame in self._capture_frames(15):
+                data, *_ = detector.detectAndDecode(frame)
                 if data:
-                    cap.release()
                     return f"QR code read: {data[:150]}"
-                time.sleep(0.05)
-            cap.release()
             return "I couldn't find a QR code, sir. Make sure it's fully visible."
-        except Exception as e:
-            return f"QR reading failed: {e}"
+        except Exception as exc:
+            return f"QR reading failed: {exc}"
 
     def read_text(self) -> str:
         """Capture one frame and return readable text, if OCR is available."""
-        try:
-            cap = self._open_camera()
-            for _ in range(5):
-                cap.read()
-            ok, frame = cap.read()
-            cap.release()
-            if not ok:
-                return "Could not capture camera frame, sir."
-            events = self._ocr_engine.extract(frame)
-            if not events:
-                return self._ocr_engine.error or "I couldn't find readable text, sir."
-            text = " ".join(event.label for event in events)
-            return f"I can read: {text[:1000]}"
-        except Exception as e:
-            return f"OCR failed: {e}"
+        frame = self._capture_frame()
+        if frame is None:
+            return "Could not capture camera frame, sir."
+        events = self._ocr_engine.extract(frame)
+        if not events:
+            return self._ocr_engine.error or "I couldn't find readable text, sir."
+        text = " ".join(event.label for event in events)
+        return f"I can read: {text[:1000]}"
 
     def remove_background_snapshot(self) -> str:
         """Capture a frame, remove its background, and save a PNG artifact."""
+        frame = self._capture_frame()
+        if frame is None:
+            return "Could not capture camera frame, sir."
         try:
-            cap = self._open_camera()
-            for _ in range(5):
-                cap.read()
-            ok, frame = cap.read()
-            cap.release()
-            if not ok:
-                return "Could not capture camera frame, sir."
             output = self._segmenter.remove_background(frame, transparent=True)
             if output is None:
                 return self._segmenter.error or "Background removal failed, sir."
@@ -532,49 +961,29 @@ class VisionService:
             path = out_dir / f"foreground_{int(time.time())}.png"
             cv2.imwrite(str(path), output)
             return f"Background removed. Saved transparent image to {path}."
-        except Exception as e:
-            return f"Background removal failed: {e}"
+        except Exception as exc:
+            return f"Background removal failed: {exc}"
 
     def describe_scene(self, question: str = "") -> str:
         """Capture one frame and answer from local detector/OCR evidence."""
+        frame = self._capture_frame()
+        if frame is None:
+            return "Could not capture camera frame, sir."
         try:
-            cap = self._open_camera()
-            for _ in range(5):
-                cap.read()
-            ok, frame = cap.read()
-            cap.release()
-            if not ok:
-                return "Could not capture camera frame, sir."
             events = self._object_detector.detect(frame, timestamp=time.time())
             events.extend(self._ocr_engine.extract(frame))
             events.extend(self._privacy_processor.detect(frame))
-            if question:
-                return self._vqa.answer(question, events)
-            return self._captioner.caption(events)
-        except Exception as e:
-            return f"Scene understanding failed: {e}"
-
-    def _capture_frame(self):
-        frames = self._capture_frames(1)
-        return frames[-1] if frames else None
-
-    def _capture_frames(self, count: int = 5):
-        cap = self._open_camera()
-        for _ in range(5):
-            cap.read()
-        frames = []
-        for _ in range(max(1, count)):
-            ok, frame = cap.read()
-            if ok:
-                frames.append(frame)
-            time.sleep(0.04)
-        cap.release()
-        return frames
+            return self._vqa.answer(question, events) if question \
+                else self._captioner.caption(events)
+        except Exception as exc:
+            return f"Scene understanding failed: {exc}"
 
     def register_face(self, name: str) -> str:
         if not str(name).strip():
             return "Please provide a profile name, for example: register my face as Doniyor."
         frame = self._capture_frame()
+        if frame is None:
+            return "Could not capture camera frame, sir."
         if self._opencv_identity.load():
             if self._opencv_identity.enroll(name, frame):
                 return f"Face profile registered for {name} using local OpenCV verification."
@@ -598,6 +1007,8 @@ class VisionService:
                 return f"Identity verification failed: best match {best[1]} scored {best[2]:.2f}, sir."
             return "Identity verification failed: face not recognized, sir."
         frame = self._capture_frame()
+        if frame is None:
+            return "Could not capture camera frame, sir."
         embedding = self._face_recognition.embedding_from_frame(frame)
         if embedding is None:
             return self._face_recognition.error or "Face recognition is unavailable, sir."
@@ -606,6 +1017,8 @@ class VisionService:
 
     def ask_multimodal(self, question: str = "Describe this scene.") -> str:
         frame = self._capture_frame()
+        if frame is None:
+            return "Could not capture camera frame, sir."
         return self._multimodal.ask(frame, question)
 
     def start_recording(self) -> str:
@@ -630,39 +1043,47 @@ class VisionService:
         try:
             det = mp_vision.HolisticLandmarker.create_from_options(
                 mp_vision.HolisticLandmarkerOptions(
-                    base_options=mp_python.BaseOptions(model_asset_path=str(MODELS_DIR / "holistic_landmarker.task")),
+                    base_options=mp_python.BaseOptions(
+                        model_asset_path=str(MODELS_DIR / "holistic_landmarker.task")
+                    ),
                     running_mode=mp_vision.RunningMode.IMAGE,
                     min_pose_detection_confidence=0.5,
                 )
             )
-            cap = self._open_camera()
-            for _ in range(5):
-                cap.read()
-            ok, frame = cap.read()
-            cap.release()
-            if not ok:
+            frame = self._capture_frame()
+            if frame is None:
                 return "Could not capture camera frame, sir."
             rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-            mp_image = MPImage(image_format=MPImageFormat.SRGB, data=rgb)
-            res = det.detect(mp_image)
-            pose  = res.pose_landmarks if res.pose_landmarks else None
+            res = det.detect(MPImage(image_format=MPImageFormat.SRGB, data=rgb))
+            pose = res.pose_landmarks if res.pose_landmarks else None
             hands = []
             if res.right_hand_landmarks:
                 hands.append(res.right_hand_landmarks)
             if res.left_hand_landmarks:
                 hands.append(res.left_hand_landmarks)
-            desc = []
-            if pose:
-                desc.append("a person is in frame")
-            else:
-                desc.append("no person detected")
+            desc = ["a person is in frame" if pose else "no person detected"]
             if hands:
-                n_hands = len(hands)
-                n_fingers = sum(_finger_count(h) for h in hands)
-                desc.append(f"{n_hands} hand(s), {n_fingers} fingers visible")
+                fingers = sum(_finger_count(hand) for hand in hands)
+                desc.append(f"{len(hands)} hand(s), {fingers} fingers visible")
             return "On camera: " + ", ".join(desc) + "."
-        except Exception as e:
-            return f"Snapshot failed: {e}"
+        except Exception as exc:
+            return f"Snapshot failed: {exc}"
+
+    def status(self) -> str:
+        with self._lock:
+            running = self._running
+            mode = self._mode
+        camera_health = "unavailable"
+        if self._camera is not None:
+            camera_health = "error" if getattr(self._camera, "error", None) else "healthy"
+        if running and self._camera is not None and self._camera.latest() is None:
+            camera_health = "starting"
+        recording = bool(getattr(self._recorder, "is_recording", False))
+        return (
+            f"Vision service is {'active' if running else 'stopped'} "
+            f"(mode: {mode}, recording: {'yes' if recording else 'no'}, "
+            f"last gesture: {self._last_gesture or 'none'}, camera: {camera_health})."
+        )
 
 
 _service = VisionService()
@@ -675,12 +1096,10 @@ def vision_gesture(
     session_memory=None,
     speak=None,
 ) -> str:
-    """Control the full-body vision service.
-    action: start | stop | record_start | record_stop | face_count | qr | ocr | background_remove | describe | vqa | register_face | identify_face | multimodal | snapshot | status
-    mode (for start): gesture | air_mouse | volume | motion | posture | focus"""
-    params     = parameters or {}
-    action     = str(params.get("action", "status")).lower().strip()
-    mode       = str(params.get("mode", "gesture")).lower().strip()
+    """Control the full-body vision service."""
+    params = parameters if isinstance(parameters, dict) else {}
+    action = str(params.get("action", "status")).lower().strip()
+    mode = str(params.get("mode", _service._mode)).lower().strip()
 
     _service.configure(player=player, speak=speak)
 
@@ -688,6 +1107,8 @@ def vision_gesture(
         return _service.start(mode)
     if action == "stop":
         return _service.stop()
+    if action in ("mode", "switch", "set_mode"):
+        return _service.set_mode(mode)
     if action in ("record_start", "start_recording"):
         return _service.start_recording()
     if action in ("record_stop", "stop_recording"):
@@ -714,8 +1135,18 @@ def vision_gesture(
     if action == "snapshot":
         return _service.snapshot(params.get("text", ""))
     if action in ("status", "info"):
-        running = _service.is_running
-        with _service._lock:
-            mode = _service._mode
-        return f"Vision service is {'active' if running else 'stopped'} (mode: {mode})."
-    return f"Unknown vision action: {action}, sir. Use start | stop | face_count | qr | snapshot | status"
+        if "sensitivity" in params:
+            try:
+                _service._motion_sensitivity = _clamp(float(params["sensitivity"]), 0.001, 1.0)
+            except (TypeError, ValueError):
+                pass
+        if "grace" in params:
+            try:
+                _service._focus_grace = max(0.0, float(params["grace"]))
+            except (TypeError, ValueError):
+                pass
+        return _service.status()
+    return (
+        f"Unknown vision action: {action}, sir. Use start | stop | mode | "
+        "face_count | qr | ocr | snapshot | status"
+    )

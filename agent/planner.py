@@ -96,24 +96,34 @@ system_status
   focus: "overview" | "battery" | "cpu" | "memory" | "disk" | "network" | "processes" | "uptime" (optional, default: overview)
 
 task_manager
-  action: "status" | "list" | "cancel" (required)
-  task_id: string (for status/cancel)
+  action: "list" | "status" | "cancel" | "summary" | "processes" | "find_process" | "kill" (required)
+  task_id: string (or "latest"/"all"), status_filter, limit
+  process/name/pid: target for find_process or kill; sort_by: memory|cpu; all_matches, force
 
 clipboard
   action: "get" | "set" | "paste" | "clear" | "history" | "copy_last" (required)
   text: string (for set)
+
+translate
+  action: "translate" | "detect" | "transliterate" | "explain" | "clipboard" | "batch"
+  text / texts, to, from, tone, copy, use_clipboard, no_cache
 
 recall_memory
   query: string (required)
   category: "identity" | "preferences" | "projects" | "relationships" | "wishes" | "notes" (optional)
 
 vision_gesture
-  action: "start" | "stop" | "face_count" | "qr" | "snapshot" | "status" (required)
-  mode: "gesture" | "air_mouse" | "volume" | "motion" | "posture" | "focus" (for start)
+  action: "start" | "stop" | "mode" | "face_count" | "qr" | "snapshot" | "status" (required)
+  mode: "gesture" | "air_mouse" | "volume" | "motion" | "posture" | "objects" | "focus"
+  sensitivity: motion threshold (default 0.025), grace: focus away seconds (default 10)
 
 screen_process
   text: string (required) — what to analyze or ask about the screen
   angle: "screen" | "camera" (optional)
+
+vision_click
+  target: string (required) — UI element to find on screen
+  click: "left" | "double" | "triple" | "right" | "middle" | "hover", monitor: 0- N, only_coords, type_text, press_enter
 
 send_message
   receiver: string (required)
