@@ -345,17 +345,39 @@ TOOL_DECLARATIONS = [
     {
         "name": "youtube_video",
         "description": (
-            "Controls YouTube. Use for: playing videos, summarizing a video's content, "
-            "getting video info, or showing trending videos."
+            "Controls YouTube deterministically. Use for: opening YouTube, searching and "
+            "playing videos (by query, URL or search-result index), pause/resume/toggle, "
+            "seeking, next/previous, volume/mute, playback speed, fullscreen/theater/"
+            "miniplayer/captions, ad skipping, now-playing status, summaries, video info "
+            "and category charts/trending. 'play' with no arguments resumes the loaded video."
         ),
         "parameters": {
             "type": "OBJECT",
             "properties": {
-                "action": {"type": "STRING", "description": "play | summarize | get_info | trending (default: play)"},
-                "query":  {"type": "STRING", "description": "Search query for play action"},
-                "save":   {"type": "BOOLEAN", "description": "Save summary to Notepad (summarize only)"},
-                "region": {"type": "STRING", "description": "Country code for trending e.g. TR, US"},
-                "url":    {"type": "STRING", "description": "Video URL for get_info action"},
+                "action": {
+                    "type": "STRING",
+                    "description": (
+                        "open | search | play | pause | resume | toggle_play | seek | "
+                        "forward | rewind | restart | next | previous | volume | mute | "
+                        "unmute | speed | fullscreen | theater | miniplayer | captions | "
+                        "skip_ad | now_playing | summarize | get_info | trending | close "
+                        "(default: play; aliases such as play_pause, skip, cc are accepted)"
+                    ),
+                },
+                "query":   {"type": "STRING", "description": "Search query for search/play/summarize/get_info"},
+                "url":     {"type": "STRING", "description": "YouTube video URL"},
+                "index":   {"type": "INTEGER", "description": "1-based result number from the last search/charts list"},
+                "seconds": {"type": "NUMBER", "description": "Absolute seek position in seconds, or seconds to play from"},
+                "offset":  {"type": "NUMBER", "description": "Relative seek offset in seconds (e.g. 15 or -10)"},
+                "timestamp": {"type": "STRING", "description": "Seek position as 90, 1:30, 01:02:05 or 2m30s"},
+                "volume":  {"type": "NUMBER", "description": "Volume 0-100 (0 also mutes)"},
+                "speed":   {"type": "NUMBER", "description": "Playback rate 0.25-4.0 (1.0 is normal)"},
+                "category": {"type": "STRING", "description": "Charts category: general | music | gaming | movies | podcasts"},
+                "include_shorts": {"type": "BOOLEAN", "description": "Include Shorts in search results (default: false)"},
+                "region":  {"type": "STRING", "description": "Country code for charts e.g. IN, US"},
+                "open":    {"type": "BOOLEAN", "description": "Also open the YouTube results page for search"},
+                "enabled": {"type": "BOOLEAN", "description": "Explicit on/off for theater, captions, miniplayer, fullscreen"},
+                "save":    {"type": "BOOLEAN", "description": "Save summary to Notepad (summarize only)"},
             },
             "required": []
         }
