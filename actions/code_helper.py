@@ -1,4 +1,4 @@
-﻿# actions/code_helper.py
+# actions/code_helper.py
 # AI-powered code assistant — writes, edits, explains, runs, builds, debugs, and optimizes code.
 #
 # Actions:
@@ -220,9 +220,19 @@ def _run_file(path: Path, args: list, timeout: int) -> str:
     if not interp:
         return f"No interpreter for {path.suffix}."
 
+    if not Path(path).is_file():
+        return f"File not found: {path}"
+    if isinstance(args, str):
+        import shlex
+        arg_list = shlex.split(args) if args.strip() else []
+    elif isinstance(args, (list, tuple)):
+        arg_list = [str(a) for a in args]
+    else:
+        arg_list = []
+
     try:
         result = subprocess.run(
-            interp + [str(path)] + (args or []),
+            interp + [str(path)] + arg_list,
             capture_output=True, text=True,
             encoding="utf-8", errors="replace",
             timeout=timeout, cwd=str(path.parent)

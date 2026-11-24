@@ -105,7 +105,7 @@ def _control_home_assistant(device: dict, action: str, value):
     body = {"entity_id": entity}
     if action == "set_level":
         body["brightness_pct"] = max(0, min(100, int(value)))
-    _ha_request(_cfg_ha_global(), "POST", f"/api/services/{domain}/{service}", body)
+    _ha_request({"home_assistant": _cfg_ha_global()}, "POST", f"/api/services/{domain}/{service}", body)
     return f"{device.get('name')}: {action} OK"
 
 

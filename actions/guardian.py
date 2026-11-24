@@ -60,22 +60,31 @@ _KEYS_HELP = (
 )
 
 
+import math
+import threading
+
+_lock = threading.Lock()
+
+
 def _load() -> dict:
     cfg = dict(_DEFAULTS)
-    if CONFIG_FILE.exists():
-        try:
-            data = json.loads(CONFIG_FILE.read_text(encoding="utf-8"))
-            for k, v in data.items():
-                if k in cfg:
-                    cfg[k] = v
-        except Exception:
-            pass
+    with _lock:
+        if CONFIG_FILE.exists():
+            try:
+                data = json.loads(CONFIG_FILE.read_text(encoding="utf-8"))
+                if isinstance(data, dict):
+                    for k, v in data.items():
+                        if k in cfg:
+                            cfg[k] = v
+            except Exception:
+                pass
     return cfg
 
 
 def _save(cfg: dict) -> None:
-    CONFIG_FILE.parent.mkdir(parents=True, exist_ok=True)
-    CONFIG_FILE.write_text(json.dumps(cfg, indent=2), encoding="utf-8")
+    with _lock:
+        CONFIG_FILE.parent.mkdir(parents=True, exist_ok=True)
+        CONFIG_FILE.write_text(json.dumps(cfg, indent=2), encoding="utf-8")
 
 
 # ── Metric readers ─────────────────────────────────────────────────────────
@@ -344,9 +353,16 @@ def guardian_action(
         if key not in _NUM_KEYS:
             return f"Unknown setting '{key}', sir. Use one of: {_KEYS_HELP}."
         try:
-            cfg[key] = float(value)
+            num = float(value)
         except (TypeError, ValueError):
             return "Value must be a number, sir."
+        if math.isnan(num) or math.isinf(num) or num < 0:
+            return "Value must be a finite non-negative number, sir."
+        if key.endswith("_pct"):
+            num = max(0.0, min(100.0, num))
+        elif "cooldown" in key:
+            num = max(10.0, num)
+        cfg[key] = num
         _save(cfg)
         return f"Guardian setting {key} is now {cfg[key]}."
 

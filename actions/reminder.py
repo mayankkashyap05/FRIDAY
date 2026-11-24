@@ -43,8 +43,7 @@ def reminder(
         xml_message  = xml_escape(safe_message)
         py_message   = (safe_message
                         .replace("\\", "\\\\")
-                        .replace("\n", " ").replace("\r", " ")
-                        .replace("{", "{{").replace("}", "}}"))
+                        .replace("\n", " ").replace("\r", " "))
 
         python_exe = sys.executable
         if python_exe.lower().endswith("python.exe"):
@@ -59,7 +58,7 @@ def reminder(
         )
 
         script_code = f'''import sys, os, time
-sys.path.insert(0, r"{project_root}")
+sys.path.insert(0, {repr(project_root)})
 
 try:
     import winsound

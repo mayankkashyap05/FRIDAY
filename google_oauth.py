@@ -10,7 +10,10 @@ Cloud "Desktop app" OAuth client) into config/api_keys.json. Then:
 Access & refresh tokens are saved in config/google_token.json.
 """
 import json
+import os
 import sys
+import tempfile
+import threading
 import time
 from pathlib import Path
 
@@ -42,26 +45,44 @@ CONFIG_PATH = get_base_dir() / "config" / "api_keys.json"
 TOKEN_PATH  = get_base_dir() / "config" / "google_token.json"
 
 _cached = None
+_token_lock = threading.Lock()
 
 
 def _load_config() -> dict:
     try:
-        return json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
+        data = json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
+        return data if isinstance(data, dict) else {}
     except Exception:
         return {}
 
 
 def _load_token() -> dict:
     try:
-        return json.loads(TOKEN_PATH.read_text(encoding="utf-8"))
+        data = json.loads(TOKEN_PATH.read_text(encoding="utf-8"))
+        return data if isinstance(data, dict) else {}
     except Exception:
         return {}
 
 
 def _save_token(tok: dict) -> None:
-    TOKEN_PATH.parent.mkdir(parents=True, exist_ok=True)
-    TOKEN_PATH.write_text(json.dumps(tok, ensure_ascii=False, indent=2),
-                          encoding="utf-8")
+    global _cached
+    with _token_lock:
+        TOKEN_PATH.parent.mkdir(parents=True, exist_ok=True)
+        payload = json.dumps(tok, ensure_ascii=False, indent=2)
+        fd, tmp_path = tempfile.mkstemp(
+            dir=str(TOKEN_PATH.parent), prefix=".google_token_", suffix=".tmp"
+        )
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                f.write(payload)
+            os.replace(tmp_path, TOKEN_PATH)
+        except Exception:
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+            raise
+        _cached = None
 
 
 def client_ids() -> tuple:

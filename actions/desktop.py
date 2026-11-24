@@ -175,9 +175,17 @@ def set_wallpaper(image_path: str) -> str:
 def set_wallpaper_from_web(url: str) -> str:
     """Downloads an image from URL and sets it as wallpaper."""
     try:
+        from urllib.parse import urlparse
+        from actions.document_qa import _is_private_target
         import urllib.request
+
+        scheme = (urlparse(url).scheme or "").lower()
+        if scheme not in ("http", "https") or _is_private_target(url):
+            return "Wallpaper URL is not allowed (must be a public http/https URL)."
+
         suffix = Path(url.split("?")[0]).suffix or ".jpg"
-        tmp    = Path(tempfile.mktemp(suffix=suffix))
+        with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as f:
+            tmp = Path(f.name)
         urllib.request.urlretrieve(url, str(tmp))
         result = set_wallpaper(str(tmp))
         return result

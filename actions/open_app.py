@@ -175,7 +175,7 @@ def _launch_windows(app_name: str) -> bool:
         # Only allow this shell-based fallback for protocol shortcuts or
         # plain app names — never anything containing shell metacharacters.
         import re as _re
-        if _re.search(r'[&|<>^()%;!]', app_name):
+        if _re.search(r'[&|<>^()%;!\r\n]', app_name):
             print(f"[open_app] ⛔ Refused unsafe launch name: {app_name!r}")
             return False
         subprocess.Popen(["cmd", "/c", "start", "", app_name],

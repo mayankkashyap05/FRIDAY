@@ -188,6 +188,7 @@ class VisionService:
             already = self._running
             self._mode = mode
         if not already:
+            self._ready.clear()
             self._thread = threading.Thread(target=self._loop, daemon=True, name="VisionGestureThread")
             self._thread.start()
             ok = self._ready.wait(timeout=20)

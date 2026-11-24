@@ -54,6 +54,8 @@ TOOL_RISK = {
     "set_voice":         Risk.LOW,
     "set_mood":          Risk.LOW,
     "save_memory":       Risk.LOW,
+    "forget_memory":     Risk.MEDIUM,
+    "clear_memory":      Risk.HIGH,
 
     # Informational system access
     "screen_process":    Risk.LOW,
@@ -71,7 +73,6 @@ TOOL_RISK = {
     "computer_control":  Risk.MEDIUM,
     "vision_gesture":    Risk.MEDIUM,
     "vision_click":      Risk.MEDIUM,
-    "screen_process":    Risk.LOW,
     "smart_home_control": Risk.MEDIUM,
     "api_add_key":       Risk.MEDIUM,
     "google_auth":       Risk.MEDIUM,
@@ -298,24 +299,34 @@ def describe(name: str, args: dict | None) -> str:
         return verbs.get(action, f"{action} {target}")
 
     if name == "cmd_control":
-        cmd = args.get("command") or args.get("cmd") or args.get("text") or ""
+        cmd = args.get("command") or args.get("cmd") or args.get("task") or args.get("text") or ""
         return f"run the command: {cmd[:80]}"
 
     if name == "desktop_control":
-        script = args.get("script") or args.get("code") or args.get("text") or ""
-        return f"run this code on the desktop: {script[:80]}"
+        script = (
+            args.get("action")
+            or args.get("task")
+            or args.get("path")
+            or args.get("script")
+            or args.get("code")
+            or args.get("text")
+            or ""
+        )
+        return f"run this code on the desktop: {str(script)[:80]}"
 
     if name == "gmail" and action in ("send", "compose"):
         return f"send an email to {args.get('to', args.get('recipient', 'recipient'))}"
 
     if name == "task_manager" and action in ("kill", "end", "kill_process"):
-        return f"kill the process {args.get('process', args.get('name', 'unknown'))}"
+        target = args.get("task_id") or args.get("process") or args.get("name") or "unknown"
+        return f"kill the process {target}"
 
     if name == "code_helper" and action in ("run", "build"):
         return f"{action} code for {args.get('file_path', args.get('description', 'the task'))}"
 
     if name in ("game_updater",):
-        return f"update the game {args.get('game', '')}"
+        game = args.get("game_name") or args.get("game") or args.get("action") or ""
+        return f"update the game {game}"
 
     if name == "computer_settings" and action in ("shutdown", "restart", "sleep"):
         return f"{action} the computer"

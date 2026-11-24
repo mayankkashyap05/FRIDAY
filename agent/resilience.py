@@ -60,7 +60,9 @@ async def run_sync_tool(
     - Retryable error  -> retried with exponential backoff up to `attempts`.
     - Fatal error      -> returned immediately.
     """
-    loop   = asyncio.get_event_loop()
+    attempts = max(1, int(attempts))
+    timeout  = max(0.01, float(timeout))
+    loop   = asyncio.get_running_loop()
     start  = time.monotonic()
     delay  = backoff
     used   = 0

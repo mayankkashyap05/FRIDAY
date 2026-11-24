@@ -52,9 +52,10 @@ def _run_generated_code(description: str, speak: Callable | None = None) -> str:
         except Exception:
             pass
 
+    from config.models import MODEL_FLASH
     genai.configure(api_key=_get_api_key())
     model = genai.GenerativeModel(
-        model_name="gemini-2.5-flash",
+        model_name=MODEL_FLASH,
         system_instruction=(
             "You are an expert Python developer. "
             "Write clean, complete, working Python code. "
@@ -154,7 +155,8 @@ def _translate_to_goal_language(content: str, goal: str) -> str:
     try:
         import google.generativeai as genai
         genai.configure(api_key=_get_api_key())
-        model = genai.GenerativeModel("gemini-2.5-flash")
+        from config.models import MODEL_FLASH
+        model = genai.GenerativeModel(MODEL_FLASH)
 
         target_lang = _detect_language(goal)
         print(f"[Executor] 🌐 Translating to: {target_lang}")
@@ -299,12 +301,24 @@ def _call_tool(tool: str, parameters: dict, speak: Callable | None) -> str:
         return gmail_action(parameters=parameters, response=None, player=None) or "Done."
 
     elif tool == "read_pdf":
-        from actions.pdf_reader import read_pdf_action
-        return read_pdf_action(parameters=parameters, response=None, player=None) or "Done."
+        from actions.pdf_reader import read_pdf
+        return read_pdf(parameters=parameters, response=None, player=None) or "Done."
 
     elif tool == "pdf_qa":
         from actions.pdf_reader import pdf_qa
         return pdf_qa(parameters=parameters, response=None, player=None) or "Done."
+
+    elif tool == "forget_memory":
+        from memory.memory_manager import forget_memory
+        return forget_memory(
+            category=parameters.get("category", ""),
+            key=parameters.get("key", ""),
+        ) or "Done."
+
+    elif tool == "clear_memory":
+        from memory.memory_manager import clear_memory
+        clear_memory()
+        return "Long-term memory cleared."
 
     elif tool == "autostart":
         from actions.autostart import autostart_action
@@ -393,16 +407,20 @@ def _call_tool_with_timeout(tool: str, parameters: dict, speak: Callable | None,
     """Run _call_tool with a hard timeout so a hung tool can't block the queue."""
     from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeout
 
-    with ThreadPoolExecutor(max_workers=1) as pool:
-        fut = pool.submit(_call_tool, tool, parameters, speak)
-        try:
-            return fut.result(timeout=TOOL_TIMEOUT_S)
-        except FutureTimeout:
-            fut.cancel()
-            return (f"Tool '{tool}' timed out after {TOOL_TIMEOUT_S}s and was "
-                    f"stopped to protect the task queue.")
-        except Exception as e:
-            raise
+    pool = ThreadPoolExecutor(max_workers=1)
+    fut = pool.submit(_call_tool, tool, parameters, speak)
+    try:
+        result = fut.result(timeout=TOOL_TIMEOUT_S)
+        pool.shutdown(wait=True)
+        return result
+    except FutureTimeout:
+        fut.cancel()
+        pool.shutdown(wait=False, cancel_futures=True)
+        return (f"Tool '{tool}' timed out after {TOOL_TIMEOUT_S}s and was "
+                f"stopped to protect the task queue.")
+    except Exception:
+        pool.shutdown(wait=False, cancel_futures=True)
+        raise
 
 class AgentExecutor:
 

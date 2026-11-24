@@ -5,7 +5,10 @@ import json
 import time
 import subprocess
 import threading
-import winreg
+try:
+    import winreg
+except ImportError:
+    winreg = None
 from pathlib import Path
 from datetime import datetime
 
@@ -682,6 +685,13 @@ def _update_epic_games(epic_path: Path, game_name: str = None) -> str:
 
 
 def _schedule_daily_update(hour: int = 3, minute: int = 0) -> str:
+    try:
+        hour = int(hour)
+        minute = int(minute)
+    except (TypeError, ValueError):
+        return "Invalid schedule time: hour and minute must be integers."
+    if not (0 <= hour <= 23 and 0 <= minute <= 59):
+        return "Invalid schedule time: hour must be 0-23 and minute must be 0-59."
     task_name   = "Friday_GameUpdater"
     script_path = Path(__file__).resolve()
     subprocess.run(["schtasks", "/Delete", "/TN", task_name, "/F"], capture_output=True)

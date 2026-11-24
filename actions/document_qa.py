@@ -70,41 +70,61 @@ def _resolve_source(raw: str) -> str:
 
 
 def _is_private_target(url: str) -> bool:
-    """True if url resolves to a loopback/private/link-local/literal-IP host
-    (SSRF guard: never fetch internal networks or cloud metadata)."""
+    """True if url resolves to a loopback/private/link-local/reserved host
+    or uses a non-http(s) scheme (SSRF guard)."""
     try:
         from urllib.parse import urlparse
-        host = (urlparse(url).hostname or "").strip().strip("[]").lower()
+        parsed = urlparse(url)
+        if parsed.scheme and parsed.scheme.lower() not in ("http", "https"):
+            return True
+        host = (parsed.hostname or "").strip().strip("[]").lower()
     except Exception:
-        return False
+        return True
     if not host:
         return True
 
     import socket
+    import ipaddress
     try:
-        ip = socket.getaddrinfo(host, None, type=socket.SOCK_STREAM)[0][4][0]
+        infos = socket.getaddrinfo(host, None, type=socket.SOCK_STREAM)
     except Exception:
         return True  # unresolvable — fail closed
 
-    if ip == "::1":
+    if not infos:
         return True
-    try:
-        import ipaddress
-        return ipaddress.ip_address(ip).is_private or \
-            ipaddress.ip_address(ip).is_loopback or \
-            ipaddress.ip_address(ip).is_link_local
-    except Exception:
-        return ip.startswith("127.") or ip.startswith("169.254.")
+
+    for info in infos:
+        ip = info[4][0].split("%")[0]
+        try:
+            addr = ipaddress.ip_address(ip)
+            if (
+                addr.is_private
+                or addr.is_loopback
+                or addr.is_link_local
+                or addr.is_multicast
+                or addr.is_reserved
+                or addr.is_unspecified
+            ):
+                return True
+        except Exception:
+            return True
+    return False
+
+
+_MAX_URL_BYTES = 5 * 1024 * 1024
 
 
 def _extract_url(url: str) -> str:
     if not _REQUESTS:
         raise RuntimeError("requests is not installed.")
-    from urllib.parse import urljoin
+    from urllib.parse import urljoin, urlparse
     headers = {"User-Agent": "Mozilla/5.0 (Friday/assistant)"}
     current_url = url
     resp = None
     for _ in range(5):
+        scheme = (urlparse(current_url).scheme or "").lower()
+        if scheme not in ("http", "https"):
+            raise RuntimeError("That URL scheme is not allowed, sir.")
         if _is_private_target(current_url) or "169.254.169.254" in current_url or "metadata.google.internal" in current_url:
             raise RuntimeError("That URL is off-limits or points to an internal network, sir.")
         resp = requests.get(current_url, headers=headers, timeout=20, allow_redirects=False)
@@ -115,6 +135,8 @@ def _extract_url(url: str) -> str:
         break
     else:
         raise RuntimeError("Too many redirects, sir.")
+    if len(resp.content or b"") > _MAX_URL_BYTES:
+        raise RuntimeError("That URL response is too large to process safely, sir.")
     if _BS4:
         soup = BeautifulSoup(resp.text, "html.parser")
         for tag in soup(["script", "style", "noscript"]):
@@ -154,14 +176,17 @@ def _extract_xlsx(path: Path) -> str:
     except ImportError:
         raise RuntimeError("openpyxl is not installed.")
     wb = load_workbook(str(path), read_only=True, data_only=True)
-    lines = []
-    for ws in wb.worksheets:
-        lines.append(f"[Sheet: {ws.title}]")
-        for row in ws.iter_rows(values_only=True):
-            cells = [str(c) for c in row if c is not None and str(c).strip()]
-            if cells:
-                lines.append(" | ".join(cells))
-    return "\n".join(lines)
+    try:
+        lines = []
+        for ws in wb.worksheets:
+            lines.append(f"[Sheet: {ws.title}]")
+            for row in ws.iter_rows(values_only=True):
+                cells = [str(c) for c in row if c is not None and str(c).strip()]
+                if cells:
+                    lines.append(" | ".join(cells))
+        return "\n".join(lines)
+    finally:
+        wb.close()
 
 
 def _extract_text(source: str) -> str:

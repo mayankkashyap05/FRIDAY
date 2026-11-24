@@ -17,9 +17,18 @@ def _ensure_out_dir() -> Path:
     return OUT_DIR
 
 
+_WIN_RESERVED = {
+    "CON", "PRN", "AUX", "NUL",
+    *(f"COM{i}" for i in range(1, 10)),
+    *(f"LPT{i}" for i in range(1, 10)),
+}
+
+
 def _sanitize(name: str) -> str:
-    name = "".join(c for c in str(name) if c not in '\\/:*?"<>|').strip()
-    return name or "document"
+    name = "".join(c for c in str(name or "") if c not in '\\/:*?"<>|').strip().rstrip(".")
+    if not name or name.upper() in _WIN_RESERVED:
+        return "document" if not name else f"_{name}"
+    return name
 
 
 def create_presentation(title: str = "", slides=None, filename: str = None) -> str:

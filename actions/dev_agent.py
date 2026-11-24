@@ -1,4 +1,4 @@
-﻿import shlex
+import shlex
 import subprocess
 import sys
 import json
@@ -348,6 +348,8 @@ def _try_auto_install(error_output: str, project_dir: Path) -> bool:
         return False
 
     pkg = match.group(1).replace("_", "-").split(".")[0]
+    if not re.match(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,64}$", pkg):
+        return False
     print(f"[DevAgent] 🔧 Auto-installing missing package: {pkg}")
     try:
         result = subprocess.run(
@@ -512,7 +514,8 @@ def _build_project(
                     project_dir=project_dir,
                     already_written=file_codes,
                 )
-                file_codes[file_path] = code
+                if code is not None:
+                    file_codes[file_path] = code
                 time.sleep(0.4)
                 break
             except RateLimitError:
@@ -604,7 +607,10 @@ def dev_agent(
     description  = p.get("description", "").strip()
     language     = p.get("language", "python").strip()
     project_name = p.get("project_name", "").strip()
-    timeout      = int(p.get("timeout", 30))
+    try:
+        timeout = max(1, int(p.get("timeout", 30)))
+    except (TypeError, ValueError):
+        timeout = 30
 
     if not description:
         return "Please describe the project you want me to build, sir."

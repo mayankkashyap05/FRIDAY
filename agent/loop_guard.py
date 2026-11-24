@@ -19,9 +19,9 @@ import json
 
 class LoopGuard:
 
-    def __init__(self, max_identical: int = 3, ping_pong: int = 3):
-        self.max_identical = max_identical
-        self.ping_pong     = ping_pong
+    def __init__(self, max_identical: int = 3, ping_pong: int = 2):
+        self.max_identical = max(2, int(max_identical))
+        self.ping_pong     = max(2, int(ping_pong))
         self._last_sig     = None
         self._same_count   = 0
         self._recent       = []
@@ -52,13 +52,15 @@ class LoopGuard:
                 f"'{name}' again. Stop and report the current state to the user."
             )
 
+        window = 2 * max(2, self.ping_pong)
         self._recent.append(name)
-        if len(self._recent) > 8:
+        if len(self._recent) > max(8, window):
             self._recent.pop(0)
 
-        if len(self._recent) >= 4:
-            a, b, c, d = self._recent[-4:]
-            if a == c and b == d and a != b:
+        if len(self._recent) >= window:
+            tail = self._recent[-window:]
+            a, b = tail[0], tail[1]
+            if a != b and all(tail[i] == (a if i % 2 == 0 else b) for i in range(window)):
                 return (
                     f"Loop guard: detected a ping-pong loop between '{a}' and "
                     f"'{b}'. Stop alternating these tools and report the last "

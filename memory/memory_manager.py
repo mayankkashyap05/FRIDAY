@@ -1,4 +1,4 @@
-﻿"""
+"""
 memory_manager.py — Friday Hafıza Sistemi
 ============================================
 Düzeltmeler:
@@ -118,7 +118,11 @@ def _recursive_update(target: dict, updates: dict) -> bool:
             else:
                 new_val = _truncate_value(str(value))
 
-            if _SECRET_KEY_RE.search(str(key)) or _SECRET_VAL_RE.search(str(value)):
+            if (
+                _SECRET_KEY_RE.search(str(key))
+                or _SECRET_VAL_RE.search(str(value))
+                or _SECRET_VAL_RE.search(new_val)
+            ):
                 continue
 
             entry    = {"value": new_val, "updated": datetime.now().strftime("%Y-%m-%d")}
