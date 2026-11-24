@@ -198,3 +198,105 @@ def test_search_popup_uses_in_bounds_shadow_and_safe_offscreen_focus(qt_app):
         qInstallMessageHandler(previous)
     assert not [message for message in messages if 'does not support raise' in message]
     controller.shutdown(); hud.close()
+
+
+def test_liquid_glass_search_pill_visuals_caret_and_timer_lifecycle(qt_app):
+    from PySide6.QtGui import QPalette
+    from PySide6.QtWidgets import QLineEdit, QStyle
+    from ui.bridge.controller import UiController
+    from ui.island.search_bar import (
+        PAD_X,
+        PAD_TOP,
+        PAD_BOTTOM,
+        PILL_WIDTH,
+        PILL_HEIGHT,
+        _GlowLineEdit,
+    )
+
+    hud = VoiceHUD()
+    controller = UiController(hud)
+    popup = controller.search_popup
+
+    assert isinstance(popup.input, QLineEdit)
+    assert isinstance(popup.input, _GlowLineEdit)
+    assert popup.input.objectName() == 'searchInput'
+    assert popup.input.placeholderText() == 'Search or Ask'
+    assert 'border-bottom' not in popup.input.styleSheet()
+    assert popup.microphone.objectName() == 'microphoneButton'
+    assert (popup.microphone.width(), popup.microphone.height()) == (34, 34)
+    assert popup.layout().getContentsMargins() == (
+        PAD_X + 24,
+        PAD_TOP + 6,
+        PAD_X + 14,
+        PAD_BOTTOM + 6,
+    )
+    assert popup.input.style().pixelMetric(QStyle.PM_TextCursorWidth, None, popup.input) == 0
+
+    # Dark theme palette, liquid-glass gradient, in-bounds shadow, and glowing caret
+    popup.set_theme('dark')
+    assert popup.input.palette().color(QPalette.PlaceholderText).name().lower() == '#a9b1bc'
+    assert popup.input.palette().color(QPalette.Text).name().lower() == '#f5f7fa'
+    assert popup.microphone._rest_color.name().lower() == '#a7afba'
+
+    popup.open_below(hud, immediate=True)
+    popup.input.setText('')
+    qt_app.processEvents()
+    dark_img = popup.grab().toImage()
+
+    assert dark_img.pixelColor(0, 0).alpha() == 0
+    mid_x = PAD_X + PILL_WIDTH // 2
+    shadow_px = dark_img.pixelColor(mid_x, PAD_TOP + PILL_HEIGHT + 5)
+    assert 0 < shadow_px.alpha() < 160
+    top_glass = dark_img.pixelColor(mid_x, PAD_TOP + 6)
+    bot_glass = dark_img.pixelColor(mid_x, PAD_TOP + PILL_HEIGHT - 4)
+    assert bot_glass.lightness() > top_glass.lightness()
+
+    cx0, cy0, _ = popup.input.caret_metrics()
+    caret_px = dark_img.pixelColor(
+        popup.input.x() + int(round(cx0)),
+        popup.input.y() + int(round(cy0)),
+    )
+    assert caret_px.red() > 240 and caret_px.green() > 235
+
+    # Cursor tracking & selection suppression
+    popup.input.setText('Ask Friday anything')
+    popup.input.deselect()
+    popup.input.setCursorPosition(len('Ask Friday'))
+    qt_app.processEvents()
+    cx_mid, _, _ = popup.input.caret_metrics()
+    assert cx_mid > cx0 + 40
+    assert popup.input.should_paint_caret() is True
+
+    popup.input.selectAll()
+    assert popup.input.should_paint_caret() is False
+    popup.input.deselect()
+    popup.input.setCursorPosition(0)
+    cx_start, _, _ = popup.input.caret_metrics()
+    assert abs(cx_start - cx0) <= 1.5
+
+    # Light theme palette & microphone colors
+    popup.set_theme('light')
+    assert popup.input.palette().color(QPalette.PlaceholderText).name().lower() == '#727a86'
+    assert popup.input.palette().color(QPalette.Text).name().lower() == '#141518'
+    assert popup.microphone._rest_color.name().lower() == '#5c6470'
+
+    # Pulse timer: strictly inactive in offscreen/preview mode; stops immediately on dismiss
+    assert not popup.input._pulse_timer.isActive()
+    hud.preview_mode = False
+    popup.input._offscreen = False
+    popup.input.start_pulse_if_needed()
+    assert popup.input._pulse_timer.isActive()
+    popup.dismiss()
+    assert not popup.input._pulse_timer.isActive()
+    popup.input._offscreen = True
+
+    # Microphone button signal & dismiss contract
+    mic_hits = []
+    popup.microphone_requested.connect(lambda: mic_hits.append(True))
+    popup.open_below(hud, immediate=True)
+    popup.microphone.click()
+    assert mic_hits == [True] and not popup.isVisible()
+
+    controller.shutdown()
+    hud.close()
+
