@@ -787,17 +787,32 @@ TOOL_DECLARATIONS = [
     {
         "name": "task_manager",
         "description": (
-            "Check or control background agent tasks started via agent_task. "
-            "Use for: 'how is my task going?', 'status of my task', 'cancel that task', "
-            "'what tasks are running?'. You get a task_id when you start agent_task."
+            "Manage FRIDAY background agent tasks AND OS processes. Check "
+            "'how is my task going?', cancel tasks, summarize activity, list "
+            "top CPU/RAM processes, find a process, or end a process by name/PID. "
+            "Process killing requires user confirmation."
         ),
         "parameters": {
             "type": "OBJECT",
             "properties": {
-                "action":  {"type": "STRING", "description": "status | list | cancel"},
-                "task_id": {"type": "STRING", "description": "Task ID for status/cancel"}
+                "action": {
+                    "type": "STRING",
+                    "description": (
+                        "list | status | cancel | summary | processes | "
+                        "find_process | kill"
+                    ),
+                },
+                "task_id":        {"type": "STRING", "description": "Task ID, or 'latest'/'all'"},
+                "status_filter":  {"type": "STRING", "description": "pending | running | completed | failed | cancelled"},
+                "limit":          {"type": "INTEGER", "description": "Result count (tasks 1-50, processes 1-30)"},
+                "process":        {"type": "STRING", "description": "Process name for find_process/kill"},
+                "name":           {"type": "STRING", "description": "Alias for process"},
+                "pid":            {"type": "INTEGER", "description": "Exact process PID"},
+                "sort_by":        {"type": "STRING", "description": "memory (default) or cpu"},
+                "all_matches":    {"type": "BOOLEAN", "description": "Allow killing all ambiguous name matches"},
+                "force":          {"type": "BOOLEAN", "description": "Escalate to kill after graceful terminate (default true)"}
             },
-            "required": ["action"]
+            "required": []
         }
     },
     {
@@ -820,26 +835,30 @@ TOOL_DECLARATIONS = [
         "name": "vision_gesture",
         "description": (
             "Full-body computer vision using the camera. Free, local, no AI API. "
-            "Modes (continuous): 'gesture' recognizes hand gestures and finger counts; "
-            "'air_mouse' moves the cursor with the index finger (pinch to click); "
-            "'volume' controls volume via thumb-index pinch; 'motion' detects movement; "
-            "'posture' reports body pose (arms raised, leaning); 'objects' runs YOLO object detection. "
-            "One-shot actions: 'face_count' counts people, 'qr' reads a QR code, 'ocr' reads text, "
-            "'background_remove' saves a transparent subject cutout, 'describe' captions the scene, "
-            "'vqa' answers a question about the scene, 'register_face' enrolls a local face profile, "
-            "'identify_face'/'verify_identity' recognizes an enrolled face, 'multimodal' asks the configured vision model, "
-            "'snapshot' describes what's on camera. "
-            "Use when the user asks about gestures, wants hand control, or camera actions."
+            "Modes: gesture (debounced hand gestures), air_mouse (1€-filtered cursor, "
+            "pinch click/drag, middle-pinch right click), volume (depth-normalized), "
+            "motion (adjustable sensitivity), posture, objects, focus (away alerts). "
+            "One-shots: face_count, qr, ocr, background_remove, describe, vqa, "
+            "register_face, identify_face, multimodal, snapshot."
         ),
         "parameters": {
             "type": "OBJECT",
             "properties": {
-                "action": {"type": "STRING", "description": "start | stop | record_start | record_stop | face_count | qr | ocr | background_remove | describe | vqa | register_face | identify_face | verify_identity | multimodal | snapshot | status"},
-                "mode":   {"type": "STRING", "description": "gesture | air_mouse | volume | motion | posture | objects (for start)"},
-                "text":   {"type": "STRING", "description": "Optional question, OCR text, or face profile name"},
-                "name":   {"type": "STRING", "description": "Face profile name for register_face"}
+                "action": {
+                    "type": "STRING",
+                    "description": (
+                        "start | stop | mode | record_start | record_stop | face_count | "
+                        "qr | ocr | background_remove | describe | vqa | register_face | "
+                        "identify_face | multimodal | snapshot | status"
+                    ),
+                },
+                "mode": {"type": "STRING", "description": "gesture | air_mouse | volume | motion | posture | objects | focus"},
+                "text": {"type": "STRING", "description": "Optional question or profile name"},
+                "name": {"type": "STRING", "description": "Face profile name"},
+                "sensitivity": {"type": "NUMBER", "description": "Motion threshold 0.001-1.0 (default 0.025)"},
+                "grace": {"type": "NUMBER", "description": "Focus away grace window in seconds (default 10)"}
             },
-            "required": ["action"]
+            "required": []
         }
     },
     {
@@ -1065,17 +1084,21 @@ TOOL_DECLARATIONS = [
     {
         "name": "vision_click",
         "description": (
-            "Clicks anywhere on the screen by looking at it. Describe the element "
-            "to click ('the Send button', 'the Chrome icon', 'the search box') and "
-            "Friday finds it on the screenshot and clicks it. Use for 'click the "
-            "Send button', 'press the green button', 'click on the search field'."
+            "Click anywhere on screen by describing it, using Gemini spatial "
+            "grounding. Supports left/double/triple/right/middle clicks, hover, "
+            "multi-monitor and DPI-aware coordinates, typing after a click, and "
+            "coordinate-only reporting."
         ),
         "parameters": {
             "type": "OBJECT",
             "properties": {
                 "target":      {"type": "STRING", "description": "What to click, in plain words"},
-                "click":       {"type": "STRING", "description": "Optional: 'double' for a double-click"},
-                "only_coords": {"type": "BOOLEAN", "description": "Optional: return coordinates without clicking"}
+                "click":       {"type": "STRING", "description": "left | double | triple | right | middle | hover"},
+                "button":      {"type": "STRING", "description": "Alias for click"},
+                "only_coords": {"type": "BOOLEAN", "description": "Return coordinates without clicking"},
+                "monitor":     {"type": "INTEGER", "description": "0=virtual desktop, 1=primary (default), 2+=secondary"},
+                "type_text":   {"type": "STRING", "description": "Text to type after clicking"},
+                "press_enter": {"type": "BOOLEAN", "description": "Press Enter after typing"}
             },
             "required": ["target"]
         }
@@ -1177,17 +1200,25 @@ TOOL_DECLARATIONS = [
     {
         "name": "translate",
         "description": (
-            "Translates any text into another language. Use for 'translate this "
-            "into Russian', 'how do I say X in English', 'translate Y to Uzbek'."
+            "Translate, detect languages, transliterate, explain grammar, translate "
+            "clipboard content, or batch-translate a list of texts. Use for "
+            "'translate this into Russian', 'detect the language', 'romanize this', "
+            "'translate what's on my clipboard'."
         ),
         "parameters": {
             "type": "OBJECT",
             "properties": {
-                "text":  {"type": "STRING", "description": "Text to translate"},
-                "to":    {"type": "STRING", "description": "Target language, e.g. English, Russian, Uzbek (default English)"},
-                "from":  {"type": "STRING", "description": "Optional source language (auto-detected if omitted)"}
+                "action": {"type": "STRING", "description": "translate | detect | transliterate | explain | clipboard | batch"},
+                "text":   {"type": "STRING", "description": "Text to translate (or use_clipboard=true)"},
+                "texts":  {"type": "ARRAY", "items": {"type": "STRING"}, "description": "Texts for batch mode"},
+                "to":     {"type": "STRING", "description": "Target language or code (default English)"},
+                "from":   {"type": "STRING", "description": "Optional source language or code"},
+                "tone":   {"type": "STRING", "description": "natural | formal | casual | literal | business"},
+                "copy":   {"type": "BOOLEAN", "description": "Copy clipboard translation result back"},
+                "use_clipboard": {"type": "BOOLEAN", "description": "Read source text from clipboard"},
+                "no_cache": {"type": "BOOLEAN", "description": "Bypass the 10-minute translation cache"}
             },
-            "required": ["text"]
+            "required": []
         }
     },
     {
