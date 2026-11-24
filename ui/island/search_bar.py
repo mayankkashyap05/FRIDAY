@@ -36,7 +36,14 @@ class SearchBarPopup(QWidget):
     dismissed = Signal()
 
     def __init__(self, hud=None):
-        super().__init__(None, Qt.Tool | Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint)
+        self._offscreen = QGuiApplication.platformName() == 'offscreen'
+        flags = Qt.FramelessWindowHint
+        if self._offscreen:
+            # Avoid offscreen plugin stacking/raise requests for preview and test windows.
+            flags |= Qt.Window
+        else:
+            flags |= Qt.Tool | Qt.WindowStaysOnTopHint
+        super().__init__(None, flags)
         self.hud = hud
         self.theme = 'dark'
         self._closing = False
@@ -71,7 +78,7 @@ class SearchBarPopup(QWidget):
         self.input.setStyleSheet(self._base_input_style + f' QLineEdit {{ color: {self._text}; }}')
         self.update()
 
-    def open_below(self, hud=None):
+    def open_below(self, hud=None, immediate=False):
         if hud is not None: self.hud = hud
         owner = self.hud
         if owner:
@@ -83,16 +90,22 @@ class SearchBarPopup(QWidget):
             self.move(center.x() - self.width() // 2, visible_top - PAD_TOP)
         target = self.geometry()
         self._closing = False
+        offscreen = self._offscreen
+        if offscreen:
+            self.setAttribute(Qt.WA_ShowWithoutActivating, True)
         self.show()
-        if QGuiApplication.platformName() != 'offscreen':
+        if not offscreen:
             self.raise_()
             self.activateWindow()
-        self.input.setFocus(Qt.PopupFocusReason)
-        self._geometry_animation.stop()
-        self._geometry_animation.setStartValue(target.translated(0, -8))
-        self._geometry_animation.setEndValue(target)
-        self._geometry_animation.start()
+            self.input.setFocus(Qt.PopupFocusReason)
         self.input.selectAll()
+        self._geometry_animation.stop()
+        if immediate or offscreen:
+            self.setGeometry(target)
+        else:
+            self._geometry_animation.setStartValue(target.translated(0, -8))
+            self._geometry_animation.setEndValue(target)
+            self._geometry_animation.start()
 
     def _submit(self):
         text = self.input.text().strip()
