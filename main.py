@@ -631,18 +631,28 @@ TOOL_DECLARATIONS = [
     {
         "name": "system_status",
         "description": (
-            "Reports real-time computer status: battery, CPU, memory/RAM, disk/storage, "
-            "network/WiFi, system uptime, and top running processes. "
-            "Use when the user asks about system health, performance, battery, storage space, "
-            "internet connection, or what's running on the computer."
+            "Reports real-time system telemetry: battery, CPU, RAM/swap, disk, network, "
+            "top processes, GPU, temperature, uptime and hardware specs. "
+            "Use for questions about system health, performance, battery, Wi-Fi, storage, "
+            "graphics, thermals, or what is running on the computer."
         ),
         "parameters": {
             "type": "OBJECT",
             "properties": {
                 "focus": {
                     "type": "STRING",
-                    "description": "Optional focus area: overview | battery | cpu | memory | disk | network | processes | uptime. Default: overview"
-                }
+                    "description": (
+                        "overview | battery | cpu | memory | disk | network | "
+                        "processes | gpu | temperature | uptime | hardware (default overview)"
+                    ),
+                },
+                "format": {
+                    "type": "STRING",
+                    "description": "brief (voice-ready) | detailed | json (default brief)",
+                },
+                "sort_by":     {"type": "STRING", "description": "memory (default) or cpu for top processes"},
+                "limit":       {"type": "INTEGER", "description": "Top-process count 1-20 (default 5)"},
+                "fresh":       {"type": "BOOLEAN", "description": "Bypass the 3-second snapshot cache"}
             },
             "required": []
         }

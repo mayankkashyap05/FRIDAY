@@ -93,7 +93,8 @@ computer_control
   title: string (for focus_window)
 
 system_status
-  focus: "overview" | "battery" | "cpu" | "memory" | "disk" | "network" | "processes" | "uptime" (optional, default: overview)
+  focus: "overview" | "battery" | "cpu" | "memory" | "disk" | "network" | "processes" | "gpu" | "temperature" | "uptime" | "hardware" (default overview)
+  format: "brief" | "detailed" | "json", sort_by: memory|cpu, limit: 1-20, fresh: boolean
 
 task_manager
   action: "list" | "status" | "cancel" | "summary" | "processes" | "find_process" | "kill" (required)

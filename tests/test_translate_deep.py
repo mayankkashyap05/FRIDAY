@@ -207,3 +207,17 @@ def test_source_uses_shared_model_constants():
     source = (tr.__file__ and __import__("pathlib").Path(tr.__file__).read_text())
     assert "MODEL_FLASH_LITE" in source and "MODEL_FLASH" in source
     assert "gemini-2.5-flash" not in source
+
+
+def test_string_false_booleans_are_not_true(monkeypatch):
+    calls = _patch_generate(monkeypatch, "Result")
+    params = {"text": "hello", "no_cache": "false"}
+    tr.translate_action(params)
+    tr.translate_action(params)
+    assert len(calls) == 1  # "false" must not bypass cache
+
+    written = []
+    monkeypatch.setattr(tr, "_clipboard_read", lambda: "hello")
+    monkeypatch.setattr(tr, "_clipboard_write", lambda text: written.append(text) or True)
+    tr.translate_action({"action": "clipboard", "copy": "false", "fresh": True})
+    assert written == []

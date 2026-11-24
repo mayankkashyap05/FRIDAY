@@ -277,3 +277,12 @@ def test_unknown_action_and_bad_parameters(queue, processes):
     assert "Unknown task action" in tm.task_manager({"action": "bogus"})
     assert "Please provide a task_id" in tm.task_manager({"action": "cancel"})
     assert "not a number" in tm.task_manager({"action": "kill", "pid": "abc"})
+
+
+def test_string_false_booleans_are_not_true(processes):
+    processes.survivors.append(processes.by_pid[103])
+    tm.task_manager({"action": "kill", "pid": 103, "force": "false"})
+    assert processes.by_pid[103].kill_calls == 0
+
+    result = tm.task_manager({"action": "kill", "process": "e", "all_matches": "false"})
+    assert "several different apps" in result
