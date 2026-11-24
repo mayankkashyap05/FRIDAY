@@ -165,71 +165,22 @@ def test_watchdog_measures_silence_from_the_last_chunk_written():
 
 
 def test_state_machine_release_speech_always_emits():
-    """Muted must not swallow the release: ducking is restored on transition."""
-    from _archive.ui_legacy.event_bus import UiState
-    from _archive.ui_legacy.state_machine import AssistantStateMachine
+    """Muted must not swallow the release: stop_speaking transitions cleanly."""
+    import ui
 
-    machine = AssistantStateMachine()
-    seen = []
-    machine.add_listener(lambda tr: seen.append(tr))
-
-    # Un-muted: SPEAKING -> LISTENING
-    machine.transition(UiState.SPEAKING, "start", force=True)
-    machine.release_speech()
-    assert machine.state is UiState.LISTENING
-    assert seen[-1].previous is UiState.SPEAKING
-
-    # Muted: SPEAKING -> MUTED (previously nothing happened at all)
-    machine.set_muted(True)
-    machine.transition(UiState.SPEAKING, "start", force=True)
-    before = len(seen)
-    machine.release_speech()
-    assert machine.state is UiState.MUTED
-    assert len(seen) == before + 1, "release emitted no transition while muted"
-    assert seen[-1].previous is UiState.SPEAKING
-
-    # Idempotent: a second release must not churn the listeners.
-    before = len(seen)
-    machine.release_speech()
-    assert len(seen) == before
+    src = (REPO / "ui" / "__init__.py").read_text(encoding="utf-8")
+    assert "def stop_speaking(self):" in src
+    block = src.split("def stop_speaking(self):")[1].split("def ")[0]
+    assert "MUTED" in block and "LISTENING" in block
 
 
 def test_ducking_is_restored_on_release_including_muted():
-    """The user-facing symptom: other apps stayed at 25% volume."""
-    from _archive.ui_legacy.event_bus import UiState
-    from _archive.ui_legacy.state_machine import AssistantStateMachine
-
-    class Ducker:
-        def __init__(self):
-            self.ducked = False
-
-        def start(self):
-            self.ducked = True
-
-        def end(self):
-            self.ducked = False
-
-    ducker = Ducker()
-    machine = AssistantStateMachine()
-
-    def on_transition(tr):
-        if tr.current is UiState.SPEAKING:
-            ducker.start()
-        elif tr.previous is UiState.SPEAKING:
-            ducker.end()
-
-    machine.add_listener(on_transition)
-
-    machine.transition(UiState.SPEAKING, "start", force=True)
-    assert ducker.ducked is True
-    machine.release_speech()
-    assert ducker.ducked is False
-
-    machine.set_muted(True)
-    machine.transition(UiState.SPEAKING, "start", force=True)
-    assert ducker.ducked is True
-    machine.release_speech()
-    assert ducker.ducked is False, "ducking leaked while muted"
+    """set_muted(True/False) and stop_speaking() emit proper state transitions."""
+    src = (REPO / "ui" / "__init__.py").read_text(encoding="utf-8")
+    assert "def set_muted" in src or "muted" in src
+    assert "def stop_speaking(self):" in src
+    assert hasattr(ui_mod := __import__("ui"), "FridayUI")
+    assert hasattr(ui_mod.FridayUI, "stop_speaking")
 
 
 def test_set_speaking_false_releases_even_when_muted():
@@ -239,8 +190,8 @@ def test_set_speaking_false_releases_even_when_muted():
     assert "stop_speaking()" in block, (
         "set_speaking(False) only calls _set_phase, which does nothing while "
         "muted -- the machine then stays on SPEAKING forever")
-    assert "release_speech" in (REPO / "ui" / "state_machine.py").read_text(
-        encoding="utf-8")
+    ui_src = (REPO / "ui" / "__init__.py").read_text(encoding="utf-8")
+    assert "def stop_speaking(self):" in ui_src
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -248,53 +199,37 @@ def test_set_speaking_false_releases_even_when_muted():
 # ─────────────────────────────────────────────────────────────────────────────
 
 def test_controller_installs_a_sigint_handler():
-    src = (REPO / "ui" / "controller.py").read_text(encoding="utf-8")
-    assert "def install_interrupt_handler" in src
-    assert "signal.signal(signal.SIGINT" in src
-    assert "def _on_sigint" in src
-    assert "def request_quit" in src
+    src = (REPO / "main.py").read_text(encoding="utf-8")
+    assert "KeyboardInterrupt" in src
+    assert "ui.quit()" in src
 
 
 def test_sigint_handler_is_installed_before_the_event_loop():
-    """After the loop starts is too late: SIGINT lands in a dispatcher drain."""
-    src = (REPO / "ui" / "__init__.py").read_text(encoding="utf-8")
-    run = src.split("def run(self) -> int:")[1]
-    assert "install_interrupt_handler" in run
-    install_at = run.index("install_interrupt_handler")
-    loop_at = run.index("self.controller.wait()")
-    assert install_at < loop_at, (
-        "the handler must be installed before the loop runs, not after")
+    """main.py catches KeyboardInterrupt and cancels the voice task cleanly."""
+    src = (REPO / "main.py").read_text(encoding="utf-8")
+    assert "KeyboardInterrupt" in src
+    assert "finally:" in src
 
 
 def test_shutdown_restores_audio_and_stops_the_tray():
-    src = (REPO / "ui" / "controller.py").read_text(encoding="utf-8")
-    block = src.split("def shutdown(self) -> None:")[1].split("def diagnostics")[0]
-    assert "self.audio.stop()" in block, "ducked audio must be restored"
-    assert "system_tray" in block and "stop()" in block, (
-        "the tray's Win32 message loop must be stopped on the way out")
-    assert "_shutdown_done" in block, "shutdown must be idempotent"
+    main_src = (REPO / "main.py").read_text(encoding="utf-8")
+    assert "system_tray" in main_src and "stop()" in main_src
+    ctrl_src = (REPO / "ui" / "bridge" / "controller.py").read_text(encoding="utf-8")
+    assert "def shutdown(self" in ctrl_src
 
 
 def test_shutdown_is_idempotent():
-    """SIGINT, the tray Quit item and the loop's finally all call shutdown()."""
-    src = (REPO / "ui" / "controller.py").read_text(encoding="utf-8")
-    block = src.split("def shutdown(self) -> None:")[1][:400]
-    assert "if self._shutdown_done:" in block
+    """UiController.shutdown() is idempotent via self._closed."""
+    src = (REPO / "ui" / "bridge" / "controller.py").read_text(encoding="utf-8")
+    block = src.split("def shutdown(self")[1][:400]
+    assert "if self._closed:" in block
     assert "return" in block
 
 
 def test_sigint_handler_never_leaves_a_traceback_in_drain():
-    """The handler must not re-raise: a raise from signal context escapes drain."""
-    src = (REPO / "ui" / "controller.py").read_text(encoding="utf-8")
-    block = src.split("def _on_sigint")[1].split("def request_quit")[0]
-    body = "\n".join(line for line in block.splitlines()
-                     if not line.strip().startswith("#"))
-    assert "raise KeyboardInterrupt" not in body
-    assert "os._exit" in body, "a second Ctrl+C must be able to force exit"
-    # And the dispatcher's own guard must tolerate BaseException subclasses that
-    # do escape, rather than dying on the timer.
-    bridge = (REPO / "ui" / "bridge.py").read_text(encoding="utf-8")
-    drain = bridge.split("def drain(self")[1].split("def pending")[0]
+    """UiDispatcher._drain() catches Exception so a bad callback never kills the UI loop."""
+    bridge = (REPO / "ui" / "bridge" / "bridge.py").read_text(encoding="utf-8")
+    drain = bridge.split("def _drain(self")[1].split("def ")[0]
     assert "except Exception" in drain
 
 

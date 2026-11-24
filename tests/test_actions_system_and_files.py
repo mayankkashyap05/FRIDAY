@@ -156,12 +156,12 @@ def test_monitor_add_remove_and_check(tmp_path, monkeypatch):
 # ---------------------------------------------------------------------------
 
 @pytest.mark.parametrize("bad_app", ["calc & whoami", "notepad\nwhoami", "cmd\rcalc", "app;ls"])
-def test_open_app_rejects_metacharacters_and_newlines(bad_app):
-    from actions.open_app import _launch_windows
+def test_open_app_rejects_metacharacters_and_newlines(bad_app, monkeypatch):
+    from actions import open_app
 
-    if sys.platform == "win32":
-        res = _launch_windows(bad_app)
-        assert "invalid" in res.lower() or "not" in res.lower()
+    monkeypatch.setattr(open_app, "_launch_start_menu", lambda _name: False)
+    monkeypatch.setattr(open_app, "_find_registry_exe", lambda _name: None)
+    assert open_app._launch_windows(bad_app) is False
 
 
 # ---------------------------------------------------------------------------
