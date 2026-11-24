@@ -36,7 +36,6 @@ dist/
 # Secrets — never commit API keys
 config/*.json
 !config/*.example.json
-config/telegram_offset.txt
 
 # IDE
 .idea/

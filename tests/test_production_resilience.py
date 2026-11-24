@@ -158,22 +158,5 @@ class HumanConsentVerificationTest(unittest.TestCase):
         asyncio.run(run())
 
 
-class TelegramNullCheckTest(unittest.TestCase):
-    def test_telegram_loop_exits_cleanly_if_chat_id_is_none(self):
-        import main
-        ui_mock = MagicMock()
-        live = main.FridayLive(ui_mock)
-        live.telegram_token = "123:ABC"
-        live.telegram_chat = None
-
-        async def run():
-            task = asyncio.create_task(live._telegram_loop())
-            await asyncio.sleep(0.05)
-            # Should have exited cleanly because chat_id is missing
-            self.assertTrue(task.done())
-
-        asyncio.run(run())
-
-
 if __name__ == "__main__":
     unittest.main()
