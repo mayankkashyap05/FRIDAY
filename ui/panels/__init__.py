@@ -1,1 +1,1 @@
-"""Native in-island controls for FRIDAY services."""
+"""Native desktop panels hosted by FRIDAY's Settings Hub."""

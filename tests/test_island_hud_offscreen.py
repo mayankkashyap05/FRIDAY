@@ -75,38 +75,32 @@ def test_resting_eye_centres_and_shoulders():
     hud.close()
 
 
-def test_hover_tabs_and_face_out_drag():
+def test_click_opens_search_and_drag_detaches_without_launcher():
     from PySide6.QtCore import QEvent, QPointF, Qt
     from PySide6.QtGui import QMouseEvent
+    from ui.bridge.controller import UiController
     app = QApplication.instance() or QApplication([])
-    hud = VoiceHUD(); hud.set_scene('hover', immediate=True)
-    left = (hud.width()-hud.width_spring.value)/2
-    local = QPointF(left+155, 135)
-    press = QMouseEvent(QEvent.MouseButtonPress, local, local, Qt.LeftButton, Qt.LeftButton, Qt.NoModifier)
-    release = QMouseEvent(QEvent.MouseButtonRelease, local, local, Qt.LeftButton, Qt.NoButton, Qt.NoModifier)
-    hud.mousePressEvent(press); hud.mouseReleaseEvent(release)
-    assert hud.state == 'chat'
-    hud.set_scene('resting', immediate=True)
+    hud = VoiceHUD(); ctrl = UiController(hud); hud.set_scene('resting', immediate=True)
+    pt = QPointF(360, 20)
+    hud.mousePressEvent(QMouseEvent(QEvent.MouseButtonPress, pt, pt, Qt.LeftButton, Qt.LeftButton, Qt.NoModifier))
+    hud.mouseReleaseEvent(QMouseEvent(QEvent.MouseButtonRelease, pt, pt, Qt.LeftButton, Qt.NoButton, Qt.NoModifier))
+    assert ctrl.search_popup.isVisible() and ctrl.search_popup.input.placeholderText() == 'Search or Ask'
+    assert not hasattr(hud, '_panel_stack') and hud.state == 'resting'
+    ctrl.search_popup.hide()
     a, b = QPointF(360, 20), QPointF(390, 70)
-    press = QMouseEvent(QEvent.MouseButtonPress, a, a, Qt.LeftButton, Qt.LeftButton, Qt.NoModifier)
-    hud.mousePressEvent(press)
-    move = QMouseEvent(QEvent.MouseMove, b, b, Qt.NoButton, Qt.LeftButton, Qt.NoModifier)
-    hud.mouseMoveEvent(move)
+    hud.mousePressEvent(QMouseEvent(QEvent.MouseButtonPress, a, a, Qt.LeftButton, Qt.LeftButton, Qt.NoModifier))
+    hud.mouseMoveEvent(QMouseEvent(QEvent.MouseMove, b, b, Qt.NoButton, Qt.LeftButton, Qt.NoModifier))
     assert hud.state == 'face_out'
     hud.set_scene('face_out', immediate=True)
     assert hud.current_path().boundingRect().top() == 18
-    hud.close()
+    ctrl.shutdown(); hud.close()
 
 
-def test_hover_hit_areas_match_painted_tiles():
-    from PySide6.QtCore import QPointF
-    app = QApplication.instance() or QApplication([])
+def test_hover_never_expands_notch_or_displays_launcher(qt_app):
     hud = VoiceHUD(); hud.set_scene('hover', immediate=True)
-    left = (hud.width() - hud.width_spring.value) / 2
-    primary = hud._primary_rects(left); tabs = hud._tab_rects(left)
-    assert all(not a.intersects(b) for i, a in enumerate(primary) for b in primary[i+1:])
-    assert all(not a.intersects(b) for i, a in enumerate(tabs) for b in tabs[i+1:])
-    assert not any(rect.contains(QPointF(left + 283, 80)) for rect in primary)
+    assert hud.state == 'resting'
+    assert hud.width_spring.value == 240 and hud.height_spring.value == 48
+    assert not hasattr(hud, '_panel_stack')
     hud.close()
 
 
@@ -146,45 +140,34 @@ def test_idle_timer_sleeps_and_wakes(qt_app):
     hud._animate()
     assert hud._timer.interval() == 150
     hud.set_scene('hover')
-    assert hud._timer.interval() == 16
+    assert hud.width_spring.target == 240
+    hud._animate()
+    assert hud._timer.interval() == 150
     hud.shutdown(); hud.close()
 
 
-def test_tile_hover_press_and_tab_hit_feedback(qt_app):
-    from PySide6.QtCore import QEvent, QPointF, Qt
-    from PySide6.QtGui import QMouseEvent
-    hud = VoiceHUD(); hud.set_scene('hover', immediate=True)
-    tile = hud._primary_rects((hud.width()-640)/2)[1].center()
-    move = QMouseEvent(QEvent.MouseMove, tile, tile, Qt.NoButton, Qt.NoButton, Qt.NoModifier)
-    hud.mouseMoveEvent(move)
-    assert hud._hover_tile == 1 and hud.tile_hover_springs[1].target == 1
-    press = QMouseEvent(QEvent.MouseButtonPress, tile, tile, Qt.LeftButton, Qt.LeftButton, Qt.NoModifier)
-    hud.mousePressEvent(press)
-    assert hud.tile_press_springs[1].target == 1
-    release = QMouseEvent(QEvent.MouseButtonRelease, tile, tile, Qt.LeftButton, Qt.NoButton, Qt.NoModifier)
-    hud.mouseReleaseEvent(release)
-    assert hud.tile_press_springs[1].target == 0
-    assert hud.state == 'dictation'
-    hud.shutdown(); hud.close()
+def test_enter_submits_search_and_escape_dismisses(qt_app):
+    from PySide6.QtTest import QTest
+    from PySide6.QtCore import Qt
+    from ui.bridge.controller import UiController
+    hud = VoiceHUD(); controller = UiController(hud)
+    sent = []; controller.on_text_command = sent.append
+    popup = controller.search_popup; popup.open_below(hud); popup.input.setText('find the answer')
+    popup.input.returnPressed.emit()
+    assert not popup.isVisible()
+    # PanelServices invokes the user callback on a worker thread.
+    import time
+    deadline = time.monotonic() + 1
+    while time.monotonic() < deadline and not sent: qt_app.processEvents(); time.sleep(.005)
+    assert sent == ['find the answer']
+    popup.open_below(hud); QTest.keyClick(popup.input, Qt.Key_Escape)
+    assert not popup.isVisible()
+    controller.shutdown(); hud.close()
 
 
-def test_panel_remains_inset_and_hidden_on_collapse(headless_ui):
-    hud = headless_ui.hud
-    hud.set_scene('chat', immediate=True)
-    assert not hud._panel_stack.isHidden()
-    assert hud._panel_stack.geometry().right() < hud.current_path().boundingRect().right() - 5
-    hud.set_scene('resting')
-    assert hud._panel_stack.isHidden()
-    assert hud.content_alpha_spring.target == 0
-
-
-def test_mismatched_tile_press_release_does_not_activate(qt_app):
-    from PySide6.QtCore import QEvent, Qt
-    from PySide6.QtGui import QMouseEvent
-    hud = VoiceHUD(); hud.set_scene('hover', immediate=True)
-    a, b = [r.center() for r in hud._primary_rects((hud.width()-640)/2)[:2]]
-    emitted = []; hud.mode_requested.connect(emitted.append)
-    hud.mousePressEvent(QMouseEvent(QEvent.MouseButtonPress, a, a, Qt.LeftButton, Qt.LeftButton, Qt.NoModifier))
-    hud.mouseReleaseEvent(QMouseEvent(QEvent.MouseButtonRelease, b, b, Qt.LeftButton, Qt.NoButton, Qt.NoModifier))
-    assert hud.state == 'hover' and emitted == []
+def test_legacy_scene_names_are_compact_compatibility_aliases(qt_app):
+    hud = VoiceHUD()
+    for scene in ('hover', 'chat', 'media', 'tasks', 'vision', 'shelf', 'settings', 'write'):
+        hud.set_scene(scene, immediate=True)
+        assert hud.state == 'resting' and hud.width_spring.value == 240
     hud.shutdown(); hud.close()
