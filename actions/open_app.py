@@ -39,14 +39,16 @@ _CACHE_SCHEMA_VERSION = 2
 # Shell metacharacters that must never reach a shell or an app name.
 _UNSAFE_RE = re.compile(r"[&|<>^()%;!\r\n]")
 _AUMID_RE = re.compile(r"^[A-Za-z0-9._-]+![A-Za-z0-9._-]+$")
+_SAFE_AUMID_RE = re.compile(r"^[A-Za-z0-9._!{}\\\/:@ -]+$")
 _ICON_INDEX_RE = re.compile(r",\s*-?\d+\s*$")
 _DEDUP_NOISE_RE = re.compile(
-    r"\s*(?:\((?:64-bit|32-bit|x64|x86|user|system)\)|\[(?:64-bit|x64)\]|v?\d+\.\d+(?:\.\d+)*)\s*",
+    r"\s*(?:\((?:64-bit|32-bit|x64|x86|user|system)\)|\[(?:64-bit|x64)\])\s*",
     re.IGNORECASE,
 )
+_UNINSTALL_VERSION_RE = re.compile(r"\s+v?\d+\.\d+(?:\.\d+)*\b", re.IGNORECASE)
 
 _JUNK_NAME_RE = re.compile(
-    r"\b(?:uninstall(?:er)?|uninst|readme|license|release\s+notes|documentation|manual|changelog|on\s+the\s+web|website|what\s+is\s+new)\b"
+    r"\b(?:uninstall(?:er)?|uninst|readme|license|release\s+notes|documentation|manuals?|module\s+docs|changelog|on\s+the\s+web|website|what\s+is\s+new)\b"
     r"|^remove\s+|^help$",
     re.IGNORECASE,
 )
@@ -60,11 +62,12 @@ _OPT_IN_ADMIN_TOOLS = frozenset({"administrative tools", "windows tools"})
 
 _INDEX_LOCK = threading.RLock()
 _APP_INDEX_CACHE: tuple[float, list[dict]] | None = None
+_APP_INDEX_HAS_UWP = False
 _REFRESH_LOCK = threading.Lock()
 _REFRESH_THREAD: threading.Thread | None = None
 _UWP_FUTURE_LOCK = threading.Lock()
 _UWP_FUTURE: concurrent.futures.Future | None = None
-_UWP_EXECUTOR = concurrent.futures.ThreadPoolExecutor(max_workers=1, thread_name_prefix="FridayUWP")
+_UWP_EXECUTOR = concurrent.futures.ThreadPoolExecutor(max_workers=2, thread_name_prefix="FridayUWP")
 
 _PENDING_LOCK = threading.RLock()
 _PENDING_CHOICES: dict | None = None
@@ -207,8 +210,10 @@ def _clean_display_icon(raw_icon: str) -> str:
     return text
 
 
-def _dedup_key(name: str) -> str:
+def _dedup_key(name: str, source: str = "") -> str:
     cleaned = _DEDUP_NOISE_RE.sub(" ", str(name or ""))
+    if source == "uninstall":
+        cleaned = _UNINSTALL_VERSION_RE.sub(" ", cleaned)
     return _norm_text(cleaned)
 
 
@@ -343,13 +348,21 @@ def _merge_and_deduplicate(raw_entries: list[dict]) -> list[dict]:
     best_by_key: dict[str, dict] = {}
     for entry in raw_entries:
         name = str(entry.get("name") or "").strip()
-        target = str(entry.get("aumid") or entry.get("path") or "").strip()
+        source = str(entry.get("source") or "")
+        cleaned_entry = dict(entry)
+        if source == "uninstall":
+            cleaned_path = _clean_display_icon(cleaned_entry.get("path") or "")
+            if (not cleaned_path or cleaned_path.endswith(("\\", "/")) or
+                    not cleaned_path.lower().endswith(".exe")):
+                continue
+            cleaned_entry["path"] = cleaned_path
+        target = str(cleaned_entry.get("aumid") or cleaned_entry.get("path") or "").strip()
         if _is_junk_entry(name, target):
             continue
-        key = _dedup_key(name)
+        key = _dedup_key(name, source)
         if not key:
             continue
-        prepared = _prepare_entry(entry)
+        prepared = _prepare_entry(cleaned_entry)
         existing = best_by_key.get(key)
         if existing is None or _source_priority(prepared) < _source_priority(existing):
             best_by_key[key] = prepared
@@ -419,10 +432,10 @@ def _build_fast_native_entries() -> list[dict]:
     return entries
 
 
-def _start_uwp_future() -> concurrent.futures.Future:
+def _start_uwp_future(*, force_new: bool = False) -> concurrent.futures.Future:
     global _UWP_FUTURE
     with _UWP_FUTURE_LOCK:
-        if _UWP_FUTURE is None or _UWP_FUTURE.done():
+        if force_new or _UWP_FUTURE is None or _UWP_FUTURE.done():
             _UWP_FUTURE = _UWP_EXECUTOR.submit(_uwp_apps)
         return _UWP_FUTURE
 
@@ -443,6 +456,7 @@ def _schedule_background_refresh() -> None:
 
 def warm_app_index() -> None:
     """Non-blocking startup pre-warm: load disk cache into RAM and refresh if stale."""
+    global _APP_INDEX_CACHE, _APP_INDEX_HAS_UWP
     if platform.system() != "Windows":
         return
     with _INDEX_LOCK:
@@ -451,6 +465,7 @@ def warm_app_index() -> None:
             if disk is not None:
                 updated_at, entries = disk
                 _APP_INDEX_CACHE = (time.monotonic(), entries)
+                _APP_INDEX_HAS_UWP = True
                 if time.time() - updated_at > _INDEX_TTL_S:
                     _schedule_background_refresh()
                 return
@@ -459,14 +474,18 @@ def warm_app_index() -> None:
 
 def _build_windows_app_index(refresh: bool = False, *, wait_uwp: bool = True) -> list[dict]:
     """Cached, multi-source Windows app index with stale-while-revalidate."""
-    global _APP_INDEX_CACHE
+    global _APP_INDEX_CACHE, _APP_INDEX_HAS_UWP
     with _INDEX_LOCK:
+        if _APP_INDEX_CACHE is None:
+            _APP_INDEX_HAS_UWP = False
         if (not refresh and _APP_INDEX_CACHE is not None and
-                time.monotonic() - _APP_INDEX_CACHE[0] <= _INDEX_TTL_S):
+                time.monotonic() - _APP_INDEX_CACHE[0] <= _INDEX_TTL_S and
+                (not wait_uwp or _APP_INDEX_HAS_UWP)):
             return list(_APP_INDEX_CACHE[1])
 
         if platform.system() != "Windows":
             _APP_INDEX_CACHE = (time.monotonic(), [])
+            _APP_INDEX_HAS_UWP = True
             return []
 
         if not refresh and _APP_INDEX_CACHE is None:
@@ -474,26 +493,30 @@ def _build_windows_app_index(refresh: bool = False, *, wait_uwp: bool = True) ->
             if disk is not None:
                 updated_at, entries = disk
                 _APP_INDEX_CACHE = (time.monotonic(), entries)
+                _APP_INDEX_HAS_UWP = True
                 if time.time() - updated_at > _INDEX_TTL_S:
                     _schedule_background_refresh()
                 return list(entries)
 
     # Cold start or explicit refresh
-    uwp_future = _start_uwp_future()
+    uwp_future = _start_uwp_future(force_new=refresh)
     entries = _build_fast_native_entries()
 
-    if refresh or wait_uwp:
-        try:
-            for name, aumid in uwp_future.result(timeout=4.0):
-                entries.append({"name": name, "aumid": aumid, "source": "uwp"})
-        except Exception:
-            pass
+    got_uwp = False
+    uwp_timeout = 4.0 if (refresh or wait_uwp) else 0.03
+    try:
+        for name, aumid in uwp_future.result(timeout=uwp_timeout):
+            entries.append({"name": name, "aumid": aumid, "source": "uwp"})
+        got_uwp = True
+    except Exception:
+        pass
 
     unique = _merge_and_deduplicate(entries)
     now_mono = time.monotonic()
     with _INDEX_LOCK:
         _APP_INDEX_CACHE = (now_mono, unique)
-    if refresh or wait_uwp:
+        _APP_INDEX_HAS_UWP = got_uwp
+    if got_uwp:
         _save_disk_cache(unique)
     else:
         _schedule_background_refresh()
@@ -622,7 +645,8 @@ def _safe_args(args) -> list[str] | None:
 
 def _launch_aumid(aumid: str) -> bool:
     clean = str(aumid or "").strip()
-    if not clean or _UNSAFE_RE.search(clean):
+    if not clean or not _SAFE_AUMID_RE.match(clean):
+        print(f"[open_app] Refused unsafe AUMID: {clean!r}")
         return False
     target = f"shell:AppsFolder\\{clean}"
     try:
@@ -644,21 +668,21 @@ def _launch_aumid(aumid: str) -> bool:
 
 def _launch_windows(app_name: str, args=None, aumid: str | None = None) -> bool:
     """Launch/focus a Windows app through deterministic, shell-free paths."""
-    name = str(app_name or "").strip()
-    if not name or _UNSAFE_RE.search(name):
-        print(f"[open_app] Refused unsafe launch name: {name!r}")
-        return False
     safe_args = _safe_args(args)
     if safe_args is None:
         print(f"[open_app] Refused unsafe launch arguments: {args!r}")
         return False
 
     if aumid:
-        if _launch_aumid(aumid):
-            return True
+        return _launch_aumid(aumid)
 
+    name = str(app_name or "").strip()
     if name.startswith("shell:AppsFolder\\"):
         return _launch_aumid(name[len("shell:AppsFolder\\"):])
+
+    if not name or _UNSAFE_RE.search(name):
+        print(f"[open_app] Refused unsafe launch name: {name!r}")
+        return False
 
     if name.lower().startswith(("ms-settings:", "ms-windows-store:", "ms-photos:", "ms-clock:", "ms-camera:")):
         try:
@@ -844,7 +868,7 @@ def _resolve_pending_choice(params: dict, app_name: str) -> dict | None:
 
 def _launch_entry(entry: dict, launcher, args) -> bool:
     aumid = entry.get("aumid")
-    target = str(aumid or entry.get("path") or entry.get("name") or "")
+    target = str(entry.get("name") or aumid or "") if aumid else str(entry.get("path") or entry.get("name") or "")
     return launcher(target, args, aumid)
 
 
@@ -927,7 +951,7 @@ def open_app(
         refresh = bool(params.get("refresh"))
         entries = _build_windows_app_index(refresh=refresh, wait_uwp=False)
         ranked = _rank_candidates_with_tiers(app_name, entries)
-        if not ranked and not refresh:
+        if (not ranked or ranked[0][0] > 1) and not refresh and not _APP_INDEX_HAS_UWP:
             entries = _build_windows_app_index(refresh=False, wait_uwp=True)
             ranked = _rank_candidates_with_tiers(app_name, entries)
 
