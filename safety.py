@@ -13,12 +13,14 @@ ad-hoc per-tool logic. Extend TOOL_RISK / _ACTION_RISK instead of scattering
 checks across the codebase.
 """
 
+import hashlib
 import json
+import ntpath
+import re
 import secrets
 import threading
 import time
 from enum import IntEnum
-from typing import Any
 
 
 class Risk(IntEnum):
@@ -219,8 +221,10 @@ MAX_PENDING_TOKENS = 128
 def _fingerprint(name: str, args: dict | None) -> str:
     """Canonical fingerprint of a blocked call, so a token can't be replayed
     against a different tool or different arguments."""
-    safe = sanitize(name, args or {})
-    return json.dumps({"name": name, "args": safe}, sort_keys=True, default=str)
+    # Bind to actual arguments, not their redacted representation: two
+    # distinct secrets must not become interchangeable authorizations.
+    raw = json.dumps({"name": name, "args": args or {}}, sort_keys=True, default=str)
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
 
 def _prune_expired_tokens_locked(now: float) -> None:
@@ -271,6 +275,12 @@ def classify(name: str, args: dict | None) -> Risk:
     """Return the risk level for a concrete tool call (name + args)."""
     args = args or {}
     action = str(args.get("action", "")).lower().strip()
+    if name == "open_app":
+        app = str(args.get("app_name") or args.get("app") or "").strip().strip('"\'')
+        app = ntpath.basename(app.replace("/", "\\")).lower()
+        if app in {"cmd", "cmd.exe", "powershell", "powershell.exe", "pwsh", "pwsh.exe",
+                   "wt", "wt.exe", "windows terminal", "bash", "bash.exe", "wsl", "wsl.exe"}:
+            return Risk.HIGH
     overrides = _ACTION_RISK.get(name)
     if overrides is not None:
         risk = overrides.get(action, overrides.get(None))
@@ -359,24 +369,33 @@ def describe(name: str, args: dict | None) -> str:
 
 # ── Secret redaction for logs / UI / remote ──────────────────────────────────
 _SECRET_KEYS = {
-    "api_key", "api_key_id", "apikey", "token", "access_token", "auth_token",
-    "password", "passwd", "secret", "client_secret", "code", "key",
+    "api_key", "api_key_id", "apikey", "secret_key", "access_key", "private_key",
+    "token", "password", "passwd", "secret", "client_secret", "authorization",
+    "cookie", "credential", "code",
 }
+_SECRET_VALUE = re.compile(
+    r"(?i)(AIza[0-9A-Za-z_-]{6,}|sk-[0-9A-Za-z_-]{10,}|"
+    r"AKIA[0-9A-Z]{16}|ghp_[0-9A-Za-z]{10,}|xox[baprs]-[0-9A-Za-z-]{10,})"
+)
 
 
 def sanitize(name: str, args: dict | None) -> dict:
-    """Return args with sensitive values masked, safe for logging/UI/remote."""
-    if not args:
-        return {}
+    """Return args with sensitive fields and recognizable secret values masked."""
+    def clean(value):
+        if isinstance(value, dict):
+            return sanitize(name, value)
+        if isinstance(value, (list, tuple)):
+            return [clean(item) for item in value]
+        if isinstance(value, str) and _SECRET_VALUE.search(value):
+            return "***"
+        return value
+
     safe = {}
-    for k, v in args.items():
+    for k, v in (args or {}).items():
         lk = str(k).lower()
-        if lk in _SECRET_KEYS or "token" in lk or "key" in lk or "secret" in lk:
-            safe[k] = "***"
-        elif isinstance(v, dict):
-            safe[k] = sanitize(name, v)
-        elif isinstance(v, list):
-            safe[k] = [sanitize(name, {"i": x})["i"] if isinstance(x, dict) else x for x in v]
-        else:
-            safe[k] = v
+        secret_field = (lk in _SECRET_KEYS or "token" in lk or "secret" in lk
+                        or "credential" in lk or "password" in lk
+                        or lk.endswith(("_api_key", "_access_key", "_private_key", "_secret_key")))
+        # api_add_key accepts an arbitrary credential in its generic key field.
+        safe[k] = "***" if secret_field or (name == "api_add_key" and lk == "key") else clean(v)
     return safe

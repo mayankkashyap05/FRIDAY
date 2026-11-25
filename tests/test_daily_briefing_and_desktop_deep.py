@@ -299,3 +299,15 @@ def test_desktop_cleanup_and_organize_preserve_windows_metadata(monkeypatch, tmp
     assert (tmp_path / "Desktop.INI").exists()
     assert (tmp_path / "THUMBS.DB").exists()
     assert (tmp_path / ".DS_STORE").exists()
+
+
+def test_briefing_omits_empty_reminders_and_tasks(monkeypatch):
+    monkeypatch.setattr(db, '_memory_identity', lambda: {})
+    monkeypatch.setitem(db._SECTION_FUNCS, 'reminders', lambda _: 'You have no pending reminders, sir.')
+    monkeypatch.setitem(db._SECTION_FUNCS, 'tasks', lambda _: 'Summary — tasks: 0 total. 0 pending. top processes: x.')
+    result = db.daily_briefing({'sections': ['reminders', 'tasks']})
+    assert 'Reminders:' not in result and 'Tasks:' not in result
+    monkeypatch.setitem(db._SECTION_FUNCS, 'reminders', lambda _: 'One reminder: call home.')
+    monkeypatch.setitem(db._SECTION_FUNCS, 'tasks', lambda _: 'Summary — tasks: 1 total. 1 pending.')
+    result = db.daily_briefing({'sections': ['reminders', 'tasks']})
+    assert 'Reminders:' in result and 'Tasks:' in result

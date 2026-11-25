@@ -309,6 +309,10 @@ def daily_briefing(
             continue
         if section == "weather" and "unavailable" in text.lower():
             continue
+        if section == "reminders" and re.search(r"\bno pending reminders\b", text, re.I):
+            continue
+        if section == "tasks" and re.search(r"\btasks:\s*0\s+total\b", text, re.I):
+            continue
         lines.append(f"{SECTION_LABELS[section]}: {text}")
 
     spoken = " ".join(lines)

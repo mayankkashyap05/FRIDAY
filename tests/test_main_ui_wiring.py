@@ -1,14 +1,23 @@
 import ast
 import os
 import threading
-import time
 from pathlib import Path
 os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
 import pytest
-pytest.importorskip('PySide6.QtGui', reason='Qt system libraries are required')
-from PySide6.QtCore import QCoreApplication, QTimer
-from PySide6.QtWidgets import QApplication
+try:
+    from PySide6.QtCore import QCoreApplication
+    from PySide6.QtWidgets import QApplication
+except ImportError:
+    QCoreApplication = QApplication = None
 import ui
+
+@pytest.fixture(autouse=True)
+def ui_test_lifetime(request):
+    # The non-UI safety tests also run in minimal/headless environments.
+    if QApplication is not None:
+        request.getfixturevalue('ui_test_lifetime')
+    yield
+
 
 _APP = None
 
@@ -27,6 +36,7 @@ def test_main_uses_native_ui():
     assert 'headless=args.headless' in source
 
 
+@pytest.mark.skipif(QApplication is None, reason='Qt system libraries are required')
 def test_facade_worker_updates_and_shutdown(monkeypatch):
     get_app(); monkeypatch.setenv('FRIDAY_GEMINI_API_KEY', 'testing')
     ui_instance = ui.FridayUI(headless=True)
@@ -143,3 +153,90 @@ def test_speaker_pcm_amplitude_and_cancel_reset(monkeypatch):
     asyncio.run(run())
     assert amplitudes[0] == pytest.approx(.75)
     assert amplitudes[-1] == 0
+
+
+@pytest.mark.parametrize('approval', ['card', 'voice'])
+def test_cmd_confirmation_end_to_end_no_loop_collision(approval, capsys):
+    import asyncio
+    from types import SimpleNamespace
+    from unittest.mock import MagicMock
+    import main
+    player = MagicMock()
+    player.muted = False
+    live = main.FridayLive(player)
+    live._loop = live.session = live._send_lock = object()
+    live._send_text = lambda text: None
+    calls = []
+    live._tool_handlers['cmd_control'] = (lambda args: calls.append(args.copy()) or 'Windows version', 10)
+    args = {'task': 'Check Windows version', 'command': 'ver'}
+
+    async def run():
+        fc = lambda a: SimpleNamespace(name='cmd_control', args=a, id='123')
+        first = await live._execute_tool(fc(args))
+        token = live._pending_card_token
+        assert token in first.response['result']
+        for _ in range(4):
+            rejected = await live._execute_tool(fc({**args, 'confirm': True, 'confirm_token': token}))
+            assert 'blocked' in rejected.response['result'].lower()
+        assert 'confirmation rejected:' in capsys.readouterr().out
+        if approval == 'card':
+            assert player.request_confirmation.call_args.args[1](True) == 'Approval recorded.'
+        else:
+            live._on_text_command('Yes')
+        result = await live._execute_tool(fc({**args, 'confirm': True, 'confirm_token': token}))
+        assert result.response['result'] == 'Windows version'
+        assert calls == [args]
+        replay = await live._execute_tool(fc({**args, 'confirm': True, 'confirm_token': token}))
+        assert 'blocked' in replay.response['result'].lower()
+    asyncio.run(run())
+
+
+def test_spoken_approval_before_tool_call_turn_complete():
+    import asyncio
+    from types import SimpleNamespace as NS
+    from unittest.mock import MagicMock
+    import main
+    player = MagicMock()
+    player.muted = False
+    player.silent_mode = True
+    live = main.FridayLive(player)
+    live._loop = live._send_lock = object()
+    args = {'task': 'Check Windows version', 'command': 'ver'}
+    calls = []
+    live._tool_handlers['cmd_control'] = (lambda a: calls.append(a.copy()) or 'done', 10)
+
+    async def run():
+        await live._dispatch_tool('cmd_control', args.copy())
+        token = live._pending_card_token
+        fc = NS(name='cmd_control', args={**args, 'confirm': True, 'confirm_token': token}, id='123')
+        sc = NS(input_transcription=NS(text='Yes'), output_transcription=None, turn_complete=False)
+        class Session:
+            async def receive(self):
+                yield NS(data=None, server_content=sc, tool_call=None)
+                yield NS(data=None, server_content=None, tool_call=NS(function_calls=[fc]))
+                raise asyncio.CancelledError()
+            async def send_tool_response(self, function_responses):
+                assert function_responses[0].response['result'] == 'done'
+        live.session = Session()
+        with pytest.raises(asyncio.CancelledError):
+            await live._receive_audio()
+        assert calls == [args]
+    asyncio.run(run())
+
+
+def test_unrelated_low_risk_tool_does_not_discard_pending_approval():
+    import asyncio
+    from unittest.mock import MagicMock
+    import main
+    live = main.FridayLive(MagicMock())
+    live._tool_handlers['cmd_control'] = (lambda a: 'done', 10)
+    live._tool_handlers['web_search'] = (lambda a: 'ok', 10)
+    async def run():
+        args = {'command': 'ver'}
+        await live._dispatch_tool('cmd_control', args.copy())
+        token = live._pending_card_token
+        live._mark_human_confirmed()
+        assert (await live._dispatch_tool('web_search', {'query': 'weather'})).content == 'ok'
+        result = await live._dispatch_tool('cmd_control', {**args, 'confirm': True, 'confirm_token': token})
+        assert result.content == 'done'
+    asyncio.run(run())
