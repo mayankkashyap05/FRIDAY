@@ -1,13 +1,20 @@
 # actions/file_controller.py
 # File management — create, delete, move, rename, list, find, organize
 
-import shutil
-import zipfile
+import hashlib
 import json
+import os
+import shutil
 import sys
-from pathlib import Path
+import tempfile
+import zipfile
 from datetime import datetime
+from pathlib import Path
+
 import send2trash
+
+from api_keys import generate_with_retry
+from config.models import MODEL_FLASH_LITE
 
 
 def _get_base_dir() -> Path:
@@ -39,9 +46,65 @@ _AI_CATEGORIES = [
 ]
 
 
-def _api_key() -> str:
-    from api_keys import next_key
-    return next_key()
+MAX_SCAN = 2000  # hard cap so recursive actions never traverse an entire disk
+_SYSTEM_DIRS = {
+    "windows", "system32", "syswow64", "program files", "program files (x86)",
+    "programdata", "appdata", "library", "node_modules", "__pycache__",
+    ".git", ".venv", "site-packages",
+}
+
+
+def _as_bool(value) -> bool:
+    if isinstance(value, bool):
+        return value
+    return str(value).strip().lower() in ("true", "1", "yes", "on")
+
+
+def _is_system_path(path: Path) -> bool:
+    return any(part.lower() in _SYSTEM_DIRS for part in path.parts)
+
+
+def _iter_files(root: Path, recursive: bool = True):
+    """Yield a bounded number of safe files, skipping system directories."""
+    count = 0
+    if not recursive:
+        for item in root.iterdir():
+            if count >= MAX_SCAN:
+                break
+            if item.is_file() and not item.name.startswith("."):
+                count += 1
+                yield item
+        return
+    for dirpath, dirnames, filenames in os.walk(root, topdown=True):
+        dirnames[:] = [d for d in dirnames
+                       if d.lower() not in _SYSTEM_DIRS and not d.startswith(".")]
+        for filename in filenames:
+            if count >= MAX_SCAN:
+                return
+            if filename.startswith("."):
+                continue
+            count += 1
+            yield Path(dirpath) / filename
+
+
+def _atomic_write(path: Path, text: str, mode: str = "w") -> None:
+    """Write via a sibling temp file then os.replace (append is non-atomic)."""
+    if mode == "a":
+        with open(path, "a", encoding="utf-8") as handle:
+            handle.write(text)
+        return
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(prefix="friday-write-", suffix=".tmp",
+                               dir=str(path.parent))
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(text)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(tmp, path)
+    finally:
+        if os.path.exists(tmp):
+            os.unlink(tmp)
 
 
 def _category_for_ext(ext: str) -> str:
@@ -62,26 +125,27 @@ def _write_organize_log(entry: dict):
             except Exception:
                 entries = []
         entries.append(entry)
-        ORGANIZE_LOG_PATH.write_text(json.dumps(entries, indent=2, ensure_ascii=False), "utf-8")
+        _atomic_write(ORGANIZE_LOG_PATH,
+                      json.dumps(entries, indent=2, ensure_ascii=False))
     except Exception as e:
         print(f"[Organize] ⚠️ Could not write log: {e}")
 
 
 def _ai_categorize(names, scope_name: str) -> dict:
-    """Ask Gemini to map file names to a small fixed set of categories."""
-    from google import genai
-    client = genai.Client(api_key=_api_key(), http_options={"api_version": "v1beta"})
+    """Map file names to fixed categories via the supported Gemini API path."""
     batch = list(names)
     prompt = (
         "You are a file-organization assistant. Categorize each file name into EXACTLY one "
         f"of these categories: {', '.join(_AI_CATEGORIES)}. "
         "Reply with ONLY a JSON object mapping file name -> category, no explanation.\n\n"
-        f"Files:\n" + "\n".join(batch)
+        f"Scope: {scope_name}\nFiles:\n" + "\n".join(batch)
     )
-    resp = client.models.generate_content(model="gemini-2.5-flash", contents=prompt)
-    text = (resp.text or "").strip()
+    resp = generate_with_retry(MODEL_FLASH_LITE, prompt)
+    text = (getattr(resp, "text", "") or "").strip()
     text = text.replace("```json", "").replace("```", "").strip()
     mapping = json.loads(text)
+    if not isinstance(mapping, dict):
+        raise ValueError("AI returned a non-object categorization")
     out = {}
     for name in names:
         cat = str(mapping.get(name, "Other")).strip()
@@ -105,18 +169,13 @@ def organize_folder(
     target = _resolve_path(scope)
     if not target.exists() or not target.is_dir():
         return f"Folder not found: {target}"
+    if _is_system_path(target):
+        return f"Refusing to organize a system folder: {target}"
     mode = (mode or "by_type").lower()
+    include_subfolders = _as_bool(include_subfolders)
+    dry_run = _as_bool(dry_run)
 
-    files = []
-    if include_subfolders:
-        for f in target.rglob("*"):
-            if f.is_file():
-                files.append(f)
-    else:
-        for f in target.iterdir():
-            if f.is_file():
-                files.append(f)
-    files = [f for f in files if not f.name.startswith(".")]
+    files = list(_iter_files(target, recursive=include_subfolders))
 
     if not files:
         return f"No files to organize in {target.name}/"
@@ -190,6 +249,7 @@ def undo_organize() -> str:
 
     entry = entries.pop(-1)
     moved_back = 0
+    emptied_dirs = set()
     for m in reversed(entry.get("moves", [])):
         src = Path(m.get("to", ""))
         dst = Path(m.get("from", ""))
@@ -198,11 +258,21 @@ def undo_organize() -> str:
                 dst.parent.mkdir(parents=True, exist_ok=True)
                 shutil.move(str(src), str(dst))
                 moved_back += 1
+                emptied_dirs.add(src.parent)
             except Exception as e:
                 return f"Could not restore {src.name}: {e}"
 
+    # Remove the category folders that are now empty (but never the scope root).
+    scope_root = Path(entry.get("scope", "")).resolve()
+    for folder in sorted(emptied_dirs, key=lambda p: len(p.parts), reverse=True):
+        try:
+            if folder.resolve() != scope_root and folder.is_dir() and not any(folder.iterdir()):
+                folder.rmdir()
+        except Exception:
+            pass
+
     try:
-        ORGANIZE_LOG_PATH.write_text(json.dumps(entries, indent=2, ensure_ascii=False), "utf-8")
+        _atomic_write(ORGANIZE_LOG_PATH, json.dumps(entries, indent=2, ensure_ascii=False))
     except Exception:
         pass
     return f"Restored {moved_back} file(s) from '{entry.get('scope')}' (mode: {entry.get('mode')})."
@@ -302,7 +372,10 @@ def delete_file(path: str, confirm: bool = True) -> str:
     Moves to Recycle Bin on Windows if possible, otherwise permanent delete.
     """
     try:
-        target = Path(path).expanduser()
+        target = Path(path).expanduser().resolve()
+        home = Path.home().resolve()
+        if target in (Path(target.anchor), home) or target == Path(__file__).resolve().parent.parent:
+            return f"Refusing to delete a protected root folder: {target}"
         if not target.exists():
             return f"Not found: {path}"
 
@@ -412,11 +485,8 @@ def write_file(path: str, content: str, append: bool = False) -> str:
     """Writes or appends content to a file."""
     try:
         target = Path(path).expanduser()
-        target.parent.mkdir(parents=True, exist_ok=True)
-        mode = "a" if append else "w"
-        with open(target, mode, encoding="utf-8") as f:
-            f.write(content)
-        action = "Appended to" if append else "Written to"
+        _atomic_write(target, content, mode="a" if _as_bool(append) else "w")
+        action = "Appended to" if _as_bool(append) else "Written to"
         return f"{action}: {target.name}"
     except Exception as e:
         return f"Could not write file: {e}"
@@ -632,6 +702,92 @@ def _unzip_path(archive: str, target: str) -> str:
         return f"Unzip failed: {e}"
 
 
+def find_duplicates(path: str = "home", recursive: bool = True) -> str:
+    """Group identical files by size + SHA-256 (bounded and system-safe)."""
+    root = _resolve_path(path)
+    if not root.exists() or not root.is_dir():
+        return f"Path not found: {path}"
+    groups: dict[tuple[int, str], list[Path]] = {}
+    for item in _iter_files(root, recursive=recursive):
+        try:
+            size = item.stat().st_size
+            if size == 0:
+                continue
+            digest = hashlib.sha256()
+            with open(item, "rb") as handle:
+                for block in iter(lambda: handle.read(65536), b""):
+                    digest.update(block)
+            groups.setdefault((size, digest.hexdigest()), []).append(item)
+        except Exception:
+            continue
+    dupes = [paths for paths in groups.values() if len(paths) > 1]
+    if not dupes:
+        return "No duplicate files found."
+    lines = [f"Found {len(dupes)} duplicate group(s):"]
+    for paths in dupes[:10]:
+        lines.append("• " + ", ".join(str(p) for p in paths[:5]))
+    return "\n".join(lines)
+
+
+def search_content(path: str = "home", text: str = "", extension: str = "",
+                   max_results: int = 20) -> str:
+    """Case-insensitive text search inside files (bounded, skips binaries)."""
+    root = _resolve_path(path)
+    query = str(text or "").strip().lower()
+    if not query:
+        return "I need text to search for, sir."
+    if not root.exists() or not root.is_dir():
+        return f"Path not found: {path}"
+    try:
+        max_results = max(1, min(int(max_results), 50))
+    except (TypeError, ValueError):
+        max_results = 20
+    hits = []
+    for item in _iter_files(root, recursive=True):
+        if extension and item.suffix.lower() != str(extension).lower():
+            continue
+        try:
+            content = item.read_text(encoding="utf-8", errors="ignore")
+        except Exception:
+            continue
+        idx = content.lower().find(query)
+        if idx < 0:
+            continue
+        snippet = " ".join(content[max(0, idx - 60):idx + 120].split())
+        hits.append(f"• {item} — …{snippet}…")
+        if len(hits) >= max_results:
+            break
+    return "\n".join([f"Content matches for '{text}':"] + hits) if hits else "No matches found."
+
+
+def recent_files(path: str = "home", hours: float = 24, count: int = 20) -> str:
+    """List files modified within the last N hours."""
+    root = _resolve_path(path)
+    if not root.exists() or not root.is_dir():
+        return f"Path not found: {path}"
+    try:
+        hours = max(0.0, float(hours))
+        count = max(1, min(int(count), 50))
+    except (TypeError, ValueError):
+        hours, count = 24.0, 20
+    cutoff = datetime.now().timestamp() - hours * 3600
+    items = []
+    for item in _iter_files(root, recursive=True):
+        try:
+            stat = item.stat()
+            if stat.st_mtime >= cutoff:
+                items.append((stat.st_mtime, item))
+        except Exception:
+            continue
+    items.sort(reverse=True)
+    if not items:
+        return f"No files modified in the last {hours:g} hour(s) under {root}."
+    lines = [f"Recently modified files ({len(items)}):"]
+    for mtime, item in items[:count]:
+        lines.append(f"• {datetime.fromtimestamp(mtime):%Y-%m-%d %H:%M} — {item}")
+    return "\n".join(lines)
+
+
 def file_controller(
     parameters: dict,
     response=None,
@@ -713,10 +869,10 @@ def file_controller(
 
         elif action in ("organize", "organize_folder"):
             result = organize_folder(
-                scope=parameters.get("scope", "desktop"),
+                scope=parameters.get("scope", path) or "desktop",
                 mode=parameters.get("mode", "by_type"),
-                dry_run=bool(parameters.get("dry_run", False)),
-                include_subfolders=bool(parameters.get("include_subfolders", False)),
+                dry_run=_as_bool(parameters.get("dry_run", False)),
+                include_subfolders=_as_bool(parameters.get("include_subfolders", False)),
             )
 
         elif action in ("undo_organize", "organize_undo"):
@@ -726,13 +882,33 @@ def file_controller(
             full = _full_path(path, name)
             result = get_file_info(full)
 
+        elif action in ("duplicates", "find_duplicates"):
+            result = find_duplicates(
+                parameters.get("scope", path),
+                recursive=_as_bool(parameters.get("include_subfolders", True)),
+            )
+
+        elif action in ("search_content", "grep"):
+            result = search_content(
+                parameters.get("scope", path),
+                text=parameters.get("text", parameters.get("query", "")),
+                extension=parameters.get("extension", ""),
+                max_results=parameters.get("max_results", 20),
+            )
+
+        elif action in ("recent", "recent_files"):
+            result = recent_files(
+                parameters.get("scope", path),
+                hours=parameters.get("hours", 24),
+                count=parameters.get("count", 20),
+            )
+
         elif action in ("zip", "compress"):
             source = _resolve_path(path)
             target = parameters.get("destination", "") or str(source) + ".zip"
             if not source.exists():
                 result = f"Path not found: {source}"
             else:
-                zip_dir = source if source.is_dir() else source.parent
                 if parameters.get("destination"):
                     target = _resolve_path(parameters.get("destination", "")) if source.is_dir() else source.parent / parameters.get("destination")
                 result = _zip_path(source, str(target))

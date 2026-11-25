@@ -12,8 +12,57 @@ except ImportError:
 from pathlib import Path
 from datetime import datetime
 
+# Shutdown watcher state — cancellable from the tool and from any UI thread.
+_shutdown_cancel = threading.Event()
+
+
+class _SteamFlags:
+    """Decoder for Steam app StateFlags bitmasks (see SteamDocs / DepotDownloader)."""
+
+    INSTALLED = 4
+    UPDATE_REQUIRED = 2
+    DOWNLOADING = 32
+    QUEUED = 1024
+    PAUSED = 16
+
+    def __init__(self, flags: int):
+        self.flags = int(flags or 0)
+
+    @property
+    def installed(self) -> bool:
+        return bool(self.flags & self.INSTALLED)
+
+    @property
+    def update_required(self) -> bool:
+        return bool(self.flags & self.UPDATE_REQUIRED)
+
+    @property
+    def downloading(self) -> bool:
+        return bool(self.flags & (self.QUEUED | self.DOWNLOADING))
+
+    @property
+    def up_to_date(self) -> bool:
+        return self.installed and not self.update_required and not self.downloading
+
+
+def _steam_state(flags: int) -> _SteamFlags:
+    return _SteamFlags(flags)
+
+
+def _as_bool(value) -> bool:
+    if isinstance(value, bool):
+        return value
+    return str(value).strip().lower() in ("true", "1", "yes", "on")
+
 
 def _find_steam_path() -> Path | None:
+    if winreg is None:
+        # Non-Windows: allow callers/tests to pre-configure a Steam path via
+        # FRIDAY_STEAM_PATH instead of touching the registry.
+        env_path = os.environ.get("FRIDAY_STEAM_PATH", "")
+        if env_path and (Path(env_path) / "steam.exe").exists():
+            return Path(env_path)
+        return None
     registry_keys = [
         (winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\WOW6432Node\Valve\Steam"),
         (winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\Valve\Steam"),
@@ -39,6 +88,8 @@ def _find_steam_path() -> Path | None:
 
 
 def _find_epic_path() -> Path | None:
+    if winreg is None:
+        return None
     registry_keys = [
         (winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\WOW6432Node\EpicGames\EpicGamesLauncher"),
         (winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\EpicGames\EpicGamesLauncher"),
@@ -90,10 +141,16 @@ def _get_steam_games(steam_path: Path) -> list[dict]:
                 state   = re.search(r'"StateFlags"\s+"(\d+)"', content)
                 size    = re.search(r'"SizeOnDisk"\s+"(\d+)"', content)
                 if app_id and name:
+                    flags = int(state.group(1)) if state else 0
+                    decoded = _steam_state(flags)
                     games.append({
                         "id":    app_id.group(1),
                         "name":  name.group(1),
-                        "state": int(state.group(1)) if state else 0,
+                        "state": flags,
+                        "installed": decoded.installed,
+                        "update_required": decoded.update_required,
+                        "downloading": decoded.downloading,
+                        "up_to_date": decoded.up_to_date,
                         "size":  int(size.group(1))  if size  else 0,
                         "lib":   str(lib),
                     })
@@ -276,11 +333,11 @@ def _update_steam_games(steam_path: Path, game_name: str = None) -> str:
     already_updated, already_running, update_started, errors = [], [], [], []
 
     for game in targets:
-        state = game["state"]
-        name  = game["name"]
-        if state == 4:
+        decoded = _steam_state(game["state"])
+        name = game["name"]
+        if decoded.up_to_date:
             already_updated.append(name)
-        elif state == 1026:
+        elif decoded.downloading:
             already_running.append(name)
         else:
             try:
@@ -389,17 +446,31 @@ def _search_steam_appid(game_name: str) -> tuple[str | None, str | None]:
 
 
 def _find_best_drive() -> dict | None:
-    import shutil, string
+    """Pick the drive with the most usable free space for new installs."""
+    import shutil
+    import string
     drives = []
     for letter in string.ascii_uppercase:
         drive_path = f"{letter}:\\"
-        if os.path.exists(drive_path):
-            try:
-                gb = shutil.disk_usage(drive_path).free / (1024 ** 3)
-                if gb > 0:
-                    drives.append({"letter": letter, "path": drive_path, "free_gb": gb})
-            except Exception:
+        if not os.path.exists(drive_path):
+            continue
+        try:
+            usage = shutil.disk_usage(drive_path)
+            free_gb = usage.free / (1024 ** 3)
+            if free_gb < 5:  # avoid nearly-full or tiny recovery partitions
                 continue
+            drives.append({"letter": letter, "path": drive_path,
+                           "free_gb": free_gb, "total_gb": usage.total / (1024 ** 3)})
+        except Exception:
+            continue
+    if not drives and os.name == "posix":
+        try:
+            usage = shutil.disk_usage(str(Path.home()))
+            drives.append({"letter": "Linux", "path": str(Path.home()),
+                           "free_gb": usage.free / (1024 ** 3),
+                           "total_gb": usage.total / (1024 ** 3)})
+        except Exception:
+            pass
     return max(drives, key=lambda d: d["free_gb"]) if drives else None
 
 
@@ -513,8 +584,8 @@ def _handle_install_dialog_pyautogui(game_name: str, best_drive: dict) -> str:
     except ImportError:
         return f"Install dialog opened for '{game_name}'. Please select '{best_drive['letter']}:' and click Install manually."
 
-    pyautogui.FAILSAFE = False
-    drive_label  = f"{best_drive['letter']}:"
+    # Never disable pyautogui.FAILSAFE — the corner abort is a safety net.
+    drive_label = f"{best_drive['letter']}:"
     install_win  = None
 
     for _ in range(30):
@@ -562,13 +633,13 @@ def _install_steam_game(steam_path: Path, game_name: str = None, app_id: str = N
         return "Please specify a game name or AppID."
 
     if already:
-        state = already["state"]
-        name  = already["name"]
-        if state == 4:
+        decoded = _steam_state(already["state"])
+        name = already["name"]
+        if decoded.up_to_date:
             return f"'{name}' is already installed and up to date."
-        if state == 1026:
+        if decoded.downloading:
             return f"'{name}' is currently downloading or updating."
-        if state in (6, 516):
+        if decoded.update_required:
             subprocess.Popen([str(steam_exe), f"steam://update/{already['id']}"])
             return f"'{name}' has a pending update. Update started."
         return f"'{name}' is already installed."
@@ -590,9 +661,10 @@ def _install_steam_game(steam_path: Path, game_name: str = None, app_id: str = N
 
 
 def _get_download_status(steam_path: Path) -> str:
-    games   = _get_steam_games(steam_path)
-    active  = [g for g in games if g["state"] == 1026]
-    pending = [g for g in games if g["state"] in (6, 516)]
+    games = _get_steam_games(steam_path)
+    active = [g for g in games if _steam_state(g["state"]).downloading]
+    pending = [g for g in games if _steam_state(g["state"]).update_required
+               and not _steam_state(g["state"]).downloading]
     lines   = []
     if active:
         lines.append(f"Downloading: {', '.join(g['name'] for g in active)}.")
@@ -603,13 +675,19 @@ def _get_download_status(steam_path: Path) -> str:
     return " ".join(lines) if lines else "No active downloads or pending updates."
 
 
-def _watch_and_shutdown(steam_path: Path, speak=None, check_interval: int = 30, timeout_hours: int = 12):
+def _watch_and_shutdown(steam_path: Path, speak=None, check_interval: int = 30,
+                        timeout_hours: int = 12):
+    """Watch downloads; every wait is interruptible via cancel_shutdown."""
     print("[GameUpdater] 👁️ Watching downloads for shutdown...")
+    _shutdown_cancel.clear()
     deadline = time.time() + timeout_hours * 3600
 
     for _ in range(24):
-        time.sleep(5)
-        active = [g for g in _get_steam_games(steam_path) if g["state"] == 1026]
+        if _shutdown_cancel.wait(5):
+            if speak: speak("Auto-shutdown cancelled, sir.")
+            return
+        active = [g for g in _get_steam_games(steam_path)
+                  if _steam_state(g["state"]).downloading]
         if active:
             names = ", ".join(g["name"] for g in active)
             if speak: speak(f"Download started for {names}. I'll shut down when done.")
@@ -618,13 +696,17 @@ def _watch_and_shutdown(steam_path: Path, speak=None, check_interval: int = 30, 
         return
 
     while time.time() < deadline:
-        time.sleep(check_interval)
-        if not any(g["state"] == 1026 for g in _get_steam_games(steam_path)):
+        if _shutdown_cancel.wait(check_interval):
+            if speak: speak("Auto-shutdown cancelled, sir.")
+            return
+        games = _get_steam_games(steam_path)
+        was_downloading = any(_steam_state(g["state"]).downloading for g in games)
+        if not was_downloading:
             if speak: speak("Download complete. Shutting down now.")
-            time.sleep(5)
+            if _shutdown_cancel.wait(5):
+                return
             subprocess.run(["shutdown", "/s", "/t", "10"])
             return
-
     if speak: speak("Download taking too long. Cancelling auto-shutdown.")
 
 
@@ -722,6 +804,71 @@ def _get_schedule_status() -> str:
     return "Game update is scheduled."
 
 
+def _launch_game(steam_path: Path, game_name: str = None, app_id: str = None) -> str:
+    if not steam_path:
+        return "Steam is not installed."
+    if not _ensure_steam_running(steam_path):
+        return "Could not start Steam."
+    if not app_id and game_name:
+        app_id, _ = _search_steam_appid(game_name)
+    if not app_id:
+        return "I need a game name or AppID to launch, sir."
+    try:
+        subprocess.Popen([str(steam_path / "steam.exe"), f"steam://rungameid/{app_id}"])
+        return f"Launching game {game_name or app_id} (AppID {app_id})."
+    except Exception as exc:
+        return f"Could not launch game: {exc}"
+
+
+def _largest_games(steam_path: Path = None, epic_path: Path = None,
+                   count: int = 10) -> str:
+    games = []
+    if steam_path:
+        games += [("Steam", g) for g in _get_steam_games(steam_path)]
+    if epic_path:
+        games += [("Epic", g) for g in _get_epic_games()]
+    games.sort(key=lambda pair: int(pair[1].get("size", 0) or 0), reverse=True)
+    if not games:
+        return "No installed games found."
+    try:
+        count = max(1, min(int(count), 50))
+    except (TypeError, ValueError):
+        count = 10
+    lines = [f"Largest installed games ({count}):"]
+    for platform_name, game in games[:count]:
+        size_gb = int(game.get("size", 0) or 0) / (1024 ** 3)
+        lines.append(f"• {game.get('name', 'Unknown')} ({platform_name}) — {size_gb:.1f} GB")
+    return "\n".join(lines)
+
+
+def _close_game(game_name: str) -> str:
+    """Close a game using the tasklist/window title (no blanket process kills)."""
+    if not game_name:
+        return "I need a game name to close, sir."
+    try:
+        import pygetwindow as gw
+        windows = [w for w in gw.getAllWindows() if game_name.lower() in w.title.lower()]
+        for window in windows:
+            try:
+                window.close()
+                return f"Closed window for '{game_name}'."
+            except Exception:
+                continue
+    except Exception:
+        pass
+    try:
+        out = subprocess.run(["tasklist"], capture_output=True, text=True,
+                             timeout=10).stdout
+        candidates = [line.split()[0] for line in out.splitlines()
+                      if game_name.lower().replace(" ", "") in line.lower().replace(" ", "")]
+        for image in candidates[:3]:
+            subprocess.run(["taskkill", "/IM", image], capture_output=True, timeout=10)
+            return f"Closed '{game_name}' ({image})."
+    except Exception:
+        pass
+    return f"Could not find a running game matching '{game_name}', sir."
+
+
 def game_updater(parameters: dict, player=None, speak=None) -> str:
     p         = parameters or {}
     action    = p.get("action",    "update").lower().strip()
@@ -733,13 +880,23 @@ def game_updater(parameters: dict, player=None, speak=None) -> str:
         minute = int(p.get("minute", 0))
     except (TypeError, ValueError):
         return "Invalid schedule time — please provide numeric hour and minute, sir."
-    shutdown  = str(p.get("shutdown_when_done", "false")).lower() == "true"
+    shutdown = _as_bool(p.get("shutdown_when_done", False))
 
     results = []
 
     if action == "schedule":        return _schedule_daily_update(hour=hour, minute=minute)
     if action == "cancel_schedule": return _cancel_scheduled_update()
     if action == "schedule_status": return _get_schedule_status()
+    if action in ("cancel_shutdown", "cancel_auto_shutdown"):
+        _shutdown_cancel.set()
+        return "Auto-shutdown cancelled, sir. Your PC will stay on."
+    if action == "launch":
+        return _launch_game(_find_steam_path(), game_name=game_name, app_id=app_id)
+    if action in ("largest", "largest_games"):
+        return _largest_games(_find_steam_path(), _find_epic_path(),
+                              count=p.get("count", 10))
+    if action in ("close_game", "quit_game"):
+        return _close_game(game_name or "")
 
     if action == "list":
         if platform in ("steam", "both"):

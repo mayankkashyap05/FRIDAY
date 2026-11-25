@@ -44,11 +44,11 @@ web_search
   max_results: 1-10 (optional, default 5), include_sources: boolean (optional)
 
 game_updater
-  action: "update" | "install" | "list" | "download_status" | "schedule" (required)
+  action: "update" | "install" | "launch" | "largest" | "close_game" | "list" | "download_status" | "schedule" | "cancel_shutdown" (required)
   platform: "steam" | "epic" | "both" (optional, default: both)
   game_name: string (optional)
   app_id: string (optional)
-  shutdown_when_done: boolean (optional)
+  shutdown_when_done: boolean (optional) — cancellable with action "cancel_shutdown"
 
 browser_control
   action: "go_to" | "search" | "click" | "type" | "scroll" | "get_text" | "press" | "close" (required)
@@ -58,15 +58,40 @@ browser_control
   direction: "up" | "down" (for scroll)
 
 file_controller
-  action: "write" | "create_file" | "read" | "list" | "delete" | "move" | "copy" | "find" | "disk_usage" | "zip" | "unzip" (required)
+  action: "write" | "create_file" | "read" | "list" | "delete" | "move" | "copy" | "find" | "disk_usage" | "zip" | "unzip" | "organize" | "undo_organize" | "duplicates" | "search_content" | "recent" (required)
   path: string — use "desktop" for Desktop folder
   name: string — filename
   content: string — file content (for write/create_file)
   destination: string — target for move/copy/zip/unzip
+  text: string — needle for search_content; hours: number for recent
 
 notify
-  message: string (required) — notification text
-  title: string (optional)
+  action: "send" | "history" | "clear_history" (optional, default send)
+  message: string (required for send) — notification text
+  title: string (optional), duration: short|long, sound: default|none|alarm|reminder, url: http(s) link (optional)
+
+gmail
+  action: "send" | "read" | "search" | "read_message" | "draft" | "reply" | "mark_read" | "mark_unread" | "unread_count" | "trash"
+  to, subject, body, cc, bcc: string; attachments: list of local paths; message_id: string; query: string; limit: integer
+
+drive
+  action: "list" | "search" | "read" | "info" | "upload" | "download" | "create_folder" | "trash"
+  query, file_id, name, content, path, folder_id: string (as needed)
+
+monitor_alerts
+  action: "list" | "add" | "remove" | "check" | "status" | "pause" | "resume" | "clear"
+  kind: cpu | ram | disk | disk:D | battery | temp | process_exit; sustained, cooldown: seconds
+
+pc_health
+  action: "status" | "report" | "enable" | "disable" | "check" | "backup" | "set" | "reset" | "snooze" | "unsnooze"
+  minutes: number (for snooze)
+
+email_watch
+  action: "enable" | "disable" | "status" | "pause" | "resume"; sender, subject, unread_only filters (optional)
+
+media_control
+  action: "play" | "pause" | "toggle" | "next" | "prev" | "volume_up" | "volume_down" | "volume_set" | "mute" | "status" | "now_playing"
+  volume: 0-100, steps: integer (optional)
 
 daily_briefing
   city: string (optional) — weather defaults to saved memory
@@ -172,6 +197,8 @@ flight_finder
   origin: string (required)
   destination: string (required)
   date: string (required)
+  passengers: integer, cabin: economy|premium|business|first, currency: string (default INR)
+  non_stop: boolean, max_stops: integer, sort_by: price|duration, save: boolean (all optional)
 
 code_helper
   action: "write" | "edit" | "run" | "explain" (required)
