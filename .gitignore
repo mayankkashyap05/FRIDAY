@@ -49,9 +49,6 @@ config/*.json
 Thumbs.db
 .DS_Store
 
-# Generated wake word assets (re-trained locally)
-models/hey_friday_v0.1.onnx
-models/hey_friday_v0.1.onnx.data
 
 # Reference clone for study (openjarvis)
 openjarvis_example/
