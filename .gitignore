@@ -49,6 +49,12 @@ config/*.json
 Thumbs.db
 .DS_Store
 
+# Ignore Friday models except the versioned wake-word model
+models/hey_friday*
+!models/hey_friday_v0.1.onnx
+
+# Keep wake word configuration
+!models/wake_word.json
 
 # Reference clone for study (openjarvis)
 openjarvis_example/
