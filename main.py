@@ -38,7 +38,13 @@ except ModuleNotFoundError:
     genai = None
     types = None
 
-from ui import FridayUI, make_ui
+if sys.platform == "darwin":
+    try:
+        from ui_mac import FridayUI, make_ui
+    except Exception:
+        from ui import FridayUI, make_ui
+else:
+    from ui import FridayUI, make_ui
 from memory.memory_manager import (
     load_memory, update_memory, format_memory_for_prompt,
     should_extract_memory, extract_memory
