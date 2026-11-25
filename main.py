@@ -2623,14 +2623,17 @@ class FridayLive:
                         for fc in response.tool_call.function_calls:
                             print(f"[FRIDAY] 📞 {fc.name}")
                             if fc.name in LONG_RUNNING_TOOLS:
-                                background.append(self._execute_tool_in_background(fc))
+                                background.append(fc)
                             else:
                                 fn_responses.append(await self._execute_tool(fc))
                         if fn_responses:
                             await self.session.send_tool_response(
                                 function_responses=fn_responses
                             )
-                        for task in background:
+                        for fc in background:
+                            task = asyncio.create_task(
+                                self._execute_tool_in_background(fc)
+                            )
                             self._background_tasks.add(task)
                             task.add_done_callback(self._background_tasks.discard)
                         # ── Boş turn YOK — bu "Anladım." sorununu yaratıyordu ──
@@ -2653,10 +2656,11 @@ class FridayLive:
         try:
             fr = await self._execute_tool(fc)
             session = self.session
-            if session is None or not self._ready:
+            send_lock = self._send_lock
+            if session is None or send_lock is None or not self._ready:
                 print(f"[FRIDAY] ⏭ {fc.name} finished after the session closed")
                 return
-            async with self._send_lock:
+            async with send_lock:
                 await session.send_tool_response(function_responses=[fr])
         except asyncio.CancelledError:
             raise
