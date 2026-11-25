@@ -269,6 +269,7 @@ def live_player(monkeypatch):
 
     # main.py imports optional action modules (playwright, ...) at construction.
     main = pytest.importorskip("main")
+    monkeypatch.setattr(main, "sd", fake_sd)
     monkeypatch.setattr(main.FridayLive, "_build_tool_handlers",
                         lambda self: {}, raising=True)
     return main
