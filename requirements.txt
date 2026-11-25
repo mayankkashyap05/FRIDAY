@@ -79,7 +79,7 @@ pyflakes
 # ----------------------------
 # Optional / Legacy (uncomment only if explicitly needed)
 # ----------------------------
-google-generativeai>=0.8.0,<1.0.0
-duckduckgo-search>=7.0.0
-face_recognition>=1.3.0
-pyaudio>=0.2.14
+# google-generativeai>=0.8.0,<1.0.0
+# duckduckgo-search>=7.0.0
+# face_recognition>=1.3.0
+# pyaudio>=0.2.14
