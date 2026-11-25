@@ -1,47 +1,79 @@
-# Core Audio & GenAI
-sounddevice>=0.5.0,<=0.6.0
+# ============================================================
+# FRIDAY — Cross-platform Python dependencies
+# Single file for Windows, macOS, and Linux (PEP 508 markers).
+# Install: pip install -r requirements.txt
+# ============================================================
+
+# ----------------------------
+# Core AI & Networking
+# ----------------------------
 google-genai>=1.0.0,<2.0.0
-google-generativeai>=0.8.0,<1.0.0
+google-auth>=2.20.0
+google-api-python-client>=2.100.0
 requests>=2.30.0,<3.0.0
-websockets>=13.0,<17.0
 
-# Desktop GUI & Automation
-# Native Qt desktop interface
+# ----------------------------
+# Native Desktop UI (Cross-Platform Qt6)
+# ----------------------------
 PySide6>=6.8.0
-pillow>=10.0.0,<13.0.0
-pyautogui>=0.9.54
-pyperclip>=1.9.0
-pygetwindow>=0.0.9
-mss>=9.0.0
-psutil>=5.9.0
-comtypes>=1.4.0
-pycaw>=20240000
-send2trash>=1.8.0
-pywinauto>=0.6.8
-keyboard>=0.13.5
-pystray>=0.19.5
-winotify>=1.1.0
-pytest
-pyflakes
 
-# Document & Web Operations
-beautifulsoup4>=4.12.0
-duckduckgo-search>=7.0.0
-playwright>=1.40.0
+# ----------------------------
+# Audio, Voice & System Utilities
+# ----------------------------
+sounddevice>=0.5.0
+numpy>=1.26.0,<3.0.0
+psutil>=5.9.0
+
+# ----------------------------
+# Desktop Automation, Vision & Document/Office Actions
+# ----------------------------
+pillow>=10.0.0
+mss>=9.0.0
+pyautogui>=0.9.54
+pygetwindow>=0.0.9
+pyperclip>=1.9.0
+pypdf>=5.0.0
 python-pptx>=1.0.0
 openpyxl>=3.1.0
-pypdf>=5.0.0
-youtube-transcript-api>=0.6.0
-
-# Google OAuth Integrations
-google-auth-oauthlib>=1.2.0
-google-api-python-client>=2.100.0
-
-# Computer Vision & Machine Learning (Lazy Loaded)
 opencv-python>=4.9.0
-numpy>=1.26.0,<3.0.0
-mediapipe>=0.10.0
-ultralytics>=8.0.0
-pytesseract>=0.3.10
-openwakeword>=0.6.0
+beautifulsoup4>=4.12.0
+ddgs>=7.0.0
+send2trash>=1.8.0
+pystray>=0.19.5
 
+# ----------------------------
+# Windows-Only Dependencies
+# ----------------------------
+winotify>=1.1.0; sys_platform == "win32"
+pycaw>=20240000; sys_platform == "win32"
+comtypes>=1.4.0; sys_platform == "win32"
+keyboard>=0.13.5; sys_platform == "win32"
+pywinauto>=0.6.8; sys_platform == "win32"
+
+# ----------------------------
+# macOS-Only Cocoa Bridge Dependencies
+# ----------------------------
+pyobjc-framework-Cocoa>=10.0; sys_platform == "darwin"
+pyobjc-framework-Quartz>=10.0; sys_platform == "darwin"
+pyobjc-framework-ApplicationServices>=10.0; sys_platform == "darwin"
+
+# ----------------------------
+# Optional / Feature-Specific Dependencies
+# Install as needed for specific features.
+# ----------------------------
+# playwright>=1.40.0                  # Browser control / automation (actions/browser_control.py)
+# youtube-transcript-api>=0.6.0       # YouTube transcript fetching (actions/youtube_video.py)
+# pytesseract>=0.3.10                 # OCR text extraction (vision/ocr_engine.py); requires Tesseract binary
+# mediapipe>=0.10.0                   # Hand/gesture landmarks (actions/vision_gesture.py)
+# ultralytics>=8.0.0                  # YOLO object detection (vision/object_detection.py)
+# openwakeword>=0.6.0                 # Wake word detection (actions/wake_word.py)
+# onnxruntime>=1.17.0                 # ONNX inference for wake/face verification (actions/friday_wake.py, vision/)
+# torch>=2.0.0                        # Local torch models for wake/vision runtime (optional/heavy)
+# face_recognition>=1.3.0             # Face recognition backend (vision/face_recognition.py; requires dlib)
+# pyaudio>=0.2.14                     # Alternate microphone backend for wake word (actions/wake_word.py)
+
+# ----------------------------
+# Development & Testing
+# ----------------------------
+pytest>=8.0.0
+pyflakes>=3.0.0

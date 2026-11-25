@@ -1,29 +1,38 @@
 # FRIDAY
 
-FRIDAY is a desktop AI companion for Windows, built around real-time Gemini Live voice interaction, a native Qt interface, and a safety-gated automation toolkit. The source tree is the authoritative reference for supported actions, optional integrations, and platform-specific behavior.
+FRIDAY is a real-time, voice-driven desktop AI companion built around Gemini Live, a native PySide6/Qt6 Dynamic Island UI, and a safety-gated automation toolkit. It runs on **Windows, macOS, and Linux**, with platform-native overlay behavior on Windows and macOS.
 
 ## Highlights
 
-- **Native PySide6 Dynamic Island HUD** — an anchored top-notch mascot, liquid-glass search/command bar, settings hub, chat and action-confirmation cards, vision preview, and Vision Arcade. The tray and Qt bridge provide the desktop lifecycle and cross-thread event delivery.
-- **Gemini Live API** — real-time audio conversation, function calling, and reconnect handling. `config/models.py` exports `MODEL_FLASH`, `MODEL_FLASH_LITE`, `MODEL_LIVE`, and compatibility aliases. `api_keys.py` supports a single key or a rotating multi-key pool; `generate_with_retry()` and the Live client key rotation recover from quota exhaustion.
-- **39 action modules** — OS and system controls, file and document workflows, web/media tools, Google Workspace, developer helpers, vision and wake-word features, and smart-home/messaging actions.
-- **Autonomous multi-step agent** — `agent/planner.py` plans steps, `agent/executor.py` executes bounded work, `agent/task_queue.py` schedules background requests, and `agent/loop_guard.py` limits repeated calls.
-- **Security-first execution** — `safety.py` classifies actions in LOW/MEDIUM/HIGH tiers, issues exact-call single-use confirmation tokens, and sanitizes sensitive values. High-impact execution also requires human approval; optional `face_verify` adds local identity verification. Browser and download paths include SSRF defenses, archive extraction protects against zip-slip, and the normal desktop dispatcher uses explicit safe handlers rather than executing generated code.
+- **Real-time Gemini Live assistant** — low-latency voice conversation, live transcription, tool calling, and reconnect/key-rotation handling. Model IDs are defined in [`config/models.py`](config/models.py): `MODEL_FLASH = "gemini-3.8-flash"`, `MODEL_FLASH_LITE = "gemini-3.5-flash-lite"`, `MODEL_LIVE = "gemini-3.1-flash-live-preview"`.
+- **Native cross-platform Dynamic Island UI (PySide6 / Qt6)** — frameless top-docked island, liquid-glass search/command pill, settings hub, chat/action-confirmation cards, vision preview, and integrated panels.
+  - **Windows 11**: frameless topmost overlay with Win32 hit-testing and event-driven Z-order guard (`ui/island/win32_overlay.py`), automatic Administrator elevation on launch (opt out with `--no-admin` or `FRIDAY_NO_ADMIN=1`), and native tray/HUD lifecycle.
+  - **macOS (Apple Silicon & Intel)**: zero-duplication **`ui_mac/` dynamic Cocoa bridge** (PEP 562 live proxy over `ui/`) that auto-syncs `ui/` updates without duplicating widgets/themes. It applies native NSPanel-style overlay behavior for full-screen Spaces, avoids focus stealing, aligns with MacBook notches/menu bar insets, maps fonts to SF Pro/SF Mono, and provides native `Cmd+V` dictation paste via PyObjC.
+- **Fast, dynamic app launcher (`actions/open_app.py`)** — persistent atomic JSON app index cache (`data/app_index_cache.json`) with stale-while-revalidate background refresh, cross-source deduplication (Start Menu, App Paths, Uninstall registry, UWP `Get-StartApps`), UAC-safe UWP AUMID launching, and smart multi-app disambiguation.
+- **Safety & human confirmation (`safety.py`)** — centralized `LOW` / `MEDIUM` / `HIGH` risk classification, single-use confirmation tokens bound to exact tool calls, UI confirmation cards and spoken approval, shell-bypass protection, and sensitive-value redaction in logs/memory.
+- **Automation & assistant capabilities** — screen/vision analysis, web search, weather & daily briefing, desktop/window/media control, reminders, YouTube, PDF/document Q&A, Office generation, clipboard, smart home, task queue/agent planner, persistent memory, wake word, and gesture/vision features.
 
 ## Architecture
 
 ```text
-main.py                  Gemini Live session, tools, audio loops and UI wiring
-api_keys.py              API key loading, rotation and quota failover
-config/models.py         Canonical model constants
-ui/                      PySide6 HUD, panels, bridge, themes and tray
-agent/                   Planner, executor, task queue, resilience and loop guard
-actions/                 39 user-facing automation modules
-vision/                  Camera, OCR, face privacy, detection, arcade and pipelines
-memory/                  Curated local memory and persistence
-safety.py                Risk classification, consent tokens and sanitization
-google_oauth.py           Google Desktop OAuth PKCE callback and token management
-tests/                   Offline-focused pytest regression suites
+FRIDAY/
+├── main.py                  # Entry point, CLI flags, Gemini Live session, tool wiring
+├── api_keys.py              # API key loading, rotation, quota failover
+├── safety.py                # Risk classification, confirmation tokens, redaction
+├── google_oauth.py          # Google Desktop OAuth PKCE callback/token management
+├── logger.py                # Logging setup
+├── actions/                 # 39 automation/action modules
+├── agent/                   # Planner, executor, task queue, resilience, loop guard
+├── config/                  # Model constants, audio/runtime config, example configs
+├── core/                    # Prompt/system instructions
+├── memory/                  # Curated local memory and persistence
+├── ui/                      # Native PySide6/Qt6 UI (source of truth)
+├── ui_mac/                  # macOS Cocoa bridge/proxy over ui/ (zero duplication)
+├── vision/                  # Camera, OCR, face/privacy, detection, arcade, pipelines
+├── tests/                   # Offline-focused pytest regression suites
+├── pyproject.toml           # Project metadata and dependency declarations
+├── requirements.txt         # Cross-platform pip requirements (PEP 508 markers)
+└── readme.md                # This file
 ```
 
 ### Action suite (39 modules)
@@ -38,78 +47,145 @@ tests/                   Offline-focused pytest regression suites
 | **Vision & Wake Word** | `friday_wake`, `screen_processor`, `vision_click`, `vision_gesture`, `wake_word` |
 | **Smart Home & Comms** | `send_message`, `smart_home` |
 
-Some action modules expose more than one tool. For example, `monitor` includes system and email monitoring, `pdf_reader` provides PDF reading and Q&A, and `office_builder` creates presentations and spreadsheets. `vision/` contains the underlying computer-vision engines and the gesture-driven arcade state.
+Some modules expose multiple tools (for example, `monitor`, `pdf_reader`, and `office_builder`). `vision/` contains the underlying computer-vision engines and pipelines used by vision-related actions.
 
-## Requirements and setup
+## Requirements
 
-The project metadata supports Python 3.11 and newer; **Python 3.13 is the recommended setup**. On Windows, use PowerShell:
+- **Python 3.11 – 3.13** (tested on Python 3.13)
+- A Gemini API key from [Google AI Studio](https://aistudio.google.com/apikey)
+- OS-specific runtime permissions/libraries for audio, camera, screen capture, and desktop automation (see [OS Permissions](#os-permissions-guide))
+
+## Quick Start & Installation
+
+### 1. Clone and create a virtual environment
+
+**Windows (PowerShell):**
 
 ```powershell
+git clone https://github.com/mayankkashyap05/FRIDAY.git
+cd FRIDAY
 py -3.13 -m venv .venv
 .\.venv\Scripts\Activate.ps1
 python -m pip install --upgrade pip
-python -m pip install -r requirements.txt
-python -m playwright install chromium
+pip install -r requirements.txt
 ```
 
-On Linux/macOS, create and activate the environment with `python3.13 -m venv .venv` and `source .venv/bin/activate`, then use the same pip commands. Native audio, Qt, camera, and desktop-control features may require OS libraries and permissions; Windows is the primary desktop target.
+**macOS / Linux (Bash/Zsh):**
 
-### Gemini API keys
+```bash
+git clone https://github.com/mayankkashyap05/FRIDAY.git
+cd FRIDAY
+python3.13 -m venv .venv
+source .venv/bin/activate
+python -m pip install --upgrade pip
+pip install -r requirements.txt
+```
 
-Copy `config/api_keys.example.json` to `config/api_keys.json` and supply either a single key or a list of keys:
+> `requirements.txt` uses PEP 508 environment markers, so the same file installs Windows-only and macOS-only dependencies where appropriate.
+
+### 2. Configure Gemini API keys
+
+Create `config/api_keys.json` (you can copy from `config/api_keys.example.json`) and add your key(s). **Never commit real API keys.**
+
+**Single key:**
+
+```json
+{
+  "gemini_api_key": "YOUR_GEMINI_API_KEY"
+}
+```
+
+**Multiple keys (rotation/failover):**
 
 ```json
 {
   "gemini_api_key": "YOUR_GEMINI_API_KEY",
-  "gemini_api_keys": ["YOUR_GEMINI_API_KEY", "OPTIONAL_SECOND_KEY"]
+  "gemini_api_keys": [
+    "YOUR_GEMINI_API_KEY",
+    "OPTIONAL_SECOND_KEY"
+  ]
 }
 ```
 
-The key manager accepts either configuration shape and rotates keys on quota failures. Keep real keys and OAuth credentials out of version control.
+`api_keys.py` loads either shape and can rotate keys on quota/rate-limit failures.
 
-### Google Workspace (Gmail, Calendar and Drive)
+### 3. Optional: Google Workspace (Gmail, Calendar, Drive)
 
-Create a Google Cloud OAuth client with **Desktop app** as its client type, enable the APIs/scopes required for the Workspace features you use, and configure credentials in either supported format:
+Create a Google Cloud OAuth client (Desktop app), enable the APIs/scopes you need, and configure credentials in either supported format:
 
 - `config/google_oauth.json` containing the downloaded `{"installed": {"client_id": "...", "client_secret": "..."}}` object; or
 - `google_client_id` and optional `google_client_secret` in `config/api_keys.json`.
 
-Use the FRIDAY Google authorization action to open the browser. Sign-in uses an ephemeral loopback callback on `127.0.0.1` and PKCE with S256; tokens are saved atomically to `config/google_token.json`. Existing `auth_start()` / `auth_poll()` device-flow callers remain available for compatibility. The application requests Gmail, Calendar, Drive file, and account-email scopes.
+Use the FRIDAY Google authorization action to open the browser. Sign-in uses an ephemeral loopback callback on `127.0.0.1` with PKCE (S256); tokens are saved atomically to `config/google_token.json`.
 
-## Run
+## Running FRIDAY
 
-```powershell
+```bash
 python main.py
 ```
 
-For a development run without displaying the HUD/tray, use `python main.py --headless`. The autostart action supports a normal per-user Windows Run entry or a delayed Task Scheduler logon trigger; it also uses LaunchAgents on macOS and XDG autostart files on Linux.
+`main.py` auto-selects the native UI: `ui_mac` on macOS (`darwin`) with fallback to `ui`, and `ui` on Windows/Linux.
 
-## Safety model
+### CLI flags & environment variables
 
-Tool risk is centralized in `safety.py`:
+| Flag / Env | Effect |
+| --- | --- |
+| `--headless` | Run without showing the native island or tray. |
+| `--minimized` | Start with the HUD hidden (ignored if `--headless`). |
+| `--no-admin` | Skip automatic Windows Administrator elevation. |
+| `FRIDAY_NO_ADMIN=1` | Same as `--no-admin`; disables automatic UAC elevation on Windows. |
 
-- **LOW**: read-only or harmless actions.
-- **MEDIUM**: state changes that are generally reversible.
-- **HIGH**: destructive, externally consequential, or otherwise sensitive operations.
+> `--elevated` is an internal Windows relaunch flag used by FRIDAY after UAC elevation.
 
-Calls that require approval receive a token bound to the exact tool and arguments. Tokens are single-use and expire; replaying one against another call does not authorize it. The UI confirmation card and verbal approval path are kept separate from the model's request. Browser navigation and remote downloads apply private-network/SSRF checks, and file extraction rejects path traversal. The desktop action dispatcher routes to explicit handlers; it does not evaluate a model-generated instruction string as Python.
+## OS Permissions Guide
 
-## Testing and verification
+### Windows
 
-Run the repository suite offline from the active environment:
+- **UAC / Administrator elevation**: FRIDAY automatically attempts to relaunch with Administrator privileges so the Dynamic Island overlay can stay above elevated apps (for example, VS Code running as admin). Use `--no-admin` or set `FRIDAY_NO_ADMIN=1` to opt out.
+- **Microphone / Camera / Screen access**: allow access when prompted by Windows or by the specific capture/audio device stack you use.
 
-```powershell
-pytest -v
+### macOS
+
+Grant permissions in **System Settings > Privacy & Security** (no `sudo` required):
+
+- **Accessibility** — required for `Cmd+V` dictation paste and some desktop control/hotkey features.
+- **Microphone** — required for voice input.
+- **Camera** — required for vision/camera features.
+- **Screen Recording** — required for screen capture/vision analysis.
+
+If Accessibility is missing, macOS paste injection will fail honestly; grant permission and retry.
+
+## Testing & Quality Checks
+
+Run the offline test suite from the active environment:
+
+```bash
+python -m pytest -q
 ```
 
-Focused regression coverage for Live tool schemas, autostart, OAuth, core integrations, UI wiring, and Live session behavior:
+Run lint/static checks:
 
-```powershell
-pytest tests/test_contracts_and_configs.py tests/test_autostart_deep.py tests/test_google_oauth_deep.py tests/test_core_and_memory_deep.py tests/test_main_ui_wiring.py tests/test_live_session_fixes.py -v
+```bash
+python -m pyflakes .
 ```
 
-Post-change focused offline verification: **192 passed, 1 skipped** across the focused core/Live set above plus `tests/test_actions_system_and_files.py`, `tests/test_safety.py`, `tests/test_calendar_deep.py`, `tests/test_drive_and_gmail_deep.py`, `tests/test_daily_briefing_and_desktop_deep.py`, and `tests/test_guardian_and_monitor_deep.py`. The UI wiring test is skipped because PySide6 is unavailable in this sandbox. The complete repository suite was attempted, but collection is blocked here by missing PySide6/Qt platform dependencies; no full-suite total is claimed. The OAuth callback tests mock external services and exercise the callback against a real local loopback socket; no Google credentials or external account access are required.
+## Troubleshooting
 
-## Project status
+- **Gemini 429 / quota errors**: free-tier quotas are limited. Add multiple keys from separate projects in `config/api_keys.json` (`gemini_api_keys`) so `api_keys.py` can rotate/fail over.
+- **macOS paste/hotkeys not working**: ensure FRIDAY has **Accessibility** permission in System Settings > Privacy & Security > Accessibility.
+- **Windows overlay not staying above elevated apps**: run FRIDAY normally and accept UAC, or launch an elevated terminal. If you intentionally don't want elevation, use `--no-admin` / `FRIDAY_NO_ADMIN=1`.
+- **Missing optional feature dependency**: install the relevant optional package from the commented section in `requirements.txt` (for example Playwright, OCR, wake-word, or vision ML packages).
 
-FRIDAY is an active desktop project. Hardware-specific audio, camera, window-management, and overlay behavior should be validated on the target machine in addition to the offline tests. See `ui/ARCHITECTURE.md` for interface boundaries and known platform limitations.
+## Safety Model
+
+Tool risk is centralized in [`safety.py`](safety.py):
+
+- **LOW**: read-only/harmless actions.
+- **MEDIUM**: state-changing but generally reversible/low impact.
+- **HIGH**: destructive, irreversible, externally sensitive, or arbitrary-execution actions.
+
+Calls requiring approval receive a confirmation token bound to the exact tool and arguments. Tokens are single-use and expire; replaying a token against a different call does not authorize it. UI confirmation and spoken approval are handled separately from model-generated requests.
+
+## Project Status
+
+FRIDAY is an active desktop project. Hardware-specific audio, camera, window-management, and overlay behavior should be validated on the target machine in addition to the offline tests. See [`ui/ARCHITECTURE.md`](ui/ARCHITECTURE.md) for UI boundaries and platform notes.
