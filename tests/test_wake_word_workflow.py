@@ -44,6 +44,7 @@ def isolated_models(tmp_path, monkeypatch):
     models.mkdir()
     monkeypatch.setattr(fw, "MODELS_DIR", models)
     monkeypatch.setattr(fw, "TRAIN_DIR", models / "training")
+    monkeypatch.setattr(fw, "_sd", lambda: None)
     monkeypatch.setattr(fw, "MODEL_PATH", models / fw.MODEL_FILE)
     monkeypatch.setattr(fw, "CONFIG_FILE", models / "wake_word.json")
     monkeypatch.setattr(fw, "_replace", __import__("os").replace)
