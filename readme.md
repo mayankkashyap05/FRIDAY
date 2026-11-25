@@ -22,7 +22,6 @@
   <a href="#-quick-start">Quick Start</a> •
   <a href="#-security--safety-model">Security Model</a> •
   <a href="#-configuration">Configuration</a> •
-  <a href="#-telegram-remote-control">Telegram Remote</a> •
   <a href="#-testing--verification">Testing</a> •
   <a href="#-roadmap">Roadmap</a> •
   <a href="#-contributing">Contributing</a>
