@@ -14,14 +14,19 @@ from actions import open_app as oa
 
 
 @pytest.fixture(autouse=True)
-def _clean_index(monkeypatch):
+def _clean_index(monkeypatch, tmp_path):
     with oa._INDEX_LOCK:
         oa._APP_INDEX_CACHE = None
+    with oa._PENDING_LOCK:
+        oa._PENDING_CHOICES = None
+    monkeypatch.setattr(oa, "APP_INDEX_CACHE_PATH", tmp_path / "app_index_cache.json")
     monkeypatch.setattr(oa.platform, "system", lambda: "Windows")
     monkeypatch.setattr(oa.shutil, "which", lambda name, *a, **k: None)
     yield
     with oa._INDEX_LOCK:
         oa._APP_INDEX_CACHE = None
+    with oa._PENDING_LOCK:
+        oa._PENDING_CHOICES = None
 
 
 def _patch_sources(monkeypatch, start=None, app_paths=None, uninstall=None, uwp=None):
@@ -110,12 +115,12 @@ def test_app_paths_and_uninstall_registry(monkeypatch):
     rows = {
         ("HKLM", "app"): [{"(Default)": '"C:\\Program Files\\chrome.exe"'}],
         ("HKLM", "un"): [{"DisplayName": "Google Chrome",
-                          "InstallLocation": "C:\\Program Files\\Chrome"}],
+                          "DisplayIcon": '"C:\\Program Files\\Chrome\\chrome.exe",0'}],
     }
     monkeypatch.setattr(oa, "_registry_key_values", lambda hive, path: rows.get(
         (hive, "app" if "App Paths" in path else "un"), []))
     assert oa._app_paths_registry() == [("chrome", "C:\\Program Files\\chrome.exe")]
-    assert ("Google Chrome", "C:\\Program Files\\Chrome") in oa._registry_app_paths()
+    assert ("Google Chrome", "C:\\Program Files\\Chrome\\chrome.exe") in oa._registry_app_paths()
 
 
 def test_uwp_apps_reads_get_start_apps_json(monkeypatch):
@@ -140,9 +145,10 @@ def test_ranking_exact_prefix_substring_fuzzy(monkeypatch):
         {"name": "Unrelated Tool"},
     ]
     ordered = oa._rank_candidates("chrome", entries)
+    names = [e["name"] for e in ordered]
     assert ordered[0]["name"] == "Chrome"
     assert ordered[1]["name"] == "Chrome Canary"
-    assert ordered[-1]["name"] == "Unrelated Tool"
+    assert "Unrelated Tool" not in names
 
 
 def test_uwp_launch_uses_shell_apps_folder(monkeypatch):
@@ -240,3 +246,159 @@ def test_list_filters_query_and_status_does_not_log_launch(monkeypatch, capsys):
     result = oa.open_app({"action": "status", "app_name": "Chrome"})
     assert "running" in result
     assert "Launching" not in capsys.readouterr().out
+
+
+# ---------------------------------------------------------------------------
+# Disk cache, stale-while-revalidate, hygiene, deduplication & disambiguation
+# ---------------------------------------------------------------------------
+
+def test_disk_cache_loads_without_calling_sources(monkeypatch):
+    calls = _patch_sources(monkeypatch)
+    oa._save_disk_cache([
+        {"name": "WhatsApp", "aumid": "5319275A.WhatsAppDesktop_cv1g1gvanyjgm!App", "source": "uwp"},
+    ], updated_at=time.time())
+    spawned = []
+    monkeypatch.setattr(oa.subprocess, "Popen", lambda cmd, **k: spawned.append(cmd))
+    res = oa.open_app({"app_name": "whatsapp"})
+    assert "successfully" in res
+    assert calls == {"start": 0, "app_paths": 0, "uninstall": 0, "uwp": 0}
+    assert spawned == [["explorer.exe", "shell:AppsFolder\\5319275A.WhatsAppDesktop_cv1g1gvanyjgm!App"]]
+
+
+def test_stale_disk_cache_serves_immediately_and_schedules_refresh(monkeypatch):
+    scheduled = []
+    monkeypatch.setattr(oa, "_schedule_background_refresh", lambda: scheduled.append(True))
+    oa._save_disk_cache([
+        {"name": "Spotify", "aumid": "SpotifyAB.SpotifyMusic_zpdnekdrzrea0!Spotify", "source": "uwp"},
+    ], updated_at=time.time() - oa.INDEX_TTL_SECONDS - 60)
+    spawned = []
+    monkeypatch.setattr(oa.subprocess, "Popen", lambda cmd, **k: spawned.append(cmd))
+    res = oa.open_app({"app_name": "spotify"})
+    assert "successfully" in res
+    assert scheduled == [True]
+    assert spawned == [["explorer.exe", "shell:AppsFolder\\SpotifyAB.SpotifyMusic_zpdnekdrzrea0!Spotify"]]
+
+
+def test_cold_cache_fast_path_skips_waiting_on_slow_uwp(monkeypatch):
+    _patch_sources(
+        monkeypatch,
+        start=[oa.Path("/start/Notion.lnk")],
+        uwp=[],
+    )
+    monkeypatch.setattr(oa, "_schedule_background_refresh", lambda: None)
+    opened = []
+    monkeypatch.setattr(oa.os, "startfile", opened.append, raising=False)
+    res = oa.open_app({"app_name": "notion"})
+    assert "successfully" in res
+    assert opened == [str(oa.Path("/start/Notion.lnk"))]
+
+
+def test_real_windows11_hygiene_and_whatsapp_regression(monkeypatch):
+    _patch_sources(
+        monkeypatch,
+        start=[
+            oa.Path("/start/Administrative Tools.lnk"),
+            oa.Path("/start/Windows Tools.lnk"),
+            oa.Path("/start/What is new in the latest version.lnk"),
+        ],
+        app_paths=[("chrome", "C:\\ChromeDriver\\chrome.exe")],
+        uninstall=[
+            ("Steam", "C:\\Program Files\\Steam\\uninstall.exe"),
+            ("CapCut", "C:\\CapCut\\uninst.exe"),
+            ("GitHub", "C:\\GitHub\\GitHub.ico"),
+            ("7-Zip", "C:\\Program Files\\7-Zip\\"),
+            ("UA Connect", "C:\\Program Files\\UA Connect\\UA Connect.exe"),
+        ],
+        uwp=[("WhatsApp", "5319275A.WhatsAppDesktop_cv1g1gvanyjgm!App")],
+    )
+    entries = oa._build_windows_app_index(refresh=True)
+    names = {e["name"] for e in entries}
+    assert "Steam" not in names
+    assert "CapCut" not in names
+    assert "GitHub" not in names
+    assert "7-Zip" not in names
+    assert "chrome" not in names
+    assert "UA Connect" in names
+
+    spawned = []
+    monkeypatch.setattr(oa.subprocess, "Popen", lambda cmd, **k: spawned.append(cmd))
+    res = oa.open_app({"app_name": "whatsapp"})
+    assert "successfully" in res
+    assert spawned == [["explorer.exe", "shell:AppsFolder\\5319275A.WhatsAppDesktop_cv1g1gvanyjgm!App"]]
+
+    spawned.clear()
+    not_found = oa.open_app({"app_name": "totally_nonexistent_xyz"})
+    assert "couldn't find" in not_found.lower()
+    assert spawned == []
+
+
+def test_cross_source_deduplication_launches_without_disambiguation(monkeypatch):
+    _patch_sources(
+        monkeypatch,
+        start=[oa.Path("/start/Discord.lnk")],
+        uninstall=[("Discord", "C:\\Discord\\Discord.exe")],
+        uwp=[("Discord", "com.squirrel.Discord.Discord!App")],
+    )
+    spawned = []
+    monkeypatch.setattr(oa.subprocess, "Popen", lambda cmd, **k: spawned.append(cmd))
+    res = oa.open_app({"app_name": "discord"})
+    assert "successfully" in res
+    assert len(spawned) == 1
+
+
+def test_multi_app_disambiguation_and_followup_selection(monkeypatch):
+    _patch_sources(
+        monkeypatch,
+        start=[
+            oa.Path("/start/Visual Studio Code.lnk"),
+            oa.Path("/start/Visual Studio 2022.lnk"),
+        ],
+    )
+    opened = []
+    monkeypatch.setattr(oa.os, "startfile", opened.append, raising=False)
+
+    ask = oa.open_app({"app_name": "visual studio"})
+    assert "multiple apps" in ask.lower()
+    assert "1. Visual Studio Code" in ask
+    assert "2. Visual Studio 2022" in ask
+    assert opened == []
+
+    res = oa.open_app({"choice": 2})
+    assert "Visual Studio 2022" in res
+    assert opened == [str(oa.Path("/start/Visual Studio 2022.lnk"))]
+
+
+def test_unrelated_followup_clears_pending_choices(monkeypatch):
+    _patch_sources(
+        monkeypatch,
+        start=[
+            oa.Path("/start/Python 3.13.lnk"),
+            oa.Path("/start/Python 3.11.lnk"),
+        ],
+        uwp=[("WhatsApp", "5319275A.WhatsAppDesktop_cv1g1gvanyjgm!App")],
+    )
+    spawned = []
+    monkeypatch.setattr(oa.subprocess, "Popen", lambda cmd, **k: spawned.append(cmd))
+
+    ask = oa.open_app({"app_name": "python"})
+    assert "multiple apps" in ask.lower()
+
+    res = oa.open_app({"app_name": "whatsapp"})
+    assert "successfully" in res
+    assert spawned == [["explorer.exe", "shell:AppsFolder\\5319275A.WhatsAppDesktop_cv1g1gvanyjgm!App"]]
+
+
+def test_exact_match_and_auto_select_skip_disambiguation(monkeypatch):
+    _patch_sources(
+        monkeypatch,
+        start=[
+            oa.Path("/start/WhatsApp Beta.lnk"),
+        ],
+        uwp=[("WhatsApp", "5319275A.WhatsAppDesktop_cv1g1gvanyjgm!App")],
+    )
+    spawned = []
+    monkeypatch.setattr(oa.subprocess, "Popen", lambda cmd, **k: spawned.append(cmd))
+    res = oa.open_app({"app_name": "WhatsApp"})
+    assert "successfully" in res
+    assert spawned == [["explorer.exe", "shell:AppsFolder\\5319275A.WhatsAppDesktop_cv1g1gvanyjgm!App"]]
+
