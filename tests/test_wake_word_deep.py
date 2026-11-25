@@ -5,7 +5,6 @@ No microphone, PortAudio, speaker or real model is ever used.
 
 from __future__ import annotations
 
-import inspect
 import threading
 import time
 from types import SimpleNamespace
@@ -163,7 +162,10 @@ def test_missing_custom_model_has_record_train_guidance(monkeypatch, tmp_path, c
     monkeypatch.setattr(ww, "MODELS_DIR", tmp_path)
     monkeypatch.setattr(ww, "_get_oww", lambda: _Model)
     assert ww.WakeWordService().load() is False
-    assert "record the wake word" in capsys.readouterr().out
+    out = capsys.readouterr().out
+    # The voice-first hint now points at the one-step guided setup while still
+    # naming the individual record/train phrasing users already know.
+    assert "open wake word setup" in out and "set up the wake word" in out
 
 
 def test_no_openwakeword_is_graceful(monkeypatch):
@@ -309,7 +311,7 @@ def test_start_stop_are_thread_safe_idempotent(monkeypatch):
     ({"action": "resume"}, "resumed"),
     ({"action": "devices"}, "input devices"),
     ({"action": "diagnostics"}, '"phrase"'),
-    ({"action": "test"}, '"threshold"'),
+    ({"action": "test"}, "trained wake-word model"),
     ({"action": "status"}, "Wake word is"),
     ({"action": "set_cooldown", "cooldown": 4}, "4.0 seconds"),
     ({"action": "nonsense"}, "Unknown wake word action"),

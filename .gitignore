@@ -19,6 +19,7 @@ memory/*.json
 models/hey_jarvis*
 models/hey_friday*
 models/training/
+models/wake_word.json
 
 # Electron renderer — dependencies and build output are never committed
 ui/app/node_modules/
