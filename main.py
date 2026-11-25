@@ -2008,6 +2008,10 @@ class FridayLive:
         face_verify = bool(args.pop("face_verify", False))
 
         high_risk = classify(name, args) == Risk.HIGH
+        if confirm and high_risk and not confirm_token and not self._has_human_confirmation(confirm_token):
+            # First-call confirm=True with no token and no prior human approval:
+            # treat as an unconfirmed first request so the pending token & UI card are created.
+            confirm = False
         if confirm and high_risk and not self._has_human_confirmation(confirm_token):
             reason = "no matching human approval (or missing confirmation token)"
             print(f"[FRIDAY] ⛔ {name} confirmation rejected: {reason}")
