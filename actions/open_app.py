@@ -510,7 +510,7 @@ def _rank_candidates_with_tiers(query: str, entries: list[dict]) -> list[tuple[i
     alias_norm = _norm_text(_normalize(q_raw))
 
     allow_admin_tools = any(term in q_norm for term in _OPT_IN_ADMIN_TOOLS)
-    tiers: tuple[list[dict], list[dict], list[dict], list[dict], list[dict]] = ([], [], [], [], [])
+    tiers: tuple[list[dict], ...] = tuple([] for _ in range(7))
 
     for entry in entries:
         prep = entry if "_norm" in entry else _prepare_entry(entry)
@@ -524,23 +524,29 @@ def _rank_candidates_with_tiers(query: str, entries: list[dict]) -> list[tuple[i
         cand_acronym = prep["_acronym"]
         aumid_prefix = _norm_text(str(prep.get("aumid") or "").split("!")[0])
 
-        # Tier 1: Exact name or curated alias
-        if cand_norm == q_norm or (alias_norm and cand_norm == alias_norm):
+        # Tier 1: Exact normalized match on literal query
+        if cand_norm == q_norm:
             tiers[0].append(prep)
-        # Tier 2: Whole-word / token exact or acronym match
+        # Tier 2: Prefix whole-word match (e.g. "Chrome Canary" for "chrome")
+        elif cand_norm.startswith(q_norm + " "):
+            tiers[1].append(prep)
+        # Tier 3: Curated alias exact match
+        elif alias_norm and cand_norm == alias_norm:
+            tiers[2].append(prep)
+        # Tier 4: Non-prefix whole-word / token exact or acronym match
         elif (q_tokens and all(t in cand_tokens for t in q_tokens)) or (
             cand_acronym and q_norm == cand_acronym
         ):
-            tiers[1].append(prep)
-        # Tier 3: Prefix
-        elif len(q_norm) >= 3 and (cand_norm.startswith(q_norm) or (aumid_prefix and aumid_prefix.startswith(q_norm))):
-            tiers[2].append(prep)
-        # Tier 4: Substring
-        elif len(q_norm) >= 3 and (q_norm in cand_norm or (aumid_prefix and q_norm in aumid_prefix)):
             tiers[3].append(prep)
-        # Tier 5: Conservative fuzzy
-        elif len(q_norm) >= 3 and difflib.SequenceMatcher(None, q_norm, cand_norm).ratio() >= 0.80:
+        # Tier 5: Prefix substring
+        elif len(q_norm) >= 3 and (cand_norm.startswith(q_norm) or (aumid_prefix and aumid_prefix.startswith(q_norm))):
             tiers[4].append(prep)
+        # Tier 6: Interior substring
+        elif len(q_norm) >= 3 and (q_norm in cand_norm or (aumid_prefix and q_norm in aumid_prefix)):
+            tiers[5].append(prep)
+        # Tier 7: Conservative fuzzy
+        elif len(q_norm) >= 3 and difflib.SequenceMatcher(None, q_norm, cand_norm).ratio() >= 0.80:
+            tiers[6].append(prep)
 
     ranked: list[tuple[int, dict]] = []
     for tier_idx, bucket in enumerate(tiers, start=1):

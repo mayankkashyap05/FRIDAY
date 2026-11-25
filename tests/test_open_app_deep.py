@@ -62,13 +62,14 @@ def _patch_sources(monkeypatch, start=None, app_paths=None, uninstall=None, uwp=
 def test_index_merges_all_four_sources_and_deduplicates(monkeypatch):
     _patch_sources(
         monkeypatch,
-        start=[oa.Path("/start/Chrome.lnk")],
+        start=[oa.Path("/start/Notepad.lnk"), oa.Path("/start/Chrome.lnk")],
         app_paths=[("chrome", "C:/Program Files/Chrome/chrome.exe")],
-        uninstall=[("Google Chrome", "C:/Program Files/Chrome")],
+        uninstall=[("VLC", "C:/Program Files/VLC/vlc.exe")],
         uwp=[("WhatsApp", "9NNE93V5CM4T")],
     )
     entries = oa._build_windows_app_index(refresh=True)
     assert {e["source"] for e in entries} == {"start_menu", "app_paths", "uninstall", "uwp"}
+    assert sum(1 for e in entries if e["name"].lower() == "chrome") == 1
     assert any(e.get("aumid") == "9NNE93V5CM4T" for e in entries)
 
 
@@ -152,7 +153,15 @@ def test_ranking_exact_prefix_substring_fuzzy(monkeypatch):
 
 
 def test_uwp_launch_uses_shell_apps_folder(monkeypatch):
+    spawned = []
+    monkeypatch.setattr(oa.subprocess, "Popen", lambda cmd, **k: spawned.append(cmd))
+    assert oa._launch_windows("WhatsApp", aumid="9NNE93V5CM4T") is True
+    assert spawned == [["explorer.exe", "shell:AppsFolder\\9NNE93V5CM4T"]]
+
     opened = []
+    def _fail_popen(*a, **k):
+        raise OSError("explorer unavailable")
+    monkeypatch.setattr(oa.subprocess, "Popen", _fail_popen)
     monkeypatch.setattr(oa.os, "startfile", opened.append, raising=False)
     assert oa._launch_windows("WhatsApp", aumid="9NNE93V5CM4T") is True
     assert opened == ["shell:AppsFolder\\9NNE93V5CM4T"]
