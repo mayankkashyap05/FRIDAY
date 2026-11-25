@@ -8,9 +8,12 @@
 # - Cross-platform: Windows / macOS / Linux
 # - pyautogui + platform-specific API'ler
 
+import json
+import re
 import time
 
 from config.models import MODEL_FLASH_LITE
+from api_keys import generate_with_retry
 import subprocess
 import sys
 import platform
@@ -48,49 +51,132 @@ def get_base_dir() -> Path:
 BASE_DIR        = get_base_dir()
 API_CONFIG_PATH = BASE_DIR / "config" / "api_keys.json"
 
-import json
 def _get_api_key() -> str:
     from api_keys import next_key
     return next_key()
 
 
-def volume_up():
-    if _OS == "Windows":
-        for _ in range(5): _pg().press("volumeup")
-    elif _OS == "Darwin":
-        subprocess.run(["osascript", "-e", "set volume output volume (output volume of (get volume settings) + 10)"])
-    else:
-        subprocess.run(["pactl", "set-sink-volume", "@DEFAULT_SINK@", "+10%"])
+def _clamp(value, low: int, high: int, default: int = 0) -> int:
+    try:
+        return max(low, min(high, int(value)))
+    except (TypeError, ValueError):
+        return default
 
-def volume_down():
-    if _OS == "Windows":
-        for _ in range(5): _pg().press("volumedown")
-    elif _OS == "Darwin":
-        subprocess.run(["osascript", "-e", "set volume output volume (output volume of (get volume settings) - 10)"])
-    else:
-        subprocess.run(["pactl", "set-sink-volume", "@DEFAULT_SINK@", "-10%"])
 
-def volume_mute():
-    if _OS == "Windows":
-        _pg().press("volumemute")
-    elif _OS == "Darwin":
-        subprocess.run(["osascript", "-e", "set volume with output muted"])
-    else:
-        subprocess.run(["pactl", "set-sink-mute", "@DEFAULT_SINK@", "toggle"])
+def _as_bool(value, default: bool = False) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return value.strip().lower() in ("true", "yes", "1", "on")
+    return bool(value) if value is not None else default
 
-def volume_set(value: int):
-    value = max(0, min(100, value))
+
+def _master_volume():
+    """Return pycaw's *scalar* master volume interface (0.0..1.0 scale)."""
+    from ctypes import cast, POINTER
+    from comtypes import CLSCTX_ALL
+    from pycaw.pycaw import AudioUtilities, IAudioEndpointVolume
+    device = AudioUtilities.GetSpeakers()
+    interface = device.Activate(IAudioEndpointVolume._iid_, CLSCTX_ALL, None)
+    return cast(interface, POINTER(IAudioEndpointVolume))
+
+
+def _set_master_mute(muted: bool):
     if _OS == "Windows":
         try:
-            from ctypes import cast, POINTER
-            from comtypes import CLSCTX_ALL
-            from pycaw.pycaw import AudioUtilities, IAudioEndpointVolume
-            import math
-            devices   = AudioUtilities.GetSpeakers()
-            interface = devices.Activate(IAudioEndpointVolume._iid_, CLSCTX_ALL, None)
-            vol       = cast(interface, POINTER(IAudioEndpointVolume))
-            vol_db    = -65.25 if value == 0 else max(-65.25, 20 * math.log10(value / 100))
-            vol.SetMasterVolumeLevel(vol_db, None)
+            _master_volume().SetMute(1 if muted else 0, None)
+        except Exception as e:
+            print(f"[Settings] ⚠️ pycaw mute failed: {e}")
+    elif _OS == "Darwin":
+        subprocess.run(["osascript", "-e",
+                        "set volume with output muted" if muted else "set volume without output muted"])
+    else:
+        subprocess.run(["pactl", "set-sink-mute", "@DEFAULT_SINK@",
+                        "1" if muted else "0"])
+
+
+def volume_get() -> int | None:
+    """Current master volume as an integer 0..100 (None when unavailable)."""
+    if _OS == "Windows":
+        try:
+            return int(round(_master_volume().GetMasterVolumeLevelScalar() * 100))
+        except Exception as e:
+            print(f"[Settings] ⚠️ Volume read failed: {e}")
+            return None
+    if _OS == "Darwin":
+        try:
+            out = subprocess.run(
+                ["osascript", "-e", "output volume of (get volume settings)"],
+                capture_output=True, text=True, timeout=10)
+            return _clamp(out.stdout.strip(), 0, 100, 0)
+        except Exception:
+            return None
+    try:
+        out = subprocess.run(
+            ["pactl", "get-sink-volume", "@DEFAULT_SINK@"],
+            capture_output=True, text=True, timeout=10)
+        match = re.search(r"(\d+)\s*%", out.stdout)
+        return _clamp(match.group(1), 0, 100, 0) if match else None
+    except Exception:
+        return None
+
+
+def volume_up(step: int = 10):
+    """Increase volume by an exact number of percentage points."""
+    step = _clamp(step, 1, 100, 10)
+    if _OS == "Windows":
+        current = volume_get()
+        if current is not None:
+            volume_set(min(100, current + step))
+            return f"Volume raised to {min(100, current + step)}%."
+        _pg().press("volumeup")
+        return
+    if _OS == "Darwin":
+        subprocess.run(["osascript", "-e",
+                        f"set volume output volume (output volume of (get volume settings) + {step})"])
+        return
+    subprocess.run(["pactl", "set-sink-volume", "@DEFAULT_SINK@", f"+{step}%"])
+
+
+def volume_down(step: int = 10):
+    """Decrease volume by an exact number of percentage points."""
+    step = _clamp(step, 1, 100, 10)
+    if _OS == "Windows":
+        current = volume_get()
+        if current is not None:
+            volume_set(max(0, current - step))
+            return f"Volume lowered to {max(0, current - step)}%."
+        _pg().press("volumedown")
+        return
+    if _OS == "Darwin":
+        subprocess.run(["osascript", "-e",
+                        f"set volume output volume (output volume of (get volume settings) - {step})"])
+        return
+    subprocess.run(["pactl", "set-sink-volume", "@DEFAULT_SINK@", f"-{step}%"])
+
+
+def mute():       _set_master_mute(True)
+def unmute():     _set_master_mute(False)
+def toggle_mute():
+    """Toggle based on the real mute state, not blind key presses."""
+    if _OS == "Windows":
+        try:
+            vol = _master_volume()
+            is_muted = bool(vol.GetMute())
+            vol.SetMute(0 if is_muted else 1, None)
+            return
+        except Exception:
+            pass
+    _pg().press("volumemute")
+volume_mute = toggle_mute
+
+
+def volume_set(value: int):
+    """Set master volume using pycaw's *scalar* API (0.0 == true silence)."""
+    value = _clamp(value, 0, 100, 0)
+    if _OS == "Windows":
+        try:
+            _master_volume().SetMasterVolumeLevelScalar(value / 100.0, None)
             print(f"[Settings] 🔊 Volume → {value}%")
             return
         except Exception as e:
@@ -115,6 +201,26 @@ def _win_brightness_get() -> int:
         print(f"[Settings] ⚠️ Brightness get failed: {e}")
         return -1
 
+def brightness_get() -> int:
+    """Read current display brightness (0-100); -1 when unavailable."""
+    if _OS == "Windows":
+        return _win_brightness_get()
+    if _OS == "Darwin":
+        try:
+            out = subprocess.run(
+                ["osascript", "-e", "brightness of (get display settings)"],
+                capture_output=True, text=True, timeout=10)
+            return _clamp(float(out.stdout.strip()) * 100, 0, 100, -1)
+        except Exception:
+            return -1
+    try:
+        out = subprocess.run(["brightnessctl", "get"], capture_output=True, text=True, timeout=10)
+        match = re.search(r"(\d+)\s*%", out.stdout)
+        return _clamp(match.group(1), 0, 100, -1) if match else -1
+    except Exception:
+        return -1
+
+
 def _win_brightness_set(percent: int) -> bool:
     percent = max(0, min(100, int(percent)))
     try:
@@ -128,35 +234,78 @@ def _win_brightness_set(percent: int) -> bool:
         print(f"[Settings] ⚠️ Brightness set failed: {e}")
         return False
 
+def _matching_audio_sessions(app_name: str) -> list[tuple[object, str]]:
+    """All running audio sessions whose process name matches ``app_name``."""
+    from pycaw.pycaw import AudioUtilities
+    needle = str(app_name or "").strip().lower()
+    found = []
+    for session in AudioUtilities.GetAllSessions():
+        try:
+            name = (session.Process and session.Process.name() or "").lower()
+        except Exception:
+            name = ""
+        if needle and needle in name:
+            found.append((session, name))
+    return found
+
+
+def list_audio_apps() -> str:
+    """List processes with active audio sessions (Windows)."""
+    if _OS != "Windows":
+        return "Per-app volume is only supported on Windows."
+    try:
+        from pycaw.pycaw import AudioUtilities
+        names = []
+        for session in AudioUtilities.GetAllSessions():
+            try:
+                name = session.Process and session.Process.name() or ""
+            except Exception:
+                name = ""
+            if name and name.lower() not in names:
+                names.append(name.lower())
+        return ("Audio apps: " + ", ".join(sorted(names))) if names else "No audio apps detected."
+    except Exception as e:
+        return f"Could not list audio apps: {e}"
+
+
 def app_volume(app_name: str, level: int | None = None) -> str:
-    """Per-app volume control on Windows. level=None → mute. level=0-100 → set %."""
+    """Control *all* sessions of an app: level=None mutes, 0..100 sets volume."""
     if _OS != "Windows":
         return "Per-app volume is only supported on Windows."
     if not app_name:
         return "No app name provided, sir."
     try:
-        from pycaw.pycaw import AudioUtilities, IAudioSessionControl2
-        from comtypes import CLSCTX_ALL
-        sessions = AudioUtilities.GetAllSessions()
-        target = None
-        for sess in sessions:
-            try:
-                name = sess.Process and sess.Process.name().lower() or ""
-            except Exception:
-                name = ""
-            if app_name.lower() in name:
-                target = sess
-                break
-        if not target:
+        sessions = _matching_audio_sessions(app_name)
+        if not sessions:
             return f"Could not find app '{app_name}' playing audio, sir."
+        for session, _ in sessions:
+            simple = session.SimpleAudioVolume
+            if level is None:
+                simple.SetMute(1, None)
+            else:
+                pct = _clamp(level, 0, 100, 0)
+                simple.SetMasterVolume(pct / 100.0, None)
+                simple.SetMute(0, None)
         if level is None:
-            target.SimpleAudioVolume.SetMute(1, None)
-            return f"Muted {app_name}, sir."
-        target.SimpleAudioVolume.SetMasterVolume(level / 100.0, None)
-        target.SimpleAudioVolume.SetMute(0, None)
-        return f"{app_name} volume set to {level}%."
+            return f"Muted {app_name} ({len(sessions)} session(s)), sir."
+        return f"{app_name} volume set to {_clamp(level, 0, 100, 0)}% ({len(sessions)} session(s))."
     except Exception as e:
         return f"App volume control failed: {e}"
+
+
+def unmute_app(app_name: str) -> str:
+    """Unmute all audio sessions of an app without changing its volume."""
+    if _OS != "Windows":
+        return "Per-app volume is only supported on Windows."
+    try:
+        sessions = _matching_audio_sessions(app_name)
+        if not sessions:
+            return f"Could not find app '{app_name}' playing audio, sir."
+        for session, _ in sessions:
+            session.SimpleAudioVolume.SetMute(0, None)
+        return f"Unmuted {app_name} ({len(sessions)} session(s)), sir."
+    except Exception as e:
+        return f"App unmute failed: {e}"
 
 def media_play_pause():     _pg().press("playpause")
 def media_next():           _pg().press("nexttrack")
@@ -320,13 +469,15 @@ def find_on_page():
     else:               _pg().hotkey("ctrl", "f")
 
 def reload_page_n(n: int):
-    for _ in range(n):
+    count = _clamp(n, 1, 10, 1)
+    for _ in range(count):
         refresh_page()
         time.sleep(0.8)
+    return f"Reloaded {count} time(s)."
 
 
-def scroll_up(amount: int = 500):   _pg().scroll(amount)
-def scroll_down(amount: int = 500): _pg().scroll(-amount)
+def scroll_up(amount: int = 500):   _pg().scroll(_clamp(amount, 1, 5000, 500))
+def scroll_down(amount: int = 500): _pg().scroll(-_clamp(amount, 1, 5000, 500))
 def scroll_top():    _pg().hotkey("ctrl", "home") if _OS != "Darwin" else _pg().hotkey("command", "up")
 def scroll_bottom(): _pg().hotkey("ctrl", "end")  if _OS != "Darwin" else _pg().hotkey("command", "down")
 def page_up():       _pg().press("pageup")
@@ -366,12 +517,25 @@ def press_escape(): _pg().press("escape")
 def press_key(key: str): _pg().press(key)
 
 def type_text(text: str, press_enter_after: bool = False):
+    """Type into the focused field; restore the clipboard after any paste."""
     if not text:
         return
     if _PYPERCLIP:
-        pyperclip.copy(text)
-        time.sleep(0.1)
-        paste()
+        previous = None
+        try:
+            previous = pyperclip.paste()
+        except Exception:
+            previous = None
+        try:
+            pyperclip.copy(str(text))
+            time.sleep(0.05)
+            paste()
+        finally:
+            if previous is not None:
+                try:
+                    pyperclip.copy(previous)
+                except Exception:
+                    pass
     else:
         _pg().write(str(text), interval=0.03)
     if press_enter_after:
@@ -445,6 +609,62 @@ def shutdown_computer():
     else:
         subprocess.run(["sudo", "shutdown", "-h", "now"])
 
+def cancel_shutdown():
+    """Abort a pending Windows shutdown/restart (``shutdown /a``)."""
+    if _OS == "Windows":
+        result = subprocess.run(["shutdown", "/a"], capture_output=True, text=True)
+        return "Pending shutdown cancelled." if result.returncode == 0 else "No pending shutdown to cancel."
+    if _OS == "Darwin":
+        subprocess.run(["killall", "shutdown"])
+    else:
+        subprocess.run(["pkill", "-f", "shutdown"])
+    return "Shutdown cancellation requested."
+
+
+def sleep_pc():
+    """Suspend the machine to RAM."""
+    if _OS == "Windows":
+        # rundll32 is a normal executable; no shell involved.
+        subprocess.run(["rundll32.exe", "powrprof.dll,SetSuspendState", "0,1,0"])
+    elif _OS == "Darwin":
+        subprocess.run(["pmset", "sleepnow"])
+    else:
+        subprocess.run(["systemctl", "suspend"])
+    return "Putting the computer to sleep."
+
+
+def hibernate():
+    """Suspend the machine to disk."""
+    if _OS == "Windows":
+        subprocess.run(["shutdown", "/h"])
+    elif _OS == "Darwin":
+        subprocess.run(["pmset", "sleepnow"])
+    else:
+        subprocess.run(["systemctl", "hibernate"])
+    return "Hibernating the computer."
+
+
+def _win_broadcast_setting_change(section: str = "ImmersiveColorSet") -> bool:
+    """Notify running Windows apps that a user setting changed."""
+    if _OS != "Windows":
+        return False
+    try:
+        import ctypes
+        from ctypes import wintypes
+        user32 = ctypes.windll.user32
+        user32.SendMessageTimeoutW.argtypes = [
+            wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM,
+            wintypes.UINT, wintypes.UINT, ctypes.POINTER(wintypes.DWORD)]
+        result = wintypes.DWORD()
+        user32.SendMessageTimeoutW(
+            0xFFFF, 0x001A, 0, ctypes.c_wchar_p(section), 0x0002, 3000,
+            ctypes.byref(result))
+        return True
+    except Exception as e:
+        print(f"[Settings] ⚠️ Setting broadcast failed: {e}")
+        return False
+
+
 def _win_dark_mode(set_dark: bool) -> bool:
     value = "0" if set_dark else "1"
     cmd = (
@@ -458,6 +678,8 @@ def _win_dark_mode(set_dark: bool) -> bool:
             ["powershell", "-NoProfile", "-Command", cmd],
             capture_output=True, timeout=15
         )
+        # Registry writes alone don't repaint already-running apps.
+        _win_broadcast_setting_change("ImmersiveColorSet")
         return True
     except Exception as e:
         print(f"[Settings] ⚠️ Dark mode failed: {e}")
@@ -492,6 +714,35 @@ def dark_mode():
         return
     _pg().hotkey("win", "a")
     time.sleep(0.3)
+
+
+def dark_mode_on():
+    """Switch explicitly to dark mode."""
+    if _OS == "Windows":
+        _win_dark_mode(True)
+    elif _OS == "Darwin":
+        subprocess.run(["osascript", "-e",
+            'tell app "System Events" to tell appearance preferences to set dark mode to true'])
+    else:
+        subprocess.run(["gsettings", "set", "org.gnome.desktop.interface", "color-scheme", "prefer-dark"])
+    return "Dark mode enabled."
+
+
+def light_mode_on():
+    """Switch explicitly to light mode."""
+    if _OS == "Windows":
+        _win_dark_mode(False)
+    elif _OS == "Darwin":
+        subprocess.run(["osascript", "-e",
+            'tell app "System Events" to tell appearance preferences to set dark mode to false'])
+    else:
+        subprocess.run(["gsettings", "set", "org.gnome.desktop.interface", "color-scheme", "prefer-light"])
+    return "Light mode enabled."
+
+
+light_mode = light_mode_on
+dark_mode_status = _win_dark_mode_current
+
 
 def _win_wifi_interface() -> str:
     try:
@@ -577,8 +828,10 @@ def wifi_status() -> str:
 ACTION_MAP = {
     "volume_up":               volume_up,
     "volume_down":             volume_down,
-    "mute":                    volume_mute,
-    "unmute":                  volume_mute,
+    "volume_get":              volume_get,
+    "get_volume":              volume_get,
+    "mute":                    mute,
+    "unmute":                  unmute,
     "volume_increase":         volume_up,
     "volume_decrease":         volume_down,
     "increase_volume":         volume_up,
@@ -599,6 +852,8 @@ ACTION_MAP = {
     "brighten_screen":         brightness_up,
     "brightness_set":          brightness_set,
     "set_brightness":          brightness_set,
+    "brightness_get":          brightness_get,
+    "get_brightness":          brightness_get,
     "sleep_display":           sleep_display,
     "turn_off_screen":         sleep_display,
     "screen_off":              sleep_display,
@@ -663,9 +918,22 @@ ACTION_MAP = {
     "shut_down":               shutdown_computer,
     "power_off":               shutdown_computer,
     "turn_off_computer":       shutdown_computer,
+    "cancel_shutdown":         cancel_shutdown,
+    "abort_shutdown":          cancel_shutdown,
+    "cancel_restart":          cancel_shutdown,
+    "sleep_pc":                sleep_pc,
+    "sleep_computer":          sleep_pc,
+    "hibernate":               hibernate,
+    "hibernate_pc":            hibernate,
     "dark_mode":               dark_mode,
     "toggle_dark_mode":        dark_mode,
     "night_mode":              dark_mode,
+    "dark_mode_on":            dark_mode_on,
+    "enable_dark_mode":        dark_mode_on,
+    "light_mode":              light_mode_on,
+    "light_mode_on":           light_mode_on,
+    "enable_light_mode":       light_mode_on,
+    "dark_mode_status":        dark_mode_status,
     "toggle_wifi":             toggle_wifi,
     "wifi":                    toggle_wifi,
     "wifi_toggle":             toggle_wifi,
@@ -727,6 +995,8 @@ ACTION_MAP = {
     "back_track":              media_prev,
     "stop_music":              media_stop,
     "media_stop":              media_stop,
+    "list_audio_apps":         list_audio_apps,
+    "audio_apps":              list_audio_apps,
 }
 
 def _detect_action(description: str) -> dict:
@@ -735,11 +1005,13 @@ def _detect_action(description: str) -> dict:
     Herhangi bir dilde çalışır.
     Döner: {"action": str, "value": optional}
     """
-    import google.generativeai as genai
-    genai.configure(api_key=_get_api_key())
-    model = genai.GenerativeModel(MODEL_FLASH_LITE)
-
-    available = ", ".join(sorted(ACTION_MAP.keys())) + ", volume_set, brightness_set, app_volume, mute_app, type_text, write_on_screen, reload_n, press_key"
+    available = (
+        ", ".join(sorted(ACTION_MAP.keys()))
+        + ", volume_set, volume_get, brightness_set, brightness_get, "
+          "app_volume, unmute_app, list_audio_apps, mute_app, type_text, "
+          "write_on_screen, reload_n, press_key, sleep_pc, hibernate, "
+          "cancel_shutdown, dark_mode_on, light_mode_on"
+    )
 
     prompt = f"""The user wants to control their computer. Detect their intent.
 
@@ -769,9 +1041,10 @@ IMPORTANT:
 - Return ONLY the JSON object, no explanation, no markdown."""
 
     try:
-        response = model.generate_content(prompt)
-        text = response.text.strip()
-        text = __import__("re").sub(r"```(?:json)?", "", text).strip().rstrip("`").strip()
+        response = generate_with_retry(
+            MODEL_FLASH_LITE, prompt, config={"temperature": 0})
+        text = (getattr(response, "text", "") or "").strip()
+        text = re.sub(r"```(?:json)?", "", text).strip().rstrip("`").strip()
         return json.loads(text)
     except Exception as e:
         print(f"[Settings] ⚠️ Intent detection failed: {e}")
@@ -794,9 +1067,9 @@ def computer_settings(
     if _pg() is None:
         return "pyautogui is not installed. Run: pip install pyautogui"
 
-    params      = parameters or {}
-    raw_action  = params.get("action", "").strip()
-    description = params.get("description", "").strip()
+    params      = dict(parameters) if isinstance(parameters, dict) else {}
+    raw_action  = str(params.get("action", "") or "").strip()
+    description = str(params.get("description", "") or "").strip()
     value       = params.get("value", None)
 
     if not raw_action and description:
@@ -833,17 +1106,30 @@ def computer_settings(
         except Exception as e:
             return f"Could not set brightness: {e}"
 
+    if action in ("volume_get", "get_volume"):
+        current = volume_get()
+        return f"Volume is {current}%." if current is not None else "Volume level unavailable."
+
+    if action in ("brightness_get", "get_brightness"):
+        current = brightness_get()
+        return f"Brightness is {current}%." if current >= 0 else "Brightness level unavailable."
+
+    if action in ("list_audio_apps", "audio_apps"):
+        return list_audio_apps()
+
     if action == "wifi_status":
         return wifi_status()
 
-    if action in ("app_volume", "mute_app", "set_app_volume"):
+    if action in ("app_volume", "mute_app", "set_app_volume", "unmute_app"):
         app_name = str(params.get("app_name") or params.get("value") or value or "").strip()
         if not app_name:
             return "Which app's volume, sir?"
         if action == "mute_app":
             return app_volume(app_name, None)
+        if action == "unmute_app":
+            return unmute_app(app_name)
         try:
-            return app_volume(app_name, int(value) if value is not None else None)
+            return app_volume(app_name, int(value) if value not in (None, "") else None)
         except Exception as e:
             return f"App volume failed: {e}"
 
@@ -854,7 +1140,7 @@ def computer_settings(
         text = str(value or params.get("text", ""))
         if not text:
             return "No text provided to type, sir."
-        enter_after = bool(params.get("press_enter", False))
+        enter_after = _as_bool(params.get("press_enter"), False)
         type_text(text, press_enter_after=enter_after)
         return f"Typed: {text[:60]}"
 

@@ -440,7 +440,10 @@ TOOL_DECLARATIONS = [
             "typing text on screen, closing apps, fullscreen, dark mode, WiFi, restart, shutdown, "
             "scrolling, tab management, zoom, screenshots, lock screen, refresh/reload page, "
             "media playback (play/pause/next/previous), and per-app volume "
-            "(e.g. 'mute Discord', 'lower Spotify only'). "
+            "(e.g. 'mute Discord', 'lower Spotify only'); exact volume_get / "
+            "brightness_get queries, explicit dark_mode_on / light_mode_on, "
+            "toggle_mute / unmute_app / list_audio_apps, cancel_shutdown, "
+            "sleep_pc and hibernate. "
             "Use for ANY single computer control command. NEVER route to agent_task."
         ),
         "parameters": {
@@ -528,10 +531,14 @@ TOOL_DECLARATIONS = [
         "parameters": {
             "type": "OBJECT",
             "properties": {
-                "action": {"type": "STRING", "description": "wallpaper | wallpaper_url | organize | clean | list | stats | task"},
+                "action": {"type": "STRING", "description": "wallpaper | wallpaper_url | current_wallpaper | undo_wallpaper | previous_wallpaper | organize | clean | undo_organize | undo_clean | list | stats | task"},
                 "path":   {"type": "STRING", "description": "Image path for wallpaper"},
                 "url":    {"type": "STRING", "description": "Image URL for wallpaper_url"},
                 "mode":   {"type": "STRING", "description": "by_type or by_date for organize"},
+                "sort_by": {"type": "STRING", "description": "name | size | date | type for list"},
+                "limit":   {"type": "INTEGER", "description": "Max entries for list"},
+                "dry_run": {"type": "BOOLEAN", "description": "Preview organize/clean without moving files"},
+                "id":      {"type": "STRING", "description": "Undo manifest id"},
                 "task":   {"type": "STRING", "description": "Natural language desktop task"},
             },
             "required": ["action"]
@@ -561,12 +568,15 @@ TOOL_DECLARATIONS = [
         "parameters": {
             "type": "OBJECT",
             "properties": {
+                "action":       {"type": "STRING", "description": "build | list_projects | run_project | fix_project"},
                 "description":  {"type": "STRING", "description": "What the project should do"},
                 "language":     {"type": "STRING", "description": "Programming language (default: python)"},
                 "project_name": {"type": "STRING", "description": "Optional project folder name"},
                 "timeout":      {"type": "INTEGER", "description": "Run timeout in seconds (default: 30)"},
+                "open_editor":  {"type": "BOOLEAN", "description": "Open the project in VS Code (default true)"},
+                "run_tests":    {"type": "BOOLEAN", "description": "Allow python -m pytest/unittest run commands"},
             },
-            "required": ["description"]
+            "required": []
         }
     },
     {
@@ -591,7 +601,7 @@ TOOL_DECLARATIONS = [
         "parameters": {
             "type": "OBJECT",
             "properties": {
-                "action":      {"type": "STRING", "description": "type | smart_type | click | double_click | right_click | hotkey | press | scroll | move | copy | paste | screenshot | wait | clear_field | focus_window | screen_find | screen_click | random_data | user_data"},
+                "action":      {"type": "STRING", "description": "type | smart_type | click | double_click | triple_click | middle_click | right_click | hotkey | press | scroll | move | hover | mouse_pos | drag | copy | paste | screenshot | wait | clear_field | focus_window | active_window | window_action | screen_find | screen_click | random_data | user_data"},
                 "text":        {"type": "STRING", "description": "Text to type or paste"},
                 "x":           {"type": "INTEGER", "description": "X coordinate"},
                 "y":           {"type": "INTEGER", "description": "Y coordinate"},
@@ -605,6 +615,9 @@ TOOL_DECLARATIONS = [
                 "type":        {"type": "STRING",  "description": "Data type for random_data"},
                 "field":       {"type": "STRING",  "description": "Field for user_data: name|email|city"},
                 "clear_first": {"type": "BOOLEAN", "description": "Clear field before typing (default: true)"},
+                "duration":    {"type": "NUMBER",  "description": "Move/drag duration in seconds (0-5)"},
+                "locale":      {"type": "STRING",  "description": "Optional locale for random_data, e.g. IN"},
+                "mode":        {"type": "STRING",  "description": "window_action: minimize|maximize|restore|close|focus"},
                 "path":        {"type": "STRING",  "description": "Save path for screenshot"},
             },
             "required": ["action"]
@@ -929,7 +942,10 @@ TOOL_DECLARATIONS = [
         "parameters": {
             "type": "OBJECT",
             "properties": {
-                "city": {"type": "STRING", "description": "Optional city for weather (defaults to saved memory)"}
+                "city": {"type": "STRING", "description": "Optional city for weather (defaults to saved memory)"},
+                "sections": {"type": "STRING", "description": "Optional comma-separated filter: weather,calendar,email,reminders,tasks,system,memory,news"},
+                "news": {"type": "BOOLEAN", "description": "Opt-in news headlines section"},
+                "detailed": {"type": "BOOLEAN", "description": "Return the detailed digest instead of short spoken text"}
             },
             "required": []
         }
@@ -1228,7 +1244,10 @@ TOOL_DECLARATIONS = [
         "parameters": {
             "type": "OBJECT",
             "properties": {
-                "source": {"type": "STRING", "description": "File name, full path, or URL"}
+                "source": {"type": "STRING", "description": "File name, full path, or URL"},
+                "action": {"type": "STRING", "description": "preview | summary | search | stats"},
+                "query":  {"type": "STRING", "description": "Search term for action=search"},
+                "fresh":  {"type": "BOOLEAN", "description": "Bypass the extraction cache"}
             },
             "required": ["source"]
         }
