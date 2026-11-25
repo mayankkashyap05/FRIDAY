@@ -1,30 +1,51 @@
 # actions/flight_finder.py
-# Friday — Flight Finder
+# Friday — Flight Finder: Google Flights search + multimodal-Gemini extraction.
 #
-# Searches for flights using Google Flights via browser_control.
-# Results are spoken by Friday. Optionally saved to Notepad or opened in browser.
-#
-# Flow:
-#   1. Parse origin, destination, date, passengers from parameters
-#   2. Open Google Flights via browser_control
-#   3. Fill in search fields
-#   4. Scrape results via get_text
-#   5. Parse with Gemini → structured flight data
-#   6. Speak top results
-#   7. Optionally save to Notepad or keep browser open
-#
-# Cross-platform: Windows, macOS, Linux
-# No API key required — Google Flights is free to access
+# Dates are parsed deterministically first; only ambiguous phrases are sent to
+# the cheap model. Result extraction uses the full flash model through the
+# supported api_keys.generate_with_retry path (no deprecated SDK).
 
 import json
-import re
-import sys
-
-from config.models import MODEL_FLASH_LITE
-import subprocess
 import platform
+import re
+import subprocess
+import sys
 from datetime import datetime, timedelta
 from pathlib import Path
+from urllib.parse import quote_plus
+
+from api_keys import generate_with_retry
+from config.models import MODEL_FLASH, MODEL_FLASH_LITE
+
+# Common city → IATA aliases, so "Bengaluru" and "BLR" behave identically.
+_IATA = {
+    "delhi": "DEL", "new delhi": "DEL", "mumbai": "BOM", "bombay": "BOM",
+    "bangalore": "BLR", "bengaluru": "BLR", "bangaluru": "BLR",
+    "hyderabad": "HYD", "chennai": "MAA", "madras": "MAA", "kolkata": "CCU",
+    "calcutta": "CCU", "ahmedabad": "AMD", "pune": "PNQ", "goa": "GOI",
+    "guwahati": "GAU", "kochi": "COK", "cochin": "COK", "jaipur": "JAI",
+    "lucknow": "LKO", "chandigarh": "IXC", "srinagar": "SXR",
+    "new york": "NYC", "london": "LON", "dubai": "DXB", "singapore": "SIN",
+    "paris": "PAR", "tokyo": "TYO", "bangkok": "BKK", "istanbul": "IST",
+    "los angeles": "LAX", "san francisco": "SFO", "chicago": "ORD",
+    "sydney": "SYD", "toronto": "YYZ", "doha": "DOH", "colombo": "CMB",
+    "kathmandu": "KTM", "dhaka": "DAC", "male": "MLE", "bali": "DPS",
+}
+
+_MONTHS = {
+    "january": 1, "jan": 1, "february": 2, "feb": 2, "march": 3, "mar": 3,
+    "april": 4, "apr": 4, "may": 5, "june": 6, "jun": 6, "july": 7, "jul": 7,
+    "august": 8, "aug": 8, "september": 9, "sep": 9, "sept": 9,
+    "october": 10, "oct": 10, "november": 11, "nov": 11, "december": 12, "dec": 12,
+    "ocak": 1, "şubat": 2, "subat": 2, "mart": 3, "nisan": 4,
+    "mayıs": 5, "mayis": 5, "haziran": 6, "temmuz": 7, "ağustos": 8,
+    "agustos": 8, "eylül": 9, "eylul": 9, "ekim": 10, "kasım": 11,
+    "kasim": 11, "aralık": 12, "aralik": 12,
+}
+_WEEKDAYS = {
+    "monday": 0, "tuesday": 1, "wednesday": 2, "thursday": 3,
+    "friday": 4, "saturday": 5, "sunday": 6,
+}
 
 
 def get_base_dir() -> Path:
@@ -33,399 +54,339 @@ def get_base_dir() -> Path:
     return Path(__file__).resolve().parent.parent
 
 
-BASE_DIR        = get_base_dir()
-API_CONFIG_PATH = BASE_DIR / "config" / "api_keys.json"
+BASE_DIR = get_base_dir()
 
 
-def _get_api_key() -> str:
-    from api_keys import next_key
-    return next_key()
+def _alias(place: str) -> str:
+    """Resolve city aliases to IATA codes when known (otherwise keep input)."""
+    clean = str(place or "").strip()
+    lower = clean.lower().rstrip(".,")
+    if re.fullmatch(r"[A-Za-z]{3}", lower):
+        return lower.upper()
+    return _IATA.get(lower, clean)
 
 
 def _parse_date(raw: str) -> str:
-    """
-    Converts natural language date to YYYY-MM-DD.
-    Handles: '15 Mart', 'March 15', '2025-03-15', 'next friday', etc.
-    Falls back to Gemini for ambiguous inputs.
-    """
-    raw = raw.strip()
-
-    if re.match(r"\d{4}-\d{2}-\d{2}", raw):
-        return raw
-
-    for fmt in ("%d/%m/%Y", "%m/%d/%Y", "%d.%m.%Y", "%d-%m-%Y"):
-        try:
-            return datetime.strptime(raw, fmt).strftime("%Y-%m-%d")
-        except ValueError:
-            pass
-
-
+    """Convert a natural-language date to YYYY-MM-DD, deterministically when
+    possible; ambiguous phrases fall back to MODEL_FLASH_LITE."""
+    text = str(raw or "").strip()
+    if not text:
+        return datetime.now().strftime("%Y-%m-%d")
     today = datetime.now()
-    lower = raw.lower()
-    relative_map = {
-        "today":     today,
-        "tomorrow":  today + timedelta(days=1),
-        "bugün":     today,
-        "yarın":     today + timedelta(days=1),
-    }
-    for key, val in relative_map.items():
-        if key in lower:
-            return val.strftime("%Y-%m-%d")
 
+    # ISO / numeric formats first (day-first is the locale used by Friday).
+    if re.match(r"^\d{4}-\d{2}-\d{2}", text):
+        return text[:10]
+    for fmt in ("%d/%m/%Y", "%m/%d/%Y", "%d.%m.%Y", "%d-%m-%Y",
+                "%d %B %Y", "%B %d, %Y", "%d %b %Y"):
+        try:
+            return datetime.strptime(text, fmt).strftime("%Y-%m-%d")
+        except ValueError:
+            continue
+
+    lower = text.lower()
+    if any(word in lower for word in ("today", "bugün", "bugun")):
+        return today.strftime("%Y-%m-%d")
+    if any(word in lower for word in ("tomorrow", "yarın", "yarin")):
+        return (today + timedelta(days=1)).strftime("%Y-%m-%d")
+
+    # "next friday" / "friday" / "cumartesi" style.
+    weekdays = dict(_WEEKDAYS, **{
+        "pazartesi": 0, "salı": 1, "carsamba": 2, "çarşamba": 2,
+        "perşembe": 3, "persembe": 3, "cum": 4, "cuma": 4,
+        "cumartesi": 5, "pazar": 6,
+    })
+    for word, weekday in weekdays.items():
+        if re.search(rf"\b{re.escape(word)}\b", lower):
+            days = (weekday - today.weekday()) % 7
+            if days == 0 or "next" in lower or "gelecek" in lower:
+                days += 7
+            return (today + timedelta(days=days)).strftime("%Y-%m-%d")
+
+    # "15 March", "March 15", "15 Mart".
+    for word, month in sorted(_MONTHS.items(), key=lambda kv: -len(kv[0])):
+        if re.search(rf"\b{re.escape(word)}\b", lower):
+            numbers = re.findall(r"\d{1,2}", text)
+            if numbers:
+                day = int(numbers[0])
+                year = today.year if month >= today.month else today.year + 1
+                try:
+                    return datetime(year, month, day).strftime("%Y-%m-%d")
+                except ValueError:
+                    pass
+
+    # Ambiguous: ask the cheap model, but stay deterministic if it is absent.
     try:
-        import google.generativeai as genai
-        genai.configure(api_key=_get_api_key())
-        model    = genai.GenerativeModel(MODEL_FLASH_LITE)
-        today_str = today.strftime("%Y-%m-%d")
-        response = model.generate_content(
-            f"Today is {today_str}. Convert this date to YYYY-MM-DD format: '{raw}'. "
-            f"Return ONLY the date string, nothing else."
+        response = generate_with_retry(
+            MODEL_FLASH_LITE,
+            f"Today is {today:%Y-%m-%d}. Convert this date to YYYY-MM-DD: '{text}'. "
+            "Reply with only the date string.",
         )
-        result = response.text.strip()
-        if re.match(r"\d{4}-\d{2}-\d{2}", result):
-            return result
+        result = str(getattr(response, "text", "") or "").strip()
+        if re.match(r"^\d{4}-\d{2}-\d{2}", result):
+            return result[:10]
     except Exception:
         pass
-
-    month_map = {
-        "january": 1,  "february": 2,  "march": 3,     "april": 4,
-        "may": 5,      "june": 6,      "july": 7,       "august": 8,
-        "september": 9,"october": 10,  "november": 11,  "december": 12,
-        "january": 1,  "ocak": 1,      "şubat": 2,      "mart": 3,
-        "nisan": 4,    "mayıs": 5,     "haziran": 6,    "temmuz": 7,
-        "ağustos": 8,  "eylül": 9,     "ekim": 10,      "kasım": 11,
-        "aralık": 12,
-    }
-    for month_name, month_num in month_map.items():
-        if month_name in lower:
-            day_match = re.search(r"\d{1,2}", raw)
-            if day_match:
-                day  = int(day_match.group())
-                year = today.year if month_num >= today.month else today.year + 1
-                return f"{year}-{month_num:02d}-{day:02d}"
-
     return today.strftime("%Y-%m-%d")
 
 
-
 def _build_google_flights_url(
-    origin:      str,
+    origin: str,
     destination: str,
-    date:        str,
+    date: str,
     return_date: str | None = None,
-    passengers:  int        = 1,
-    cabin:       str        = "economy",
+    passengers: int = 1,
+    cabin: str = "economy",
+    currency: str = "INR",
+    non_stop: bool = False,
+    max_stops: int | None = None,
+    sort_by: str = "",
 ) -> str:
-    """
-    Builds a Google Flights URL with pre-filled search parameters.
-    Uses the direct search URL format.
-    """
-    cabin_map = {
-        "economy":  "1",
-        "premium":  "2",
-        "business": "3",
-        "first":    "4",
-    }
-    cabin_code = cabin_map.get(cabin.lower(), "1")
-
-    from urllib.parse import quote_plus
-    base = "https://www.google.com/travel/flights"
-    q_orig = quote_plus(str(origin))
+    """Build a pre-filled Google Flights URL with encoded parameters."""
+    codes = {"economy": "1", "premium": "2", "business": "3", "first": "4"}
+    cabin_code = codes.get(str(cabin or "").lower(), "1")
+    q_origin = quote_plus(str(origin))
     q_dest = quote_plus(str(destination))
-
-    if return_date:
-        url = (
-            f"{base}?q=Flights+from+{q_orig}+to+{q_dest}"
-            f"+on+{date}+returning+{return_date}"
-            f"&curr=TRY"
-        )
-    else:
-        url = (
-            f"{base}?q=Flights+from+{q_orig}+to+{q_dest}+on+{date}"
-            f"&curr=TRY"
-        )
-
+    query = (f"Flights from {q_origin} to {q_dest} on {date}"
+             + (f" returning {return_date}" if return_date else ""))
+    if non_stop:
+        query += " nonstop"
+    elif max_stops is not None:
+        query += f" up to {max_stops} stops"
+    if sort_by:
+        query += f" sort by {sort_by}"
+    if passengers and int(passengers) > 1:
+        query += f" for {int(passengers)} passengers"
+    url = ("https://www.google.com/travel/flights?q=" + query
+           + "&curr=" + quote_plus(str(currency or "INR"))
+           + "&cabin=" + cabin_code)
     return url
 
 
-
 def _search_flights_browser(
-    origin:      str,
+    origin: str,
     destination: str,
-    date:        str,
+    date: str,
     return_date: str | None,
-    passengers:  int,
-    cabin:       str,
+    passengers: int,
+    cabin: str,
+    **kwargs,
 ) -> tuple[str, str]:
-    """
-    Opens Google Flights in browser, waits for results, scrapes text.
-    Returns (raw_text, page_url).
-    """
+    """Scrape Google Flights; if that fails, use grounded web_search."""
     from actions.browser_control import browser_control
     import time
 
-    url = _build_google_flights_url(
-        origin, destination, date, return_date, passengers, cabin
-    )
-
-    print(f"[FlightFinder] 🌐 Opening: {url}")
+    url = _build_google_flights_url(origin, destination, date, return_date,
+                                    passengers, cabin, **kwargs)
     browser_control({"action": "go_to", "url": url})
-    time.sleep(5)  
+    time.sleep(4)
+    text = browser_control({"action": "get_text"}) or ""
+    if text:
+        return str(text), url
 
-    result = browser_control({"action": "get_text"})
-    return result or "", url
-
-
-def _parse_flights_with_gemini(
-    raw_text:    str,
-    origin:      str,
-    destination: str,
-    date:        str,
-) -> list[dict]:
-    """
-    Sends raw page text to Gemini and extracts structured flight data.
-    Returns list of flight dicts.
-    """
-    import google.generativeai as genai
-
-    genai.configure(api_key=_get_api_key())
-    model = genai.GenerativeModel(
-        model_name="gemini-2.5-flash",
-        system_instruction=(
-            "You are a flight data extraction expert. "
-            "Extract flight information from raw webpage text. "
-            "Return ONLY valid JSON array. No explanation, no markdown."
-        )
-    )
-
-    truncated = raw_text[:12000]
-
-    prompt = (
-        f"Extract flight options from {origin} to {destination} on {date} "
-        f"from this Google Flights page text:\n\n{truncated}\n\n"
-        f"Return a JSON array of up to 5 flights:\n"
-        f'[{{"airline": "...", "departure": "HH:MM", "arrival": "HH:MM", '
-        f'"duration": "Xh Ym", "stops": 0, "price": "...", "currency": "..."}}]\n'
-        f"If no flights found, return: []"
-    )
-
+    # Grounded-search fallback — never invent flight prices.
     try:
-        response = model.generate_content(prompt)
-        text     = response.text.strip()
-        text     = re.sub(r"```(?:json)?", "", text).strip().rstrip("`").strip()
-        flights  = json.loads(text)
-        return flights if isinstance(flights, list) else []
-    except Exception as e:
-        print(f"[FlightFinder] ⚠️ Parse failed: {e}")
+        from actions.web_search import web_search
+        query = (f"Google Flights {origin} to {destination} {date} "
+                 f"{'return ' + return_date if return_date else ''}prices")
+        result = web_search({"query": query, "max_results": 5})
+        return str(result or ""), url
+    except Exception:
+        return "", url
+
+
+def _price_number(flight: dict) -> float:
+    text = str(flight.get("price", ""))
+    match = re.search(r"[\d,]+(?:\.\d+)?", text.replace(" ", ""))
+    if not match:
+        return float("inf")
+    try:
+        return float(match.group().replace(",", ""))
+    except ValueError:
+        return float("inf")
+
+
+def _parse_flights_with_gemini(raw_text: str, origin: str, destination: str,
+                               date: str, **filters) -> list[dict]:
+    """Extract structured flights from page text using MODEL_FLASH."""
+    prompt = (
+        "You are a flight data extraction expert. Extract only flights that are "
+        f"actually shown for {origin} to {destination} on {date}. "
+        "Return ONLY a valid JSON array, no markdown. Up to 8 entries. "
+        "Each entry: {\"airline\": str, \"departure\": \"HH:MM\", "
+        "\"arrival\": \"HH:MM\", \"duration\": \"Xh Ym\", \"stops\": int, "
+        "\"price\": \"number\", \"currency\": \"INR\"}. "
+        "If none are shown, return [].\n\nPage text:\n" + raw_text[:14000]
+    )
+    try:
+        response = generate_with_retry(MODEL_FLASH, prompt)
+        text = str(getattr(response, "text", "") or "").strip()
+        text = re.sub(r"```(?:json)?", "", text).strip().rstrip("`").strip()
+        data = json.loads(text)
+        if not isinstance(data, list):
+            return []
+        flights = [item for item in data if isinstance(item, dict)]
+    except Exception as exc:
+        print(f"[FlightFinder] Parse failed: {exc}")
         return []
 
+    non_stop = bool(filters.get("non_stop", False))
+    max_stops = filters.get("max_stops")
+    if non_stop:
+        flights = [f for f in flights if int(f.get("stops", 0) or 0) == 0]
+    elif max_stops is not None:
+        try:
+            limit = int(max_stops)
+            flights = [f for f in flights if int(f.get("stops", 0) or 0) <= limit]
+        except (TypeError, ValueError):
+            pass
+    if str(filters.get("currency", "INR")).upper() == "INR":
+        for flight in flights:
+            if str(flight.get("currency", "")).upper() in ("TRY", "$", "USD"):
+                flight["currency"] = "INR"
+    sort_by = str(filters.get("sort_by", "price")).lower()
+    if "duration" in sort_by:
+        flights.sort(key=lambda f: str(f.get("duration", "999h")))
+    else:
+        flights.sort(key=_price_number)
+    return flights[:5]
 
 
 def _format_spoken(
-    flights:     list[dict],
-    origin:      str,
+    flights: list[dict],
+    origin: str,
     destination: str,
-    date:        str,
+    date: str,
 ) -> str:
-    """Formats flights for spoken output — concise and natural."""
+    """Format flights for natural spoken output."""
     if not flights:
-        return (
-            f"I couldn't find any flights from {origin} to {destination} "
-            f"on {date}, sir. The page may not have loaded correctly."
-        )
+        return (f"I couldn't find any flights from {origin} to {destination} "
+                f"on {date}, sir. The page may not have loaded correctly.")
 
     lines = [f"Here are the flights from {origin} to {destination} on {date}, sir."]
-
-    for i, f in enumerate(flights[:5], 1):
-        airline   = f.get("airline",   "Unknown airline")
-        departure = f.get("departure", "--:--")
-        arrival   = f.get("arrival",   "--:--")
-        duration  = f.get("duration",  "")
-        stops     = f.get("stops",     0)
-        price     = f.get("price",     "")
-        currency  = f.get("currency",  "")
-
-        stop_str  = "non-stop" if stops == 0 else f"{stops} stop{'s' if stops > 1 else ''}"
-        price_str = f"{price} {currency}".strip() if price else "price unavailable"
-        dur_str   = f", {duration}" if duration else ""
-
+    for i, flight in enumerate(flights[:5], 1):
+        stops = int(flight.get("stops", 0) or 0)
+        stop_text = "non-stop" if stops == 0 else f"{stops} stop{'s' if stops > 1 else ''}"
+        price = str(flight.get("price", "") or "").strip()
+        currency = str(flight.get("currency", "INR") or "INR").strip()
+        price_text = f"{price} {currency}".strip() if price else "price unavailable"
         lines.append(
-            f"Option {i}: {airline}, departing {departure}, arriving {arrival}"
-            f"{dur_str}, {stop_str}, {price_str}."
-        )
-
-    def _price_num(f: dict) -> float:
-        digits = re.sub(r"[^\d.]", "", str(f.get("price", "")))
-        try:
-            return float(digits) if digits else float("inf")
-        except ValueError:
-            return float("inf")
-
-    cheapest = min(
-        (f for f in flights if f.get("price")),
-        key=_price_num,
-        default=None,
-    )
-    if cheapest:
-        lines.append(
-            f"The cheapest option is {cheapest.get('airline')} "
-            f"at {cheapest.get('price')} {cheapest.get('currency', '')}."
-        )
-
+            f"Option {i}: {flight.get('airline', 'Unknown airline')}, departing "
+            f"{flight.get('departure', '--:--')}, arriving {flight.get('arrival', '--:--')}"
+            f"{', ' + str(flight['duration']) if flight.get('duration') else ''}, "
+            f"{stop_text}, {price_text}.")
+    priced = [f for f in flights if f.get("price")]
+    if priced:
+        cheapest = min(priced, key=_price_number)
+        lines.append(f"The cheapest option is {cheapest.get('airline')} at "
+                     f"{cheapest.get('price')} {cheapest.get('currency', 'INR')}.")
     return " ".join(lines)
 
 
 def _format_notepad(
-    flights:     list[dict],
-    origin:      str,
+    flights: list[dict],
+    origin: str,
     destination: str,
-    date:        str,
+    date: str,
     return_date: str | None,
-    page_url:    str,
+    page_url: str,
 ) -> str:
-    """Formats flights for Notepad — detailed and readable."""
-    from datetime import datetime as dt
-
-    lines = [
-        "Friday — Flight Search Results",
-        "─" * 50,
-        f"Route     : {origin} → {destination}",
-        f"Date      : {date}",
-    ]
+    lines = ["Friday — Flight Search Results", "─" * 50,
+             f"Route     : {origin} → {destination}", f"Date      : {date}"]
     if return_date:
         lines.append(f"Return    : {return_date}")
-    lines += [
-        f"Searched  : {dt.now().strftime('%Y-%m-%d %H:%M')}",
-        f"Source    : {page_url}",
-        "─" * 50,
-        "",
-    ]
-
+    lines += [f"Searched  : {datetime.now():%Y-%m-%d %H:%M}",
+              f"Source    : {page_url}", "─" * 50, ""]
     if not flights:
         lines.append("No flights found.")
-    else:
-        for i, f in enumerate(flights, 1):
-            stops    = f.get("stops", 0)
-            stop_str = "Non-stop" if stops == 0 else f"{stops} stop(s)"
-            lines += [
-                f"Flight {i}:",
-                f"  Airline   : {f.get('airline', 'N/A')}",
-                f"  Departure : {f.get('departure', 'N/A')}",
-                f"  Arrival   : {f.get('arrival', 'N/A')}",
-                f"  Duration  : {f.get('duration', 'N/A')}",
-                f"  Stops     : {stop_str}",
-                f"  Price     : {f.get('price', 'N/A')} {f.get('currency', '')}",
-                "",
-            ]
-
+    for i, flight in enumerate(flights, 1):
+        lines += [f"Flight {i}:",
+                  f"  Airline   : {flight.get('airline', 'N/A')}",
+                  f"  Departure : {flight.get('departure', 'N/A')}",
+                  f"  Arrival   : {flight.get('arrival', 'N/A')}",
+                  f"  Duration  : {flight.get('duration', 'N/A')}",
+                  f"  Stops     : {flight.get('stops', 0)}",
+                  f"  Price     : {flight.get('price', 'N/A')} "
+                  f"{flight.get('currency', 'INR')}", ""]
     return "\n".join(lines)
 
 
 def _save_to_notepad(content: str, origin: str, destination: str) -> str:
-    """Saves flight results to Desktop and opens in default text editor."""
-    from datetime import datetime
-
-    ts       = datetime.now().strftime("%Y%m%d_%H%M%S")
-    filename = f"flights_{origin}_{destination}_{ts}.txt".replace(" ", "_")
-    desktop  = Path.home() / "Desktop"
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    filename = f"flights_{origin}_{destination}_{timestamp}.txt".replace(" ", "_")
+    desktop = Path.home() / "Desktop"
     desktop.mkdir(parents=True, exist_ok=True)
-    filepath = desktop / filename
-
-    filepath.write_text(content, encoding="utf-8")
-    print(f"[FlightFinder] 💾 Saved: {filepath}")
-
-    system  = platform.system()
-    open_fn = {
-        "Windows": lambda p: subprocess.Popen(["notepad.exe", str(p)]),
-        "Darwin":  lambda p: subprocess.Popen(["open", "-t", str(p)]),
-        "Linux":   lambda p: subprocess.Popen(["xdg-open", str(p)]),
-    }
-    opener = open_fn.get(system)
+    path = desktop / filename
+    path.write_text(content, encoding="utf-8")
+    opener = {"Windows": "notepad.exe", "Darwin": "open", "Linux": "xdg-open"}.get(
+        platform.system())
     if opener:
-        opener(filepath)
+        try:
+            args = [opener, str(path)] if opener != "open" else ["open", "-t", str(path)]
+            subprocess.Popen(args)
+        except Exception:
+            pass
+    return str(path)
 
-    return str(filepath)
 
 def flight_finder(
-    parameters:     dict,
+    parameters: dict,
     response=None,
     player=None,
     session_memory=None,
     speak=None,
 ) -> str:
-    """
-    Flight Finder — searches Google Flights and speaks results.
-
-    Parameters:
-        origin       (str, required) — departure city or airport (e.g. "Istanbul", "IST")
-        destination  (str, required) — arrival city or airport (e.g. "London", "LHR")
-        date         (str, required) — departure date (any format: "15 Mart", "March 15", "2025-03-15")
-        return_date  (str, optional) — return date for round trips
-        passengers   (int, optional) — number of passengers (default: 1)
-        cabin        (str, optional) — economy | premium | business | first (default: economy)
-        save         (bool, optional) — save results to Notepad (default: False)
-        show_browser (bool, optional) — keep browser open after search (default: True)
-
-    Examples:
-        flight_finder({"origin": "Istanbul", "destination": "London", "date": "15 Mart"})
-        flight_finder({"origin": "IST", "destination": "JFK", "date": "2025-04-01",
-                       "return_date": "2025-04-15", "cabin": "business", "save": True})
-    """
+    """Search flights and speak the best options grounded in real page data."""
     params = parameters or {}
+    origin = str(params.get("origin", "")).strip()
+    destination = str(params.get("destination", "")).strip()
+    date_raw = str(params.get("date", "")).strip()
+    return_raw = str(params.get("return_date", "")).strip()
+    if not origin or not destination or not date_raw:
+        return "Please provide origin, destination and departure date, sir."
 
-    origin      = params.get("origin",      "").strip()
-    destination = params.get("destination", "").strip()
-    date_raw    = params.get("date",        "").strip()
-    return_raw  = params.get("return_date", "").strip()
-    passengers  = int(params.get("passengers", 1))
-    cabin       = params.get("cabin", "economy").strip()
-    save        = params.get("save", False)
+    try:
+        passengers = max(1, min(9, int(params.get("passengers", 1) or 1)))
+    except (TypeError, ValueError):
+        passengers = 1
+    cabin = str(params.get("cabin", "economy") or "economy").lower().strip()
+    currency = str(params.get("currency", "INR") or "INR").upper()
+    non_stop = str(params.get("non_stop", False)).lower() in ("true", "1", "yes")
+    try:
+        max_stops = params.get("max_stops")
+        max_stops = int(max_stops) if max_stops not in (None, "") else None
+    except (TypeError, ValueError):
+        max_stops = None
+    sort_by = str(params.get("sort_by", "price") or "price").lower()
+    save = str(params.get("save", False)).lower() in ("true", "1", "yes")
 
-    if not origin or not destination:
-        return "Please provide both origin and destination, sir."
-    if not date_raw:
-        return "Please provide a departure date, sir."
-
-    date        = _parse_date(date_raw)
+    origin_code, destination_code = _alias(origin), _alias(destination)
+    date = _parse_date(date_raw)
     return_date = _parse_date(return_raw) if return_raw else None
-
     if player:
-        player.write_log(f"[FlightFinder] {origin} → {destination} on {date}")
-
+        player.write_log(f"[FlightFinder] {origin_code} → {destination_code} on {date}")
     if speak:
         speak(f"Searching flights from {origin} to {destination} on {date}, sir.")
 
-    print(f"[FlightFinder] ▶️ {origin} → {destination} | {date} | {cabin} | {passengers} pax")
-
     try:
-   
         raw_text, page_url = _search_flights_browser(
-            origin, destination, date, return_date, passengers, cabin
+            origin_code, destination_code, date, return_date, passengers, cabin,
+            currency=currency, non_stop=non_stop, max_stops=max_stops, sort_by=sort_by,
         )
-
         if not raw_text:
             return "Could not retrieve flight data, sir. The page may not have loaded."
-
-        if speak:
-            speak("Analysing the results now.")
-
-        flights = _parse_flights_with_gemini(raw_text, origin, destination, date)
-
+        flights = _parse_flights_with_gemini(
+            raw_text, origin_code, destination_code, date,
+            non_stop=non_stop, max_stops=max_stops, sort_by=sort_by, currency=currency,
+        )
         spoken = _format_spoken(flights, origin, destination, date)
         if speak:
             speak(spoken)
-
-        result = spoken
-
         if save and flights:
-            notepad_content = _format_notepad(
-                flights, origin, destination, date, return_date, page_url
-            )
-            saved_path = _save_to_notepad(notepad_content, origin, destination)
-            result += f" Results saved to Desktop: {saved_path}"
-
-        return result
-
-    except Exception as e:
-        print(f"[FlightFinder] ❌ Error: {e}")
-        return f"Flight search failed, sir: {e}"
+            path = _save_to_notepad(
+                _format_notepad(flights, origin, destination, date, return_date, page_url),
+                origin, destination)
+            spoken += f" Results saved to Desktop: {path}"
+        return spoken
+    except Exception as exc:
+        return f"Flight search failed, sir: {exc}"

@@ -488,7 +488,7 @@ TOOL_DECLARATIONS = [
         "parameters": {
             "type": "OBJECT",
             "properties": {
-                "action":      {"type": "STRING", "description": "list | create_file | create_folder | delete | move | copy | rename | read | write | find | largest | disk_usage | organize_desktop | organize | undo_organize | info | zip | unzip"},
+                "action":      {"type": "STRING", "description": "list | create_file | create_folder | delete | move | copy | rename | read | write | find | largest | disk_usage | organize_desktop | organize | undo_organize | info | zip | unzip | duplicates | search_content | recent"},
                 "path":        {"type": "STRING", "description": "File/folder path or shortcut: desktop, downloads, documents, home"},
                 "scope":       {"type": "STRING", "description": "For organize: desktop | downloads | documents | pictures | music | videos | home | <custom path>"},
                 "mode":        {"type": "STRING", "description": "For organize: by_type (default) | by_date | ai"},
@@ -499,7 +499,9 @@ TOOL_DECLARATIONS = [
                 "content":     {"type": "STRING", "description": "Content for create_file/write"},
                 "name":        {"type": "STRING", "description": "File name to search for"},
                 "extension":   {"type": "STRING", "description": "File extension to search (e.g. .pdf)"},
-                "count":       {"type": "INTEGER", "description": "Number of results for largest"},
+                "count":       {"type": "INTEGER", "description": "Number of results for largest/recent"},
+                "text":        {"type": "STRING", "description": "Text to find with search_content"},
+                "hours":       {"type": "NUMBER", "description": "Look-back window for recent files"},
             },
             "required": ["action"]
         }
@@ -620,7 +622,7 @@ TOOL_DECLARATIONS = [
         "parameters": {
             "type": "OBJECT",
             "properties": {
-                "action":    {"type": "STRING",  "description": "update | install | list | download_status | schedule | cancel_schedule | schedule_status (default: update)"},
+                "action":    {"type": "STRING",  "description": "update | install | launch | largest | close_game | list | download_status | schedule | cancel_schedule | schedule_status | cancel_shutdown (default: update)"},
                 "platform":  {"type": "STRING",  "description": "steam | epic | both (default: both)"},
                 "game_name": {"type": "STRING",  "description": "Game name (partial match supported)"},
                 "app_id":    {"type": "STRING",  "description": "Steam AppID for install (optional)"},
@@ -643,6 +645,10 @@ TOOL_DECLARATIONS = [
                 "return_date": {"type": "STRING",  "description": "Return date for round trips"},
                 "passengers":  {"type": "INTEGER", "description": "Number of passengers (default: 1)"},
                 "cabin":       {"type": "STRING",  "description": "economy | premium | business | first"},
+                "currency":    {"type": "STRING",  "description": "Currency code (default INR)"},
+                "non_stop":    {"type": "BOOLEAN", "description": "Only non-stop flights"},
+                "max_stops":   {"type": "INTEGER", "description": "Maximum number of stops"},
+                "sort_by":     {"type": "STRING",  "description": "price | duration"},
                 "save":        {"type": "BOOLEAN", "description": "Save results to Notepad"},
             },
             "required": ["origin", "destination", "date"]
@@ -901,10 +907,15 @@ TOOL_DECLARATIONS = [
         "parameters": {
             "type": "OBJECT",
             "properties": {
-                "message": {"type": "STRING", "description": "The notification message text (required)"},
-                "title":   {"type": "STRING", "description": "Optional title (default: Friday)"}
+                "action":  {"type": "STRING", "description": "send | history | clear_history (default: send)"},
+                "message": {"type": "STRING", "description": "The notification message text"},
+                "title":   {"type": "STRING", "description": "Optional title (default: Friday)"},
+                "duration":{"type": "STRING", "description": "short | long"},
+                "sound":   {"type": "STRING", "description": "default | none | alarm | reminder"},
+                "url":     {"type": "STRING", "description": "Optional http(s) link for the toast"},
+                "force":   {"type": "BOOLEAN", "description": "Bypass 30-second duplicate suppression"}
             },
-            "required": ["message"]
+            "required": []
         }
     },
     {
@@ -988,6 +999,10 @@ TOOL_DECLARATIONS = [
                     "type": "STRING",
                     "description": "Optional file name without extension (defaults to title)"
                 },
+                "subtitle": {
+                    "type": "STRING",
+                    "description": "Optional subtitle for the title slide"
+                },
                 "slides": {
                     "type": "ARRAY",
                     "items": {
@@ -1017,6 +1032,8 @@ TOOL_DECLARATIONS = [
             "properties": {
                 "filename":  {"type": "STRING", "description": "File name without extension"},
                 "sheet_name": {"type": "STRING", "description": "Optional sheet name (default: Sheet1)"},
+                "sheets":    {"type": "ARRAY", "items": {"type": "OBJECT"}, "description": "Optional multiple sheets: [{name, headers, rows}]"},
+                "summary":   {"type": "ARRAY", "description": "Optional bold summary row (formulas supported)"},
                 "headers":   {"type": "ARRAY", "items": {"type": "STRING"}, "description": "Column headers"},
                 "rows":      {"type": "ARRAY", "items": {"type": "ARRAY", "items": {"type": "STRING"}}, "description": "Data rows; each row is an array of cell values"}
             },
@@ -1051,20 +1068,25 @@ TOOL_DECLARATIONS = [
     {
         "name": "gmail",
         "description": (
-            "Sends and reads Gmail. 'send' composes an email to any address; "
-            "'read' lists the most recent inbox emails. Requires a Gmail app "
-            "password saved in config/api_keys.json (gmail_user + "
-            "gmail_app_password). Use for 'send an email to X', 'check my email', "
-            "'what is in my inbox'."
+            "Full Gmail automation: send, read, search, read_message, draft, "
+            "threaded reply, mark read/unread, unread_count and trash. Uses "
+            "Google OAuth when authorized, otherwise a Gmail app password "
+            "(gmail_user + gmail_app_password in config/api_keys.json)."
         ),
         "parameters": {
             "type": "OBJECT",
             "properties": {
-                "action":  {"type": "STRING", "description": "send | read (default: send)"},
-                "to":      {"type": "STRING", "description": "Recipient email address (send only)"},
-                "subject": {"type": "STRING", "description": "Email subject (send only)"},
-                "body":    {"type": "STRING", "description": "Email body text (send only)"},
-                "limit":   {"type": "INTEGER", "description": "How many recent emails to read (read only, default 5)"}
+                "action":     {"type": "STRING", "description": "send | read | search | read_message | draft | reply | mark_read | mark_unread | unread_count | trash (default: send)"},
+                "to":         {"type": "STRING", "description": "Recipient email address"},
+                "subject":    {"type": "STRING", "description": "Email subject"},
+                "body":       {"type": "STRING", "description": "Email body text"},
+                "cc":         {"type": "STRING", "description": "CC addresses (comma separated)"},
+                "bcc":        {"type": "STRING", "description": "BCC addresses (comma separated)"},
+                "attachments":{"type": "ARRAY", "items": {"type": "STRING"}, "description": "Local file paths to attach"},
+                "html":       {"type": "STRING", "description": "Optional HTML body"},
+                "message_id": {"type": "STRING", "description": "Message id for read_message/reply/mark/trash"},
+                "query":      {"type": "STRING", "description": "Gmail search query"},
+                "limit":      {"type": "INTEGER", "description": "Recent email count (default 5)"}
             },
             "required": []
         }
@@ -1152,19 +1174,20 @@ TOOL_DECLARATIONS = [
     {
         "name": "monitor_alerts",
         "description": (
-            "Sets PC monitoring alerts: warn when CPU, RAM, disk or battery "
-            "crosses a threshold, then Friday speaks + notifies the user. "
-            "Actions: list | add | remove | check | status. "
-            "Use for 'alert me when cpu goes above 90', 'warn me when my battery "
-            "is below 20 percent', 'tell me if ram is high', 'monitor the pc'."
+            "Sets PC monitoring alerts: warn when CPU, RAM, a disk (disk or "
+            "disk:D), battery, temperature or a process exit crosses a "
+            "threshold. Actions: list | add | remove | check | status | pause | "
+            "resume | clear. Rules support sustained seconds and custom cooldown."
         ),
         "parameters": {
             "type": "OBJECT",
             "properties": {
-                "action":    {"type": "STRING", "description": "list | add | remove | check | status (default: list)"},
-                "kind":      {"type": "STRING", "description": "Metric to watch: cpu | ram | disk | battery"},
+                "action":    {"type": "STRING", "description": "list | add | remove | check | status | pause | resume | clear (default: list)"},
+                "kind":      {"type": "STRING", "description": "cpu | ram | disk | disk:D | battery | temp | process_exit"},
                 "threshold": {"type": "NUMBER", "description": "Percent threshold to trigger"},
-                "above":     {"type": "BOOLEAN", "description": "True=alert above threshold (cpu/ram/disk), false=alert below (battery). Default true."},
+                "above":     {"type": "BOOLEAN", "description": "True=alert above threshold, false=below. Default true."},
+                "sustained": {"type": "NUMBER", "description": "Seconds the threshold must hold before alerting"},
+                "cooldown":  {"type": "NUMBER", "description": "Seconds before this rule may fire again"},
                 "message":   {"type": "STRING", "description": "Optional custom alert message"},
                 "id":        {"type": "INTEGER", "description": "Alert id to remove"}
             },
@@ -1178,16 +1201,18 @@ TOOL_DECLARATIONS = [
             "space, RAM, CPU, temperature and backup reminders — works out of "
             "the box with smart defaults, no setup needed. "
             "Actions: status | report | enable | disable | check | backup | "
-            "set | reset. Use for 'pc health report', 'how is my battery', "
-            "'battery health', 'health check', 'backup done', 'stop monitoring', "
-            "'warn me about low disk'."
+            "set | reset | snooze | unsnooze. Probes CPU/RAM/temperature with "
+            "backoff, checks all fixed drives, and reports battery health and "
+            "cycle count. Use for 'pc health report', 'battery health', "
+            "'snooze alerts for 30 minutes', 'warn me about low disk'."
         ),
         "parameters": {
             "type": "OBJECT",
             "properties": {
-                "action": {"type": "STRING", "description": "status | report | enable | disable | check | backup | set | reset (default: status)"},
-                "key":    {"type": "STRING", "description": "Setting to change with 'set': battery_low | battery_full_plugged | disk_min_free_gb | ram_high | cpu_high | temp_high | backup_days | cooldown"},
-                "value":  {"type": "NUMBER", "description": "New numeric value for 'set'"}
+                "action":  {"type": "STRING", "description": "status | report | enable | disable | check | backup | set | reset | snooze | unsnooze (default: status)"},
+                "key":     {"type": "STRING", "description": "Setting for 'set': battery_low | battery_full_plugged | disk_min_free_gb | ram_high | cpu_high | temp_high | backup_days | cooldown | sustained_seconds"},
+                "value":   {"type": "NUMBER", "description": "New numeric value for 'set'"},
+                "minutes": {"type": "NUMBER", "description": "Snooze duration in minutes"}
             },
             "required": []
         }
@@ -1231,14 +1256,17 @@ TOOL_DECLARATIONS = [
         "description": (
             "Turns on or off an automatic watcher that alerts the user as soon "
             "as new mail arrives in Gmail (speaks + desktop notification). "
-            "Actions: enable | disable | status. Requires Gmail already "
-            "configured. Use for 'alert me when I get new email', 'tell me when "
-            "a new mail arrives', 'stop email alerts'."
+            "Works with Google OAuth or IMAP, supports sender/subject/unread "
+            "filters and seeds a watermark on first enable. "
+            "Actions: enable | disable | status | pause | resume."
         ),
         "parameters": {
             "type": "OBJECT",
             "properties": {
-                "action": {"type": "STRING", "description": "enable | disable | status (default: status)"}
+                "action": {"type": "STRING", "description": "enable | disable | status | pause | resume (default: status)"},
+                "sender": {"type": "STRING", "description": "Only alert for mail from this address"},
+                "subject":{"type": "STRING", "description": "Only alert for subjects containing this text"},
+                "unread_only": {"type": "BOOLEAN", "description": "Only alert for unread mail"}
             },
             "required": []
         }
@@ -1272,13 +1300,16 @@ TOOL_DECLARATIONS = [
         "description": (
             "Controls whatever music or video is playing (Spotify, YouTube, "
             "VLC, media players): play/pause, next, previous, volume up/down, "
-            "mute. Works with global media keys. Use for 'play music', 'pause', "
-            "'next song', 'volume down', 'switch the track'."
+            "mute. Uses native SendInput media keys on Windows (no hook) with "
+            "keyboard/OS fallbacks. Actions: play, pause, toggle, next, prev, "
+            "volume_up/down, volume_set, mute, status, now_playing."
         ),
         "parameters": {
             "type": "OBJECT",
             "properties": {
-                "action": {"type": "STRING", "description": "play | pause | toggle | next | prev | volume_up | volume_down | mute (default: toggle)"}
+                "action": {"type": "STRING", "description": "play | pause | toggle | next | prev | volume_up | volume_down | volume_set | mute | status | now_playing (default: toggle)"},
+                "volume": {"type": "NUMBER", "description": "Target volume 0-100 for volume_set"},
+                "steps":  {"type": "INTEGER", "description": "How many times to press the key"}
             },
             "required": []
         }
@@ -1353,19 +1384,21 @@ TOOL_DECLARATIONS = [
     {
         "name": "drive",
         "description": (
-            "Google Drive operations: list recent files, search, read a file's "
-            "text content, upload a text file. Use for 'drive'dagi fayllar', "
-            "'search my drive for X', 'read this document from drive', 'upload "
-            "this note to drive'."
+            "Google Drive operations: list, search, read (Docs/Sheets/Slides/"
+            "PDF/text), info, upload inline or local, download into "
+            "Downloads/Friday, create_folder, trash/delete. Trashed files are "
+            "always excluded from listings."
         ),
         "parameters": {
             "type": "OBJECT",
             "properties": {
-                "action":     {"type": "STRING", "description": "list | search | read | upload (default: list)"},
+                "action":     {"type": "STRING", "description": "list | search | read | info | upload | download | create_folder | trash (default: list)"},
                 "query":      {"type": "STRING", "description": "Search query (for search)"},
-                "file_id":    {"type": "STRING", "description": "File id (for read)"},
-                "name":       {"type": "STRING", "description": "File name (for upload)"},
-                "content":    {"type": "STRING", "description": "Text content (for upload)"},
+                "file_id":    {"type": "STRING", "description": "File id (for read/info/download/trash)"},
+                "name":       {"type": "STRING", "description": "File or folder name"},
+                "content":    {"type": "STRING", "description": "Text content (for inline upload)"},
+                "path":       {"type": "STRING", "description": "Local file path to upload"},
+                "folder_id":  {"type": "STRING", "description": "Destination Drive folder id"},
                 "max_results":{"type": "INTEGER", "description": "How many files to list (default 10)"}
             },
             "required": []
@@ -1826,6 +1859,7 @@ class FridayLive:
                 title=args.get("title", ""),
                 slides=args.get("slides") or [],
                 filename=args.get("filename"),
+                subtitle=args.get("subtitle", ""),
             )
 
         def _office_xlsx(args):
@@ -1835,6 +1869,8 @@ class FridayLive:
                 headers=args.get("headers") or [],
                 rows=args.get("rows") or [],
                 sheet_name=args.get("sheet_name", "Sheet1"),
+                sheets=args.get("sheets"),
+                summary=args.get("summary"),
             )
 
         def _smart_home(args):

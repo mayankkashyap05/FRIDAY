@@ -121,7 +121,16 @@ _ACTION_RISK = {
     "gmail": {
         "send": Risk.HIGH,
         "compose": Risk.HIGH,
+        "reply": Risk.HIGH,
         "delete": Risk.HIGH,
+        "trash": Risk.HIGH,
+        "draft": Risk.LOW,
+        "search": Risk.LOW,
+        "read": Risk.LOW,
+        "read_message": Risk.LOW,
+        "unread_count": Risk.LOW,
+        "mark_read": Risk.LOW,
+        "mark_unread": Risk.LOW,
         None: Risk.LOW,
     },
     "task_manager": {
@@ -162,6 +171,7 @@ _ACTION_RISK = {
     "drive": {
         "delete": Risk.HIGH,
         "remove": Risk.HIGH,
+        "trash": Risk.HIGH,
         None: Risk.MEDIUM,
     },
     "game_updater": {
