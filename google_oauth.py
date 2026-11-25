@@ -1,24 +1,28 @@
-"""Google OAuth2 via Device Flow.
+"""Google Workspace OAuth with installed-app PKCE and legacy device-flow APIs.
 
-The user pastes `google_client_id` + `google_client_secret` (from a Google
-Cloud "Desktop app" OAuth client) into config/api_keys.json. Then:
-
-  auth_start()     -> returns a device-code URL + user code (for the phone)
-  auth_poll(code)  -> polls the token endpoint until the user authorizes
-  get_credentials()-> cached google.oauth2.credentials.Credentials (auto-refresh)
-
-Access & refresh tokens are saved in config/google_token.json.
+Desktop OAuth clients use a cryptographically-bound PKCE authorization-code
+flow over an ephemeral 127.0.0.1 callback. ``auth_start`` / ``auth_poll`` remain
+available for integrations that still use Google's device authorization flow.
+Tokens are atomically persisted in ``config/google_token.json``.
 """
+from __future__ import annotations
+
+import base64
+import hashlib
+import hmac
+import http.server
 import json
 import os
+import secrets
 import sys
 import tempfile
 import threading
 import time
+import webbrowser
 from pathlib import Path
+from urllib.parse import parse_qs, urlencode, urlparse
 
 import requests
-
 import google.auth.transport.requests as gtr
 from google.oauth2 import credentials as gcreds
 
@@ -28,11 +32,11 @@ SCOPES = [
     "https://www.googleapis.com/auth/drive.file",
     "https://www.googleapis.com/auth/userinfo.email",
 ]
-
-TOKEN_URI    = "https://oauth2.googleapis.com/token"
-DEVICE_URI   = "https://oauth2.googleapis.com/device/code"
-USER_URI     = "https://www.googleapis.com/oauth2/v2/userinfo"
-AUTH_URI     = "https://accounts.google.com/o/oauth2/v2/auth"
+TOKEN_URI = "https://oauth2.googleapis.com/token"
+DEVICE_URI = "https://oauth2.googleapis.com/device/code"
+USER_URI = "https://www.googleapis.com/oauth2/v2/userinfo"
+AUTH_URI = "https://accounts.google.com/o/oauth2/v2/auth"
+REVOKE_URI = "https://oauth2.googleapis.com/revoke"
 
 
 def get_base_dir() -> Path:
@@ -41,26 +45,47 @@ def get_base_dir() -> Path:
     return Path(__file__).resolve().parent
 
 
-CONFIG_PATH = get_base_dir() / "config" / "api_keys.json"
-TOKEN_PATH  = get_base_dir() / "config" / "google_token.json"
-
+BASE_DIR = get_base_dir()
+CONFIG_PATH = BASE_DIR / "config" / "api_keys.json"
+OAUTH_CONFIG_PATH = BASE_DIR / "config" / "google_oauth.json"
+TOKEN_PATH = BASE_DIR / "config" / "google_token.json"
 _cached = None
-_token_lock = threading.Lock()
+_token_lock = threading.RLock()
+_active_lock = threading.Lock()
+_active_sessions: dict[str, "_OAuthSession"] = {}
+
+
+def _credential_pair(data: dict) -> tuple[str, str]:
+    installed = data.get("installed") if isinstance(data.get("installed"), dict) else data
+    cid = str(installed.get("client_id") or installed.get("google_client_id") or "").strip()
+    secret = str(installed.get("client_secret") or installed.get("google_client_secret") or "").strip()
+    return cid, secret
 
 
 def _load_config() -> dict:
-    try:
-        data = json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
-        return data if isinstance(data, dict) else {}
-    except Exception:
-        return {}
+    """Load client credentials from either supported desktop config location."""
+    merged: dict = {}
+    for path in (CONFIG_PATH, OAUTH_CONFIG_PATH):
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+            if isinstance(data, dict):
+                cid, secret = _credential_pair(data)
+                if cid:
+                    merged["google_client_id"] = cid
+                if secret:
+                    merged["google_client_secret"] = secret
+                merged.update({k: v for k, v in data.items()
+                               if k in ("google_client_id", "google_client_secret") and v})
+        except (OSError, ValueError, TypeError):
+            continue
+    return merged
 
 
 def _load_token() -> dict:
     try:
         data = json.loads(TOKEN_PATH.read_text(encoding="utf-8"))
         return data if isinstance(data, dict) else {}
-    except Exception:
+    except (OSError, ValueError, TypeError):
         return {}
 
 
@@ -68,323 +93,392 @@ def _save_token(tok: dict) -> None:
     global _cached
     with _token_lock:
         TOKEN_PATH.parent.mkdir(parents=True, exist_ok=True)
-        payload = json.dumps(tok, ensure_ascii=False, indent=2)
-        fd, tmp_path = tempfile.mkstemp(
-            dir=str(TOKEN_PATH.parent), prefix=".google_token_", suffix=".tmp"
-        )
+        fd, tmp_path = tempfile.mkstemp(dir=str(TOKEN_PATH.parent),
+                                        prefix=".google_token_", suffix=".tmp")
         try:
-            with os.fdopen(fd, "w", encoding="utf-8") as f:
-                f.write(payload)
+            with os.fdopen(fd, "w", encoding="utf-8") as stream:
+                json.dump(tok, stream, ensure_ascii=False, indent=2)
+                stream.flush()
+                os.fsync(stream.fileno())
             os.replace(tmp_path, TOKEN_PATH)
+            _cached = None
         except Exception:
             try:
                 os.unlink(tmp_path)
             except OSError:
                 pass
             raise
-        _cached = None
 
 
-def client_ids() -> tuple:
-    cfg = _load_config()
-    cid = (cfg.get("google_client_id") or "").strip()
-    sec = (cfg.get("google_client_secret") or "").strip()
-    return cid, sec
+def client_ids() -> tuple[str, str]:
+    config = _load_config()
+    return (str(config.get("google_client_id") or "").strip(),
+            str(config.get("google_client_secret") or "").strip())
 
 
 def is_configured() -> bool:
-    cid, sec = client_ids()
-    return bool(cid and sec)
+    # Desktop app clients may legitimately omit a client secret.
+    return bool(client_ids()[0])
 
 
 def has_token() -> bool:
     return bool(_load_token().get("refresh_token"))
 
 
-_PAGE = """<!DOCTYPE html>
-<html lang="uz">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Friday</title>
-<style>
-  body { margin:0; font-family:'Segoe UI',Arial,sans-serif;
-         background:radial-gradient(1200px 600px at 50% -100px,#2b1e4e,#0e0f1a 70%); }
-  .card { max-width:420px; margin:12vh auto 0; padding:40px 36px; text-align:center;
-          background:#161827; border:1px solid #2a2c4a; border-radius:20px;
-          box-shadow:0 20px 60px rgba(0,0,0,.5); color:#eef0ff; }
-  .badge { width:84px; height:84px; margin:0 auto 20px; border-radius:50%;
-           background:#1dbf73; color:#fff; font-size:44px; line-height:84px;
-           box-shadow:0 0 0 12px rgba(29,191,115,.15), 0 8px 30px rgba(29,191,115,.4); }
-  h1 { font-size:22px; margin:0 0 10px; }
-  p  { color:#a7abcf; font-size:14px; line-height:1.6; margin:6px 0; }
-  .mono { color:#8f95c9; font-size:12px; }
-  .dot { display:inline-block; width:8px; height:8px; border-radius:50%;
-         background:#1dbf73; margin-right:6px; }
-</style>
-</head>
-<body>
-  <div class="card">
-    <div class="badge">&#10003;</div>
-    <h1>%TITLE%</h1>
-    <p>%SUBTEXT%</p>
-    <p class="mono"><span class="dot"></span>Bu oynani endi yopishingiz mumkin</p>
-  </div>
-</body>
-</html>"""
+def _page(title: str, message: str, ok: bool) -> bytes:
+    color = "#21b879" if ok else "#db6570"
+    safe_title = title.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+    safe_message = message.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+    return ("<!doctype html><html lang='en'><meta charset='utf-8'>"
+            "<meta name='viewport' content='width=device-width,initial-scale=1'>"
+            "<title>FRIDAY</title><style>body{font:16px Segoe UI,Arial;background:#10121b;color:#f5f6ff;"
+            "display:grid;place-items:center;min-height:90vh}.card{max-width:480px;padding:38px;"
+            "border:1px solid #34384b;border-radius:20px;background:#1b1e2b;text-align:center}"
+            f"h1{{color:{color}}}p{{line-height:1.6;color:#c5c9dc}}</style>"
+            f"<main class='card'><h1>{safe_title}</h1><p>{safe_message}</p></main></html>").encode("utf-8")
 
 
-def _result_page(ok: bool) -> bytes:
-    if ok:
-        title   = "Friday ulandi!"
-        subtext = ("Google hisobingiz muvaffaqiyatli bog&#8216;landi. "
-                   "Endi Friday orqali email, kalendar va Drive "
-                   "buyruqlarini bera olasiz.")
-    else:
-        title   = "Avtorizatsiya amalga oshmadi"
-        subtext = ("Ro&#8216;yxatga qayting va qaytadan urinib ko&#8216;ring. "
-                   "Agar xato davom etsa, Friday jurnalini tekshiring.")
-    return _PAGE.replace("%TITLE%", title).replace("%SUBTEXT%", subtext).encode("utf-8")
+_SUCCESS_HTML = _page("FRIDAY is connected — you may close this tab.",
+                      "Google Workspace access was connected successfully.", True)
+_ERROR_HTML = _page("Google sign-in was not completed", "Return to FRIDAY and try again.", False)
 
 
-def auth_browser(timeout_seconds: int = 240) -> dict:
-    """Standard consent flow: opens the default browser on the PC.
+def _pkce_pair() -> tuple[str, str]:
+    verifier = secrets.token_urlsafe(64)
+    challenge = base64.urlsafe_b64encode(hashlib.sha256(verifier.encode("ascii")).digest()).rstrip(b"=").decode("ascii")
+    return verifier, challenge
 
-    Works for Desktop-app OAuth clients (local redirect). The user authorizes
-    in the browser, the flow saves the token and returns the account email.
-    """
-    from google_auth_oauthlib.flow import InstalledAppFlow
-    cid, sec = client_ids()
-    if not cid or not sec:
-        return {"ok": False, "error": "google_client_id/secret not configured."}
-    client_config = {
-        "installed": {
-            "client_id":     cid,
-            "client_secret": sec,
-            "auth_uri":      AUTH_URI,
-            "token_uri":     TOKEN_URI,
-            "redirect_uris": ["http://localhost"],
+
+class _OAuthSession:
+    def __init__(self, cid: str, secret: str, timeout: float):
+        self.client_id = cid
+        self.client_secret = secret
+        self.verifier, self.challenge = _pkce_pair()
+        self.state = secrets.token_urlsafe(24)
+        self.result: dict = {"ok": False, "pending": True}
+        self.done = threading.Event()
+        self.timeout = max(1.0, float(timeout))
+        self.server: http.server.HTTPServer | None = None
+        self.server_thread: threading.Thread | None = None
+        self.timer: threading.Timer | None = None
+        self.auth_url = ""
+        self.redirect_uri = ""
+
+    def complete(self, result: dict) -> None:
+        self.result = result
+        self.done.set()
+        server = self.server
+        if server:
+            threading.Thread(target=server.shutdown, daemon=True).start()
+
+    def exchange(self, code: str) -> dict:
+        payload = {
+            "client_id": self.client_id,
+            "code": code,
+            "code_verifier": self.verifier,
+            "grant_type": "authorization_code",
+            "redirect_uri": self.redirect_uri,
         }
-    }
-    flow = InstalledAppFlow.from_client_config(client_config, scopes=SCOPES)
-    try:
-        creds = flow.run_local_server(
-            host="localhost", port=0,
-            open_browser=True,
-            success_message="Friday ulandi! Bu oynani yopishingiz mumkin. ✅",
-        )
-    except TypeError:
-        creds = flow.run_local_server(
-            host="localhost", port=0, open_browser=True,
-        )
-    tok = {
-        "client_id":     cid,
-        "client_secret": sec,
-        "refresh_token": creds.refresh_token,
-        "token":         creds.token,
-        "scopes":        " ".join(creds.scopes),
-    }
-    _save_token(tok)
-    email = email_address()
-    return {"ok": True, "email": email}
+        if self.client_secret:
+            payload["client_secret"] = self.client_secret
+        try:
+            response = requests.post(TOKEN_URI, data=payload, timeout=30)
+            try:
+                data = response.json()
+            except ValueError:
+                data = {}
+            if response.status_code != 200:
+                return {"ok": False, "error": f"token exchange failed: {data.get('error', response.text[:200])}"}
+            token = {
+                "client_id": self.client_id,
+                "client_secret": self.client_secret,
+                "refresh_token": data.get("refresh_token"),
+                "token": data.get("access_token"),
+                "scopes": data.get("scope", " ".join(SCOPES)),
+            }
+            if data.get("email"):
+                token["email"] = data["email"]
+            if not token["refresh_token"]:
+                return {"ok": False, "error": "Google did not return a refresh token; retry consent with prompt=consent."}
+            _save_token(token)
+            return {"ok": True, "email": data.get("email", "")}
+        except Exception as exc:
+            return {"ok": False, "error": f"token exchange failed: {exc}"}
 
 
-def auth_browser_nopkce(port: int = 8787, timeout_seconds: int = 300) -> dict:
-    """Consent flow WITHOUT PKCE, using a fixed localhost server.
+def _start_pkce_session(timeout: float, open_browser: bool) -> tuple[dict, _OAuthSession | None]:
+    cid, secret = client_ids()
+    if not cid:
+        return {"ok": False, "error": "Google Desktop OAuth client_id is not configured."}, None
+    session = _OAuthSession(cid, secret, timeout)
 
-    The classic code flow works reliably even for clients where the device
-    flow is rejected. Opens the default browser; token is saved on success.
-    """
-    from urllib.parse import urlencode, parse_qs, urlparse
-    import http.server, threading, webbrowser, secrets
+    class CallbackHandler(http.server.BaseHTTPRequestHandler):
+        def log_message(self, fmt, *args):
+            return
 
-    cid, sec = client_ids()
-    if not cid or not sec:
-        return {"ok": False, "error": "google_client_id/secret not configured."}
-
-    redirect = f"http://localhost:{port}/"
-    state = secrets.token_urlsafe(16)
-    auth_url = (AUTH_URI + "?" + urlencode({
-        "client_id":      cid,
-        "redirect_uri":   redirect,
-        "response_type":  "code",
-        "scope":          " ".join(SCOPES),
-        "access_type":    "offline",
-        "prompt":         "consent",
-        "state":          state,
-    }))
-
-    result = {"code": None, "state": state}
-
-    class Handler(http.server.BaseHTTPRequestHandler):
-        def log_message(self, *a):
-            pass
-
-        def do_GET(self):
-            qs = parse_qs(urlparse(self.path).query)
-            if qs.get("state") == [result["state"]] and qs.get("code"):
-                result["code"] = qs["code"][0]
-                body = _result_page(ok=True)
-            else:
-                body = _result_page(ok=False)
-            self.send_response(200)
-            self.send_header("Content-Type", "text/html")
+        def _reply(self, status: int, body: bytes):
+            self.send_response(status)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
             self.send_header("Content-Length", str(len(body)))
+            self.send_header("Cache-Control", "no-store")
             self.end_headers()
             self.wfile.write(body)
 
-    server = http.server.HTTPServer(("127.0.0.1", port), Handler)
-    server.timeout = 1
-    t = threading.Thread(target=server.serve_forever, daemon=True)
-    t.start()
+        def do_GET(self):
+            parsed = urlparse(self.path)
+            if parsed.path != "/callback":
+                self._reply(404, _ERROR_HTML)
+                return
+            query = parse_qs(parsed.query, keep_blank_values=True)
+            got_state = query.get("state", [""])[0]
+            if not hmac.compare_digest(got_state, session.state):
+                self._reply(400, _page("Sign-in rejected", "The security state did not match. Return to FRIDAY and retry.", False))
+                return
+            error = query.get("error", [""])[0]
+            if error:
+                detail = "Google access was denied." if error == "access_denied" else f"Google returned: {error}"
+                self._reply(400, _page("Google sign-in cancelled", detail, False))
+                session.complete({"ok": False, "error": detail})
+                return
+            code = query.get("code", [""])[0]
+            if not code:
+                self._reply(400, _ERROR_HTML)
+                session.complete({"ok": False, "error": "Google callback did not contain an authorization code."})
+                return
+            result = session.exchange(code)
+            self._reply(200 if result.get("ok") else 400,
+                        _SUCCESS_HTML if result.get("ok") else _ERROR_HTML)
+            session.complete(result)
 
-    webbrowser.open(auth_url)
-    import time
-    deadline = time.time() + timeout_seconds
-    while time.time() < deadline and not result["code"]:
-        time.sleep(1)
-    server.shutdown()
+    try:
+        session.server = http.server.HTTPServer(("127.0.0.1", 0), CallbackHandler)
+        session.server.daemon_threads = True
+        port = session.server.server_address[1]
+        session.redirect_uri = f"http://127.0.0.1:{port}/callback"
+        params = {
+            "client_id": cid,
+            "redirect_uri": session.redirect_uri,
+            "response_type": "code",
+            "scope": " ".join(SCOPES),
+            "access_type": "offline",
+            "prompt": "consent",
+            "state": session.state,
+            "code_challenge": session.challenge,
+            "code_challenge_method": "S256",
+        }
+        session.auth_url = AUTH_URI + "?" + urlencode(params)
 
-    if not result["code"]:
-        return {"ok": False, "error": "timed out waiting for authorization."}
+        def serve():
+            try:
+                session.server.serve_forever(poll_interval=0.1)
+            finally:
+                session.server.server_close()
+                session.done.set()
+                if session.timer:
+                    session.timer.cancel()
+                with _active_lock:
+                    _active_sessions.pop(session.state, None)
 
-    resp = requests.post(TOKEN_URI, data={
-        "client_id":     cid,
-        "client_secret": sec,
-        "code":          result["code"],
-        "grant_type":    "authorization_code",
-        "redirect_uri":  redirect,
-    }, timeout=30)
-    data = resp.json()
-    if resp.status_code != 200:
-        return {"ok": False, "error": f"token exchange failed: {data.get('error', resp.text[:200])}"}
-    tok = {
-        "client_id":     cid,
-        "client_secret": sec,
-        "refresh_token": data.get("refresh_token"),
-        "token":         data.get("access_token"),
-        "scopes":        data.get("scope", " ".join(SCOPES)),
-    }
-    _save_token(tok)
-    return {"ok": True, "email": email_address()}
+        session.server_thread = threading.Thread(target=serve, name="FridayGoogleOAuth", daemon=True)
+        session.server_thread.start()
+        with _active_lock:
+            _active_sessions[session.state] = session
+        session.timer = threading.Timer(session.timeout, lambda: session.complete({"ok": False, "error": "timed out waiting for Google authorization."}))
+        session.timer.daemon = True
+        session.timer.start()
+        if open_browser:
+            webbrowser.open(session.auth_url)
+        return ({"ok": True, "auth_url": session.auth_url,
+                 "authorization_url": session.auth_url, "redirect_uri": session.redirect_uri,
+                 "state": session.state, "code_verifier": session.verifier,
+                 "code_challenge": session.challenge, "code_challenge_method": "S256"}, session)
+    except Exception as exc:
+        if session.timer:
+            session.timer.cancel()
+        if session.server:
+            if session.server_thread and session.server_thread.is_alive():
+                session.complete({"ok": False, "error": f"could not start local OAuth callback: {exc}"})
+                session.server_thread.join(timeout=3)
+            else:
+                session.server.server_close()
+        return {"ok": False, "error": f"could not start local OAuth callback: {exc}"}, None
+
+
+def auth_pkce_start(timeout: int = 300, open_browser: bool = True) -> dict:
+    """Start a non-blocking localhost PKCE flow and return a clickable URL."""
+    result, _session = _start_pkce_session(timeout, open_browser)
+    if result.get("ok"):
+        # The verifier is private to the local session; do not expose it to callers.
+        result.pop("code_verifier", None)
+        result["message"] = "Waiting for Google authorization in the browser."
+    return result
+
+
+def authorize_browser(timeout: int = 180, open_browser: bool = True) -> dict:
+    """Run PKCE authorization and block until success, denial, or timeout."""
+    started, session = _start_pkce_session(timeout, open_browser)
+    if not started.get("ok") or session is None:
+        return started
+    session.done.wait(max(0.0, float(timeout)) + 1.0)
+    result = dict(session.result)
+    if result.get("pending"):
+        result = {"ok": False, "error": "timed out waiting for Google authorization."}
+        session.complete(result)
+    if result.get("ok") and result.get("email"):
+        _cache_email(result["email"])
+    result.pop("pending", None)
+    result.pop("code_verifier", None)
+    result["auth_url"] = started.get("auth_url")
+    return result
+
+
+def auth_browser(timeout_seconds: int = 240) -> dict:
+    """Backward-compatible alias for the installed-app browser authorization."""
+    return authorize_browser(timeout=timeout_seconds, open_browser=True)
+
+
+def auth_browser_nopkce(port: int = 8787, timeout_seconds: int = 300) -> dict:
+    """Deprecated compatibility wrapper; browser sign-in now always uses PKCE."""
+    return authorize_browser(timeout=timeout_seconds, open_browser=True)
 
 
 def auth_start() -> dict:
-    """Start device flow; returns URL + user code + device_code + poll info."""
-    cid, _ = client_ids()
+    """Legacy device-flow start API, retained for backward compatibility."""
+    cid, _secret = client_ids()
     if not cid:
-        return {"ok": False, "error": "google_client_id is not set in config/api_keys.json."}
-    resp = requests.post(DEVICE_URI, data={
-        "client_id": cid,
-        "scope": " ".join(SCOPES),
-    }, timeout=30)
-    if resp.status_code != 200:
-        return {"ok": False, "error": f"device/code failed: {resp.text[:300]}"}
-    data = resp.json()
-    data["ok"] = True
-    return data
+        return {"ok": False, "error": "google_client_id is not set in OAuth config."}
+    try:
+        resp = requests.post(DEVICE_URI, data={"client_id": cid, "scope": " ".join(SCOPES)}, timeout=30)
+        if resp.status_code != 200:
+            return {"ok": False, "error": f"device/code failed: {resp.text[:300]}"}
+        data = resp.json()
+        data["ok"] = True
+        return data
+    except Exception as exc:
+        return {"ok": False, "error": str(exc)}
 
 
 def auth_poll(device_code: str, interval: int = 5, timeout: int = 300) -> dict:
-    """Poll the token endpoint until the user authorizes (or timeouts)."""
-    cid, sec = client_ids()
+    """Legacy device-flow polling API, retained for existing callers."""
+    cid, secret = client_ids()
     deadline = time.time() + timeout
     while time.time() < deadline:
-        resp = requests.post(TOKEN_URI, data={
-            "client_id":     cid,
-            "client_secret": sec,
-            "device_code":   device_code,
-            "grant_type":    "urn:ietf:params:oauth:grant-type:device_code",
-        }, timeout=30)
-        data = resp.json()
-        if resp.status_code == 200:
-            tok = {
-                "client_id":      cid,
-                "client_secret":  sec,
-                "refresh_token":  data.get("refresh_token"),
-                "token":          data.get("access_token"),
-                "scopes":         data.get("scope", " ".join(SCOPES)),
-            }
-            if not tok["refresh_token"]:
-                # token endpoint usually omits refresh_token for offline? keep anyway
-                pass
-            _save_token(tok)
+        try:
+            response = requests.post(TOKEN_URI, data={
+                "client_id": cid, "client_secret": secret, "device_code": device_code,
+                "grant_type": "urn:ietf:params:oauth:grant-type:device_code",
+            }, timeout=30)
+            data = response.json()
+        except Exception as exc:
+            return {"ok": False, "error": f"token request failed: {exc}"}
+        if response.status_code == 200:
+            token = {"client_id": cid, "client_secret": secret,
+                     "refresh_token": data.get("refresh_token"), "token": data.get("access_token"),
+                     "scopes": data.get("scope", " ".join(SCOPES))}
+            _save_token(token)
             email = _fetch_email(data.get("access_token"))
+            if email:
+                _cache_email(email)
             return {"ok": True, "email": email}
         if data.get("error") not in ("authorization_pending", "slow_down"):
-            return {"ok": False, "error": f"token error: {data.get('error', resp.text[:200])}"}
-        time.sleep(interval)
+            return {"ok": False, "error": f"token error: {data.get('error', response.text[:200])}"}
+        time.sleep(max(1, interval + (5 if data.get("error") == "slow_down" else 0)))
     return {"ok": False, "error": "timed out waiting for authorization."}
 
 
 def _fetch_email(access_token: str) -> str | None:
     try:
-        r = requests.get(USER_URI, headers={"Authorization": f"Bearer {access_token}"}, timeout=15)
-        if r.status_code == 200:
-            return r.json().get("email")
+        response = requests.get(USER_URI, headers={"Authorization": f"Bearer {access_token}"}, timeout=15)
+        if response.status_code == 200:
+            return response.json().get("email")
     except Exception:
         pass
     return None
 
 
+def _cache_email(email: str) -> None:
+    if not email:
+        return
+    token = _load_token()
+    if token:
+        token["email"] = email
+        _save_token(token)
+
+
 def get_credentials(force_refresh: bool = False):
-    """Return a working Credentials object, or None if not authorized."""
+    """Return working Google credentials, refreshing expired access tokens."""
     global _cached
-    tok = _load_token()
-    refresh = tok.get("refresh_token")
-    cid     = tok.get("client_id")
-    sec     = tok.get("client_secret")
-    if not refresh or not cid or not sec:
-        return None
-    if _cached is not None and not force_refresh:
-        return _cached
-    creds = gcreds.Credentials(
-        token=tok.get("token"),
-        refresh_token=refresh,
-        token_uri=TOKEN_URI,
-        client_id=cid,
-        client_secret=sec,
-        scopes=tok.get("scopes", SCOPES),
-    )
-    if creds.expired or force_refresh:
-        try:
-            creds.refresh(gtr.Request())
-            tok["token"] = creds.token
-            _save_token(tok)
-        except Exception:
+    with _token_lock:
+        token = _load_token()
+        refresh = token.get("refresh_token")
+        cid = token.get("client_id") or client_ids()[0]
+        secret = token.get("client_secret") or client_ids()[1]
+        if not refresh or not cid:
             return None
-    _cached = creds
-    return creds
+        if _cached is not None and not force_refresh:
+            return _cached
+        creds = gcreds.Credentials(token=token.get("token"), refresh_token=refresh,
+                                   token_uri=TOKEN_URI, client_id=cid,
+                                   client_secret=secret or None,
+                                   scopes=token.get("scopes", SCOPES))
+        if getattr(creds, "expired", False) or force_refresh:
+            try:
+                creds.refresh(gtr.Request())
+                token["token"] = creds.token
+                _save_token(token)
+            except Exception:
+                return None
+        _cached = creds
+        return creds
 
 
 def email_address() -> str:
-    tok = _load_token()
-    if tok.get("email"):
-        return tok["email"]
+    token = _load_token()
+    if token.get("email"):
+        return str(token["email"])
     creds = get_credentials()
     if not creds:
         return ""
-    try:
-        r = requests.get(USER_URI, headers={
-            "Authorization": f"Bearer {creds.token}"}, timeout=15)
-        if r.status_code == 200:
-            em = r.json().get("email", "")
-            tok["email"] = em
-            _save_token(tok)
-            return em
-    except Exception:
-        pass
+    email = _fetch_email(creds.token)
+    if email:
+        _cache_email(email)
+        return email
     return ""
 
 
+def revoke() -> bool:
+    """Best-effort remote revocation followed by unconditional local sign-out."""
+    global _cached
+    token = _load_token()
+    access_token = token.get("refresh_token") or token.get("token")
+    revoked = False
+    if access_token:
+        try:
+            response = requests.post(REVOKE_URI, data={"token": access_token}, timeout=15)
+            revoked = response.status_code in (200, 204)
+        except Exception:
+            pass
+    with _token_lock:
+        try:
+            TOKEN_PATH.unlink(missing_ok=True)
+        except OSError:
+            pass
+        _cached = None
+    return revoked
+
+
+def sign_out() -> bool:
+    return revoke()
+
+
 def status() -> str:
-    cid, sec = client_ids()
-    has_cfg  = bool(cid and sec)
-    has_tok  = has_token()
-    email    = email_address() if has_tok else ""
-    lines = [
-        "Google OAuth:",
-        f"  client configured: {has_cfg}",
-        f"  authorized:        {has_tok}" + (f" ({email})" if email else ""),
-    ]
+    cid, _secret = client_ids()
+    authorized = has_token()
+    email = email_address() if authorized else ""
+    lines = ["Google OAuth:", f"  client configured: {bool(cid)}",
+             f"  authorized:        {authorized}" + (f" ({email})" if email else "")]
+    with _active_lock:
+        pending = any(not session.done.is_set() for session in _active_sessions.values())
+    if pending:
+        lines.append("  browser sign-in:   waiting for callback")
     return "\n".join(lines)

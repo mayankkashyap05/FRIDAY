@@ -1066,8 +1066,20 @@ TOOL_DECLARATIONS = [
             "properties": {
                 "filename":  {"type": "STRING", "description": "File name without extension"},
                 "sheet_name": {"type": "STRING", "description": "Optional sheet name (default: Sheet1)"},
-                "sheets":    {"type": "ARRAY", "items": {"type": "OBJECT"}, "description": "Optional multiple sheets: [{name, headers, rows}]"},
-                "summary":   {"type": "ARRAY", "description": "Optional bold summary row (formulas supported)"},
+                "sheets": {
+                    "type": "ARRAY",
+                    "items": {
+                        "type": "OBJECT",
+                        "properties": {
+                            "name": {"type": "STRING"},
+                            "headers": {"type": "ARRAY", "items": {"type": "STRING"}},
+                            "rows": {"type": "ARRAY", "items": {"type": "ARRAY", "items": {"type": "STRING"}}},
+                            "summary": {"type": "ARRAY", "items": {"type": "STRING"}},
+                        },
+                    },
+                    "description": "Optional multiple sheets: [{name, headers, rows}]",
+                },
+                "summary":   {"type": "ARRAY", "items": {"type": "STRING"}, "description": "Optional bold summary row (formulas supported)"},
                 "headers":   {"type": "ARRAY", "items": {"type": "STRING"}, "description": "Column headers"},
                 "rows":      {"type": "ARRAY", "items": {"type": "ARRAY", "items": {"type": "STRING"}}, "description": "Data rows; each row is an array of cell values"}
             },
@@ -1178,7 +1190,10 @@ TOOL_DECLARATIONS = [
         "parameters": {
             "type": "OBJECT",
             "properties": {
-                "action": {"type": "STRING", "description": "status | enable | disable (default: status)"}
+                "action": {"type": "STRING", "description": "status | enable | disable | repair | update (default: status)"},
+                "delay_seconds": {"type": "INTEGER", "description": "Optional login delay, 0-300 seconds; positive values use Task Scheduler on Windows"},
+                "method": {"type": "STRING", "description": "auto | registry | task_scheduler (Windows)"},
+                "minimized": {"type": "BOOLEAN", "description": "Start FRIDAY minimized/hidden where supported"}
             },
             "required": []
         }
@@ -1372,11 +1387,10 @@ TOOL_DECLARATIONS = [
     {
         "name": "google_auth",
         "description": (
-            "Starts Google authorization (Device Flow). Returns a code + URL "
-            "that the user must open on their phone (google.com/device) and "
-            "enter. Then authorization completes in the background. Use when "
-            "Google Calendar/Drive/Gmail API need connecting, or when the AI "
-            "says Google is not authorized."
+            "Starts Google Desktop OAuth in the user's browser using a local "
+            "loopback callback and PKCE S256. Complete consent in the opened "
+            "browser tab; FRIDAY saves the Workspace token in the background. "
+            "Use when Google Calendar/Drive/Gmail need connecting."
         ),
         "parameters": {
             "type": "OBJECT",
@@ -1388,7 +1402,7 @@ TOOL_DECLARATIONS = [
         "name": "google_auth_status",
         "description": (
             "Reports whether Google is authorized (and which Gmail account), "
-            "or is still waiting for the user to enter the code."
+            "or whether the local browser sign-in callback is still pending."
         ),
         "parameters": {
             "type": "OBJECT",
@@ -1869,33 +1883,20 @@ class FridayLive:
                     "Limit tugagan kalitlar avtomatik aylanadi.")
 
         def _google_auth(args):
-            import threading
             import google_oauth
             if not google_oauth.is_configured():
-                return ("Google OAuth not configured. Add 'google_client_id' and "
-                        "'google_client_secret' to config/api_keys.json first, sir.")
+                return ("Google OAuth not configured. Add the Desktop OAuth client JSON "
+                        "to config/google_oauth.json, or set google_client_id in config/api_keys.json.")
             if google_oauth.has_token():
-                return (f"Google allaqachon ulangan"
+                return ("Google allaqachon ulangan"
                         + (f" ({google_oauth.email_address()})" if google_oauth.email_address() else "")
                         + ". /google_auth_status bilan ko'ring.")
-            info = google_oauth.auth_start()
+            info = google_oauth.auth_pkce_start(open_browser=True)
             if not info.get("ok"):
                 return f"❌ {info.get('error')}"
-            device_code = info["device_code"]
-            user_code   = info["user_code"]
-            url         = info.get("verification_url", "google.com/device")
-
-            def _poll():
-                try:
-                    google_oauth.auth_poll(device_code, interval=info.get("interval", 5), timeout=600)
-                except Exception as e:
-                    print(f"[Google] auth poll error: {e}")
-            threading.Thread(target=_poll, daemon=True).start()
-            return (f"📱 Avtorizatsiya kodi: *{user_code}*\n"
-                    f"Telefonda oching: {url}\n"
-                    "Google akkauntingizga kiring va kodni kiriting.\n"
-                    "Tasdiqlagach men avtomatik saqlayman. 2-3 daqiqa kuting, "
-                    "keyin 'google tekshir' deb so'rang.")
+            return ("A Google sign-in page has opened in your browser. "
+                    "Complete consent there; FRIDAY will finish connecting automatically.\n"
+                    f"Fallback link: {info.get('auth_url', '')}")
 
         def _google_auth_status(args):
             import google_oauth
@@ -2336,6 +2337,7 @@ class FridayLive:
         """Background watchdog: speak + push any newly-triggered alert."""
         from actions.monitor import check_rules as check_monitor_rules, check_email_watch
         from actions.guardian import check_guardian
+        from actions.notifications import notify as _notify_action
         while True:
             try:
                 alerts = await asyncio.to_thread(check_monitor_rules)
@@ -2351,9 +2353,8 @@ class FridayLive:
                 for text in alerts:
                     print(f"[Guardian] 🔔 {text}")
                     self.ui.write_log(text)
-                    from actions.notifications import notify
                     await asyncio.to_thread(
-                        notify,
+                        _notify_action,
                         {"title": "PC Health", "message": text},
                         self.ui)
                     if self.session:
@@ -2364,9 +2365,8 @@ class FridayLive:
                 for text in await asyncio.to_thread(check_email_watch):
                     print(f"[Email] 🔔 {text}")
                     self.ui.write_log(text)
-                    from actions.notifications import notify
                     await asyncio.to_thread(
-                        notify,
+                        _notify_action,
                         {"title": "Friday", "message": text},
                         self.ui)
                     if self.session:
@@ -2646,7 +2646,7 @@ class FridayLive:
                             api_key=_get_api_key(),
                             http_options={"api_version": "v1beta"}
                         )
-                    except KeyError as ke:
+                    except KeyError:
                         msg = ("No Gemini API key configured. Open "
                                "config/api_keys.json and add gemini_api_key.")
                         log(msg, level="ERROR")
@@ -2692,6 +2692,29 @@ class FridayLive:
                     tg.create_task(self._monitor_loop())
 
             except Exception as e:
+                error_text = str(e)
+                error_code = getattr(e, "code", None) or getattr(e, "status", None)
+                schema_failure = (
+                    str(error_code) == "1007"
+                    and any(marker in error_text.lower() for marker in
+                            ("bidigeneratecontentrequest", "missing field", "invalid frame payload"))
+                ) or (
+                    "1007" in error_text
+                    and any(marker in error_text.lower() for marker in
+                            ("bidigeneratecontentrequest", "missing field", "invalid frame payload"))
+                )
+                if schema_failure:
+                    message = ("Fatal Gemini Live setup schema error (1007). "
+                               "FRIDAY will not reconnect-loop; validate TOOL_DECLARATIONS "
+                               "against google-genai Schema (ARRAY fields need items).")
+                    log(f"{message} Details: {error_text}", level="ERROR")
+                    self.ui.write_log(f"SYS: {message}")
+                    self._ready = False
+                    self.session = None
+                    self.ui.set_connection(False)
+                    self.ui.set_connecting(False)
+                    self.ui.set_state("THINKING")
+                    return
                 log(f"Session error: {e}", level="ERROR")
                 print(f"[FRIDAY] ⚠️ {e}")
                 traceback.print_exc()
@@ -2734,11 +2757,14 @@ def main(argv=None):
     import argparse
     parser = argparse.ArgumentParser(description='FRIDAY voice assistant')
     parser.add_argument('--headless', action='store_true', help='Run without showing the native island or tray')
+    parser.add_argument('--minimized', action='store_true', help='Start with the HUD hidden')
     args = parser.parse_args(argv)
     _ensure_core_deps()
     log_file = setup_logger(BASE_DIR)
     log(f"Base dir: {BASE_DIR}\nLog file: {log_file}")
     ui = make_ui('face.png', headless=args.headless)
+    if args.minimized and not args.headless:
+        ui.hud.hide()
     task_ref = {}
     task_lock = threading.Lock()
 

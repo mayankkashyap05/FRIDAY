@@ -56,6 +56,58 @@ def test_config_models_exports_and_no_stale_models():
             assert stale not in text, f"Stale model '{stale}' found in {rel}"
 
 
+def test_tool_declarations_valid_gemini_live_schema():
+    import main
+    if main.types is None:
+        _ensure_google_genai_stub()
+    from google.genai import types as genai_types
+
+    valid_types = {"STRING", "NUMBER", "INTEGER", "BOOLEAN", "ARRAY", "OBJECT"}
+    errors = []
+
+    def inspect_schema(schema, path):
+        if not isinstance(schema, dict):
+            errors.append(f"{path}: schema must be a mapping")
+            return
+        schema_type = schema.get("type")
+        if not isinstance(schema_type, str) or schema_type not in valid_types:
+            errors.append(f"{path}: invalid/missing type {schema_type!r}")
+            return
+        if "required" in schema:
+            properties = schema.get("properties")
+            if not isinstance(properties, dict):
+                errors.append(f"{path}: required fields need an object properties mapping")
+            else:
+                for name in schema["required"]:
+                    if name not in properties:
+                        errors.append(f"{path}: required field {name!r} is absent")
+        if schema_type == "OBJECT":
+            properties = schema.get("properties", {})
+            if not isinstance(properties, dict):
+                errors.append(f"{path}: OBJECT properties must be a mapping")
+                return
+            for name, child in properties.items():
+                inspect_schema(child, f"{path}.properties[{name!r}]")
+        elif schema_type == "ARRAY":
+            items = schema.get("items")
+            if not isinstance(items, dict) or "type" not in items:
+                errors.append(f"{path}: ARRAY is missing a typed items schema")
+                return
+            inspect_schema(items, f"{path}.items")
+
+    for index, declaration in enumerate(main.TOOL_DECLARATIONS):
+        inspect_schema(declaration.get("parameters", {}), f"tool[{index}] {declaration.get('name')}")
+    assert not errors, "Invalid Gemini Live tool schema:\\n" + "\\n".join(errors)
+
+    tool = genai_types.Tool(function_declarations=main.TOOL_DECLARATIONS)
+    # Pydantic-backed google-genai objects serialize through model_dump; the
+    # small CI stub intentionally has no serializer.
+    if hasattr(tool, "model_dump"):
+        tool.model_dump(exclude_none=True)
+    elif hasattr(tool, "dict"):
+        tool.dict(exclude_none=True)
+
+
 def test_config_audio_timing_invariants():
     from config import audio
 
