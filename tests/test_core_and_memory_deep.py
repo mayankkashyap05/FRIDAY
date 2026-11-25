@@ -12,6 +12,11 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+try:
+    import google.auth.transport.requests  # Prefer installed packages over stubs.
+except ImportError:
+    pass
+
 if "google.auth.transport.requests" not in sys.modules:
     _g = sys.modules.setdefault("google", types.ModuleType("google"))
     _ga = sys.modules.setdefault("google.auth", types.ModuleType("google.auth"))
@@ -183,3 +188,82 @@ def test_logger_log_tool_redacts_nested_secrets(tmp_path, monkeypatch):
     log_file = tmp_path / "friday.log"
     monkeypatch.setattr(logger, "LOG_PATH", log_file, raising=False)
     logger.log_tool("gmail", {"api_key": "secret123", "body": "hello"}, result="ok")
+
+
+@pytest.fixture
+def gemini_client(monkeypatch):
+    """An entirely offline SDK stub, independent of installed google packages."""
+    google = types.ModuleType("google")
+    genai = types.ModuleType("google.genai")
+    sdk_types = types.ModuleType("google.genai.types")
+    class Options:
+        def __init__(self, **kwargs):
+            self.__dict__.update(kwargs)
+    sdk_types.HttpOptions = Options
+    sdk_types.HttpRetryOptions = Options
+    genai.types = sdk_types
+    genai.Client = MagicMock()
+    google.genai = genai
+    monkeypatch.setitem(sys.modules, "google", google)
+    monkeypatch.setitem(sys.modules, "google.genai", genai)
+    monkeypatch.setitem(sys.modules, "google.genai.types", sdk_types)
+    monkeypatch.setattr(api_keys, "get_all_keys", lambda: ["key1", "key2"])
+    monkeypatch.setattr(api_keys.time, "sleep", lambda _: None)
+    monkeypatch.delenv("FRIDAY_GEMINI_TIMEOUT_MS", raising=False)
+    return genai.Client
+
+
+def test_gemini_http_timeout_options(gemini_client, monkeypatch):
+    monkeypatch.setenv("FRIDAY_GEMINI_TIMEOUT_MS", "12345")
+    api_keys.generate_with_retry("model", "hi", api_version="v1beta")
+    options = gemini_client.call_args.kwargs["http_options"]
+    assert options.timeout == 12345
+    assert options.api_version == "v1beta"
+    assert options.retry_options.attempts == 1
+    api_keys.generate_with_retry("model", "hi", timeout_ms=30000)
+    assert gemini_client.call_args.kwargs["http_options"].timeout == 30000
+    monkeypatch.delenv("FRIDAY_GEMINI_TIMEOUT_MS")
+    api_keys.generate_with_retry("model", "hi")
+    assert gemini_client.call_args.kwargs["http_options"].timeout == 30000
+
+
+def test_gemini_overload_falls_back(gemini_client):
+    from config.models import MODEL_FLASH, MODEL_FLASH_LITE
+    generate = gemini_client.return_value.models.generate_content
+    result = object()
+    generate.side_effect = [RuntimeError("503 UNAVAILABLE"), RuntimeError("503 UNAVAILABLE"), result]
+    assert api_keys.generate_with_retry(MODEL_FLASH, "hi") is result
+    assert [c.kwargs["model"] for c in generate.call_args_list] == [MODEL_FLASH, MODEL_FLASH, MODEL_FLASH_LITE]
+
+
+@pytest.mark.parametrize("error", ["400 bad request", "403 unavailable permission denied"])
+def test_gemini_non_transient_does_not_fallback(gemini_client, error):
+    from config.models import MODEL_FLASH
+    generate = gemini_client.return_value.models.generate_content
+    generate.side_effect = RuntimeError(error)
+    with pytest.raises(RuntimeError, match=error):
+        api_keys.generate_with_retry(MODEL_FLASH, "hi")
+    assert generate.call_count == 1
+
+
+def test_gemini_fallback_can_be_disabled(gemini_client):
+    from config.models import MODEL_FLASH
+    generate = gemini_client.return_value.models.generate_content
+    generate.side_effect = RuntimeError("503 UNAVAILABLE")
+    with pytest.raises(RuntimeError, match="503"):
+        api_keys.generate_with_retry(MODEL_FLASH, "hi", fallback_model=None)
+    assert generate.call_count == 2
+    assert all(c.kwargs["model"] == MODEL_FLASH for c in generate.call_args_list)
+
+
+def test_gemini_quota_rotates_without_overload_fallback(gemini_client, monkeypatch):
+    from config.models import MODEL_FLASH
+    marked = []
+    monkeypatch.setattr(api_keys, "mark_exhausted", marked.append)
+    generate = gemini_client.return_value.models.generate_content
+    result = object()
+    generate.side_effect = [RuntimeError("429 RESOURCE_EXHAUSTED"), result]
+    assert api_keys.generate_with_retry(MODEL_FLASH, "hi") is result
+    assert marked == ["key1"]
+    assert [c.kwargs["api_key"] for c in gemini_client.call_args_list] == ["key1", "key2"]
+    assert all(c.kwargs["model"] == MODEL_FLASH for c in generate.call_args_list)
