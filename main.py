@@ -2832,10 +2832,87 @@ def main(argv=None):
             pass
 
 
+def is_windows_admin() -> bool:
+    """Return True if the current process has Windows Administrator privileges."""
+    if sys.platform != "win32":
+        return False
+    try:
+        import ctypes
+        return bool(ctypes.windll.shell32.IsUserAnAdmin())
+    except Exception:
+        return False
+
+
+def relaunch_as_admin(argv=None, *, executable=None, working_dir=None) -> bool:
+    """Relaunch FRIDAY with Windows UAC elevation via ShellExecuteW('runas')."""
+    if sys.platform != "win32":
+        return False
+    try:
+        import ctypes
+        import subprocess
+        from ctypes import wintypes
+
+        raw_args = list(sys.argv[1:] if argv is None else argv)
+        forwarded = [a for a in raw_args if a not in ("--elevated", "--no-admin")]
+        forwarded.append("--elevated")
+
+        exe = str(executable or sys.executable)
+        if getattr(sys, "frozen", False):
+            params = subprocess.list2cmdline(forwarded)
+        else:
+            script_path = str(Path(__file__).resolve())
+            params = subprocess.list2cmdline([script_path, *forwarded])
+
+        workdir = str(working_dir or Path(__file__).resolve().parent)
+
+        shell32 = ctypes.windll.shell32
+        shell32.ShellExecuteW.argtypes = [
+            wintypes.HWND,
+            wintypes.LPCWSTR,
+            wintypes.LPCWSTR,
+            wintypes.LPCWSTR,
+            wintypes.LPCWSTR,
+            ctypes.c_int,
+        ]
+        shell32.ShellExecuteW.restype = ctypes.c_void_p
+
+        rc = shell32.ShellExecuteW(None, "runas", exe, params, workdir, 1)
+        rc_val = int(rc) if rc is not None else 0
+        return rc_val > 32
+    except Exception:
+        return False
+
+
+def ensure_admin_if_needed(argv=None) -> bool:
+    """Ensure FRIDAY runs as Administrator on Windows; return True if parent should exit."""
+    import os
+
+    args_list = list(sys.argv[1:] if argv is None else argv)
+    if sys.platform != "win32":
+        return False
+    if is_windows_admin():
+        return False
+    if "--no-admin" in args_list or "--elevated" in args_list:
+        return False
+    if os.environ.get("FRIDAY_NO_ADMIN", "").strip().lower() in ("1", "true", "yes"):
+        return False
+    if "PYTEST_CURRENT_TEST" in os.environ:
+        return False
+
+    if relaunch_as_admin(args_list):
+        print("[FRIDAY] 🛡️ Relaunching with Administrator privileges...")
+        return True
+    print("[FRIDAY] ⚠️ Administrator elevation declined or unavailable — continuing as standard user.")
+    return False
+
+
 def _graceful_shutdown(ui) -> None:
     """Request an orderly UI shutdown."""
     ui.quit()
 
 
 if __name__ == "__main__":
+    if ensure_admin_if_needed():
+        sys.exit(0)
+    sys.argv = [sys.argv[0], *[a for a in sys.argv[1:] if a not in ("--elevated", "--no-admin")]]
     main()
