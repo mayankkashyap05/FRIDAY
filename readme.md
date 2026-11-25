@@ -54,7 +54,7 @@ It runs across **Windows, macOS, and Linux** with platform-native overlay integr
   </tr>
   <tr>
     <td align="center" width="50%">
-      <img src="assets/3.png" alt="Light Mode Search Bar" width="100%"><br>
+      <img src="assets/2.png" alt="Light Mode Search Bar" width="100%"><br>
       <sub><b>Light Mode Notch &amp; Search Pill</b></sub>
     </td>
     <td align="center" width="50%">
