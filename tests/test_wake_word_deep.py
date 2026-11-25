@@ -378,3 +378,45 @@ def test_start_propagates_callback_to_custom_engine(monkeypatch):
     monkeypatch.setattr(ww, "_pick_engine", lambda: ("friday", engine))
     assert ww.wake_word({"action": "start"}) == "started"
     assert engine._on_detect is ww._service._on_detect
+
+
+def test_persisted_threshold_loaded_unless_explicitly_overridden(tmp_path):
+    import json
+
+    cfg = tmp_path / "wake_word.json"
+    cfg.write_text(
+        json.dumps({"phrase": "Hey Jarvis", "threshold": 0.54}),
+        encoding="utf-8",
+    )
+    svc = ww.WakeWordService(models_dir=tmp_path)
+    assert svc._threshold == pytest.approx(0.54)
+    assert svc._phrase == "Hey Jarvis"
+
+    # Explicit user threshold override must not be clobbered on subsequent sync/load.
+    svc.set_threshold(0.72)
+    cfg.write_text(
+        json.dumps({"phrase": "Hey Jarvis", "threshold": 0.45}),
+        encoding="utf-8",
+    )
+    svc._sync_persisted_config()
+    assert svc._threshold == pytest.approx(0.72)
+
+
+def test_quiet_frames_advance_preprocessor_without_scoring():
+    pre_calls = []
+    pred_calls = []
+
+    class PreprocessorModel:
+        def preprocessor(self, frame):
+            pre_calls.append(len(frame))
+
+        def predict(self, frame):
+            pred_calls.append(len(frame))
+            return {"hey_friday": 0.99}
+
+    svc = ww.WakeWordService()
+    svc._model = PreprocessorModel()
+    svc._feed(np.zeros(ww.CHUNK * 2, dtype=np.int16))
+    assert pre_calls == [ww.CHUNK, ww.CHUNK]
+    assert pred_calls == []
+

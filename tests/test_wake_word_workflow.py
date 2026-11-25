@@ -49,6 +49,11 @@ def isolated_models(tmp_path, monkeypatch):
     monkeypatch.setattr(fw, "CONFIG_FILE", models / "wake_word.json")
     monkeypatch.setattr(fw, "_replace", __import__("os").replace)
     monkeypatch.setattr(fw.time, "sleep", lambda *_a, **_k: None)
+    monkeypatch.setattr(fw, "_features", None)
+    monkeypatch.setattr(fw, "_features_owned", None)
+    monkeypatch.setattr(fw, "_mel", None)
+    monkeypatch.setattr(fw, "_emb", None)
+    monkeypatch.setattr(fw, "_mel_emb_key", None)
     ww._WARNED_MISSING.clear()
     yield models
     ww._WARNED_MISSING.clear()
@@ -862,3 +867,443 @@ def test_no_forbidden_files_were_touched():
     assert "Wake Word Setup (Voice & CLI)" in readme
     # The engine keeps its lazy-import contract for the tray thread.
     assert "from actions.friday_wake import" not in source
+
+
+# ── 8. ONNX front-end paths, PyTorch 2.x export & AudioFeatures parity -----
+
+def test_get_features_forwards_local_onnx_paths_and_invalidates_on_dir_change(
+        isolated_models, monkeypatch, tmp_path):
+    """_get_features() must wire MODELS_DIR ONNX files into AudioFeatures."""
+    import sys
+    import types
+
+    # Missing front-end files raise an actionable FileNotFoundError before import.
+    with pytest.raises(FileNotFoundError, match="melspectrogram.onnx"):
+        fw._get_features()
+
+    mel1 = isolated_models / "melspectrogram.onnx"
+    emb1 = isolated_models / "embedding_model.onnx"
+    mel1.write_bytes(b"mel-1")
+    emb1.write_bytes(b"emb-1")
+
+    recorded = []
+
+    class StubAudioFeatures:
+        def __init__(self, melspec_model_path="", embedding_model_path="",
+                     inference_framework="tflite"):
+            recorded.append({
+                "melspec_model_path": melspec_model_path,
+                "embedding_model_path": embedding_model_path,
+                "inference_framework": inference_framework,
+            })
+
+    fake_oww = types.ModuleType("openwakeword")
+    fake_utils = types.ModuleType("openwakeword.utils")
+    fake_utils.AudioFeatures = StubAudioFeatures
+    monkeypatch.setitem(sys.modules, "openwakeword", fake_oww)
+    monkeypatch.setitem(sys.modules, "openwakeword.utils", fake_utils)
+
+    inst1 = fw._get_features()
+    assert fw._get_features() is inst1
+    assert recorded == [{
+        "melspec_model_path": str(mel1),
+        "embedding_model_path": str(emb1),
+        "inference_framework": "onnx",
+    }]
+
+    # Switching MODELS_DIR invalidates auto-created _features and rebinds paths.
+    alt_models = tmp_path / "alt_models"
+    alt_models.mkdir()
+    mel2 = alt_models / "melspectrogram.onnx"
+    emb2 = alt_models / "embedding_model.onnx"
+    mel2.write_bytes(b"mel-2")
+    emb2.write_bytes(b"emb-2")
+    monkeypatch.setattr(fw, "MODELS_DIR", alt_models)
+
+    inst2 = fw._get_features()
+    assert inst2 is not inst1
+    assert recorded[-1] == {
+        "melspec_model_path": str(mel2),
+        "embedding_model_path": str(emb2),
+        "inference_framework": "onnx",
+    }
+
+
+def test_wake_word_service_new_model_forwards_local_onnx_paths(
+        isolated_models, monkeypatch):
+    """WakeWordService._new_model() must wire local ONNX paths via kwargs & AudioFeatures."""
+    import sys
+    import types
+
+    mel = isolated_models / "melspectrogram.onnx"
+    emb = isolated_models / "embedding_model.onnx"
+    wake = isolated_models / ww.WakeWordService()._model_file
+    mel.write_bytes(b"mel")
+    emb.write_bytes(b"emb")
+    wake.write_bytes(b"wake")
+
+    af_calls = []
+    model_calls = []
+
+    class StubAF:
+        def __init__(self, melspec_model_path="", embedding_model_path="",
+                     inference_framework="tflite", **extra):
+            af_calls.append({
+                "melspec_model_path": melspec_model_path,
+                "embedding_model_path": embedding_model_path,
+                "inference_framework": inference_framework,
+                "extra": extra,
+            })
+
+    def _wrap_re_arg(fn):
+        def wrapper(*args, **kwargs):
+            return fn(*args, **kwargs)
+        return wrapper
+
+    class WrappedModel:
+        @_wrap_re_arg
+        def __init__(self, wakeword_models=None, inference_framework="tflite",
+                     **kwargs):
+            model_calls.append({
+                "wakeword_models": wakeword_models,
+                "inference_framework": inference_framework,
+                "kwargs": kwargs,
+            })
+            self.preprocessor = oww_mod.AudioFeatures()
+
+    oww_mod = types.ModuleType("openwakeword.model")
+    oww_mod.AudioFeatures = StubAF
+    oww_mod.Model = WrappedModel
+    monkeypatch.setitem(sys.modules, "openwakeword.model", oww_mod)
+    monkeypatch.setattr(ww, "MODELS_DIR", isolated_models)
+    monkeypatch.setattr(ww, "_get_oww", lambda: WrappedModel)
+
+    svc = ww.WakeWordService()
+    assert svc.load() is True
+    assert model_calls[0]["inference_framework"] == "onnx"
+    assert model_calls[0]["kwargs"]["melspec_model_path"] == str(mel)
+    assert model_calls[0]["kwargs"]["embedding_model_path"] == str(emb)
+    assert af_calls[0]["melspec_model_path"] == str(mel)
+    assert af_calls[0]["embedding_model_path"] == str(emb)
+    assert af_calls[0]["inference_framework"] == "onnx"
+    assert oww_mod.AudioFeatures is StubAF
+
+
+def test_windows_eliminates_random_reset_buffer_leakage_and_aligns_speech(
+        isolated_models, monkeypatch):
+    """_windows() must never include AudioFeatures.reset()'s 41 random rows."""
+    class LeakyResetFeatures:
+        feature_buffer_max_len = 120
+
+        def __init__(self):
+            self.feature_buffer = np.empty((0, 96), dtype=np.float32)
+
+        def reset(self):
+            # Mimic openwakeword.utils.AudioFeatures.reset() random pre-fill.
+            self.feature_buffer = np.full((41, 96), -999.0, dtype=np.float32)
+
+        def __call__(self, x):
+            n_new = max(1, len(x) // fw.FRAME)
+            real_rows = np.arange(n_new, dtype=np.float32)[:, None] * np.ones(
+                (1, 96), dtype=np.float32
+            )
+            self.feature_buffer = np.vstack([self.feature_buffer, real_rows])
+
+    monkeypatch.setattr(fw, "_features", LeakyResetFeatures())
+
+    # 2.0s clip with a localized speech burst between 0.35s and 0.95s.
+    clip = np.zeros(2 * fw.RATE, dtype=np.int16)
+    burst_t = np.arange(int(0.60 * fw.RATE), dtype=np.float32) / fw.RATE
+    clip[int(0.35 * fw.RATE):int(0.95 * fw.RATE)] = (
+        np.sin(2.0 * np.pi * 520.0 * burst_t) * 14000.0
+    ).astype(np.int16)
+
+    windows = fw._windows(clip)
+    assert windows.ndim == 3 and windows.shape[1:] == (16, 96)
+    assert len(windows) >= 1
+    # Zero sentinel -999.0 rows from reset() may appear anywhere in _windows().
+    assert float(np.min(windows)) >= 0.0
+
+
+def test_pytorch_2x_onnx_export_uses_dynamo_false_and_verification_gate(
+        isolated_models, monkeypatch):
+    """_export_onnx must pass dynamo=False and _verify_onnx must gate _replace."""
+    torch = pytest.importorskip("torch")
+
+    # 1. Verify dynamo=False is forwarded and a single self-contained .onnx is written.
+    seen_kwargs = {}
+    real_torch_export = torch.onnx.export
+
+    def spy_export(*args, **kwargs):
+        seen_kwargs.update(kwargs)
+        return real_torch_export(*args, **kwargs)
+
+    monkeypatch.setattr(torch.onnx, "export", spy_export)
+
+    X = np.concatenate([
+        np.ones((24, 16, 96), dtype=np.float32) * 1.5,
+        np.zeros((36, 16, 96), dtype=np.float32),
+    ])
+    y = np.array([1.0] * 24 + [0.0] * 36, dtype=np.float32)
+    export_model, metrics = fw._train_torch(X, y, X[:8], y[:8], steps=10)
+    assert 0.35 <= metrics["suggested_threshold"] <= 0.85
+
+    onnx_out = isolated_models / "probe.onnx"
+    fw._export_onnx(export_model, onnx_out, output_name="hey_friday")
+    if "dynamo" in __import__("inspect").signature(real_torch_export).parameters:
+        assert seen_kwargs.get("dynamo") is False
+    assert onnx_out.is_file() and onnx_out.stat().st_size > 0
+    assert not Path(f"{onnx_out}.data").exists()
+    fw._verify_onnx(onnx_out)
+
+    # 2. Pre-replace verification gate must reject corrupt exports & preserve old model.
+    _write_training_clips(monkeypatch, fw.TRAIN_DIR, positives=2, negatives=1)
+    _install_fake_features(monkeypatch)
+    monkeypatch.setattr(
+        fw,
+        "_train_torch",
+        lambda *_a, **_k: (
+            export_model,
+            {
+                "accuracy": 0.95,
+                "best_step": 10,
+                "steps": 10,
+                "pos_mean": 0.92,
+                "neg_mean": 0.05,
+                "separation": 0.87,
+                "suggested_threshold": 0.56,
+            },
+        ),
+    )
+    fw.MODEL_PATH.write_bytes(b"trusted-previous-model")
+
+    # Corrupt bytes written by exporter -> _verify_onnx catches it BEFORE _replace!
+    def write_corrupt(_model, path, output_name="hey_friday"):
+        Path(path).write_bytes(b"not-a-valid-onnx-protobuf")
+
+    monkeypatch.setattr(fw, "_export_onnx", write_corrupt)
+    monkeypatch.setattr(fw, "_verify_onnx", lambda p: fw._REAL_VERIFY_ONNX(p))
+
+    msg = fw.train_model(steps=50)
+    assert "existing model (if any) was left untouched" in msg
+    assert fw.MODEL_PATH.read_bytes() == b"trusted-previous-model"
+    assert not list(isolated_models.glob(".hey_friday*"))
+
+    # External .data sidecar -> _verify_onnx rejects non-self-contained exports too!
+    def write_with_sidecar(_model, path, output_name="hey_friday"):
+        Path(path).write_bytes(onnx_out.read_bytes())
+        Path(f"{path}.data").write_bytes(b"external-weights")
+
+    monkeypatch.setattr(fw, "_export_onnx", write_with_sidecar)
+    msg_sidecar = fw.train_model(steps=50)
+    assert "sidecar" in msg_sidecar
+    assert fw.MODEL_PATH.read_bytes() == b"trusted-previous-model"
+    assert not list(isolated_models.glob(".hey_friday*"))
+
+
+def test_end_to_end_real_math_wake_word_training_export_and_streaming(
+        isolated_models, monkeypatch):
+    """Real AudioFeatures + PyTorch + ONNXRuntime + WakeWordService smoke test."""
+    import shutil
+
+    pytest.importorskip("torch")
+    ort = pytest.importorskip("onnxruntime")
+    pytest.importorskip("openwakeword")
+
+    real_mel = REPO / "models" / "melspectrogram.onnx"
+    real_emb = REPO / "models" / "embedding_model.onnx"
+    if not (real_mel.is_file() and real_emb.is_file()):
+        pytest.skip("local ONNX feature models not present in repo")
+
+    shutil.copy2(real_mel, isolated_models / "melspectrogram.onnx")
+    shutil.copy2(real_emb, isolated_models / "embedding_model.onnx")
+    monkeypatch.setattr(ww, "MODELS_DIR", isolated_models)
+
+    def make_structured_phrase(seed: int, *, reverse: bool = False) -> np.ndarray:
+        rng = np.random.default_rng(seed)
+        sr = fw.RATE
+        f0 = float(rng.uniform(125.0, 165.0))
+        rate = float(rng.uniform(0.92, 1.08))
+        amp = float(rng.uniform(0.26, 0.48))
+
+        def syl(f_base, f1, f2, dur_s):
+            n = int(dur_s * sr)
+            phase = 2.0 * np.pi * np.cumsum(
+                np.full(n, f_base, dtype=np.float32)
+            ) / sr
+            sig = np.zeros(n, dtype=np.float32)
+            for h in range(1, 18):
+                fh = h * f_base
+                if fh > 7200:
+                    break
+                w = (
+                    np.exp(-0.5 * ((fh - f1) / 170.0) ** 2)
+                    + 0.8 * np.exp(-0.5 * ((fh - f2) / 250.0) ** 2)
+                )
+                sig += float(w) * np.sin(h * phase)
+            fade = min(n // 4, int(0.02 * sr))
+            if fade > 1:
+                sig[:fade] *= np.linspace(0.0, 1.0, fade, dtype=np.float32)
+                sig[-fade:] *= np.linspace(1.0, 0.0, fade, dtype=np.float32)
+            return (sig / (float(np.max(np.abs(sig))) + 1e-6)) * amp
+
+        s_hey = syl(f0 * 1.06, 480.0, 2050.0, 0.19 * rate)
+        gap = np.zeros(int(0.04 * rate * sr), dtype=np.float32)
+        s_fri = syl(f0 * 0.96, 720.0, 1280.0, 0.20 * rate)
+        s_day = syl(f0 * 0.90, 450.0, 2180.0, 0.21 * rate)
+        parts = [s_day, gap, s_fri, gap, s_hey] if reverse else [s_hey, gap, s_fri, gap, s_day]
+        phrase = np.concatenate(parts)
+
+        clip = rng.normal(0.0, 0.002, int(2.0 * sr)).astype(np.float32)
+        onset = int(rng.uniform(0.25, 0.85) * sr)
+        end = min(clip.size, onset + phrase.size)
+        clip[onset:end] += phrase[:end - onset]
+        return np.clip(clip * 32767.0, -32767.0, 32767.0).astype(np.int16)
+
+    for idx in range(4):
+        fw._write_clip(
+            fw.TRAIN_DIR / "positive" / f"pos_{idx:02d}.wav",
+            make_structured_phrase(50 + idx),
+        )
+    bg_rng = np.random.default_rng(99)
+    for idx in range(2):
+        fw._write_clip(
+            fw.TRAIN_DIR / "negative" / f"neg_{idx:02d}.wav",
+            bg_rng.normal(0.0, 140.0, 2 * fw.RATE).astype(np.int16),
+        )
+
+    ok, report = fw._train_model(steps=260, phrase="Hey Friday")
+    assert ok is True, report
+    assert fw.MODEL_PATH.is_file()
+    assert not Path(f"{fw.MODEL_PATH}.data").exists()
+
+    # Parse reported accuracy and separation directly from _train_model output.
+    import re
+    acc_match = re.search(r"Held-out accuracy (\d+)%", report)
+    sep_match = re.search(r"separation ([+-]?\d+\.\d+)", report)
+    assert acc_match and int(acc_match.group(1)) >= 85, report
+    assert sep_match and float(sep_match.group(1)) > 0.35, report
+
+    cfg = fw.load_config()
+    assert 0.35 <= float(cfg["threshold"]) <= 0.85
+
+    # Verify standalone ONNXRuntime session + runtime WakeWordService streaming.
+    sess = ort.InferenceSession(
+        str(fw.MODEL_PATH), providers=["CPUExecutionProvider"]
+    )
+    probe_out = sess.run(
+        None, {sess.get_inputs()[0].name: np.zeros((1, 16, 96), dtype=np.float32)}
+    )[0]
+    assert probe_out.shape == (1, 1)
+    assert 0.0 <= float(probe_out[0, 0]) <= 1.0
+
+    svc = ww.WakeWordService(models_dir=isolated_models)
+    assert svc.load() is True
+    assert svc._threshold == pytest.approx(float(cfg["threshold"]))
+
+    unseen_pos = make_structured_phrase(777)
+    pos_scores = [
+        svc.score_frame(unseen_pos[p:p + ww.CHUNK])
+        for p in range(0, len(unseen_pos) - ww.CHUNK + 1, ww.CHUNK)
+    ]
+    svc._model.reset()
+    ww._prime_oww_model(svc._model)
+    silence = np.zeros(2 * fw.RATE, dtype=np.int16)
+    sil_scores = [
+        svc.score_frame(silence[p:p + ww.CHUNK])
+        for p in range(0, len(silence) - ww.CHUNK + 1, ww.CHUNK)
+    ]
+    svc._model.reset()
+    ww._prime_oww_model(svc._model)
+    reversed_speech = make_structured_phrase(888, reverse=True)
+    rev_scores = [
+        svc.score_frame(reversed_speech[p:p + ww.CHUNK])
+        for p in range(0, len(reversed_speech) - ww.CHUNK + 1, ww.CHUNK)
+    ]
+
+    assert max(pos_scores) >= svc._threshold
+    assert max(sil_scores) < svc._threshold
+    assert max(pos_scores) - max(sil_scores) > 0.35
+    assert max(rev_scores) < max(pos_scores)
+
+
+def test_receive_audio_schedules_long_running_wake_word_as_asyncio_task():
+    """_receive_audio must wrap LONG_RUNNING_TOOLS in asyncio.create_task()."""
+    import main
+
+    ui = MagicMock(muted=True)
+    ui.set_state = lambda *_a, **_k: None
+    ui.write_log = lambda *_a, **_k: None
+    ui.set_speaking = lambda *_a, **_k: None
+    live = main.FridayLive(ui)
+    live.set_speaking = lambda *_a, **_k: None
+
+    tool_started = asyncio.Event()
+    release_tool = asyncio.Event()
+    sent_responses = []
+    observed_tasks = []
+
+    def slow_wake_tool(_args):
+        return "wake setup finished"
+
+    live._tool_handlers["wake_word"] = (slow_wake_tool, 1500)
+
+    orig_bg = live._execute_tool_in_background
+
+    async def tracked_bg(fc):
+        tool_started.set()
+        await release_tool.wait()
+        return await orig_bg(fc)
+
+    live._execute_tool_in_background = tracked_bg
+
+    fc = SimpleNamespace(name="wake_word", args={"action": "setup"}, id="call-1")
+    tool_msg = SimpleNamespace(
+        data=None,
+        server_content=None,
+        tool_call=SimpleNamespace(function_calls=[fc]),
+        tool_call_cancellation=None,
+    )
+    follow_up_msg = SimpleNamespace(
+        data=None,
+        server_content=SimpleNamespace(
+            interrupted=False,
+            model_turn=None,
+            input_transcription=None,
+            output_transcription=None,
+            turn_complete=True,
+        ),
+        tool_call=None,
+        tool_call_cancellation=None,
+    )
+
+    class FakeSession:
+        def receive(self):
+            async def _gen():
+                yield tool_msg
+                await tool_started.wait()
+                observed_tasks.extend(list(live._background_tasks))
+                yield follow_up_msg
+                release_tool.set()
+                raise asyncio.CancelledError()
+            return _gen()
+
+        async def send_tool_response(self, function_responses):
+            sent_responses.append(function_responses[0].response["result"])
+
+    async def scenario():
+        live.session = FakeSession()
+        live._send_lock = asyncio.Lock()
+        live._ready = True
+        with pytest.raises(asyncio.CancelledError):
+            await live._receive_audio()
+        if live._background_tasks:
+            await asyncio.gather(*list(live._background_tasks))
+
+    asyncio.run(scenario())
+
+    assert len(observed_tasks) == 1
+    assert isinstance(observed_tasks[0], asyncio.Task)
+    assert sent_responses == ["wake setup finished"]
+    assert len(live._background_tasks) == 0
+
