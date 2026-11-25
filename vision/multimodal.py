@@ -2,14 +2,15 @@
 
 from __future__ import annotations
 
-import io
 from typing import Any
+
+from config.models import MODEL_FLASH
 
 
 class MultimodalVision:
     """Use the configured Gemini API only when explicitly available."""
 
-    def __init__(self, model: str = "gemini-2.5-flash"):
+    def __init__(self, model: str = MODEL_FLASH):
         self.model = model
         self._client = None
         self.error: str | None = None

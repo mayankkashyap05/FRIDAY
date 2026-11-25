@@ -1,7 +1,7 @@
 """Offline deep tests for computer_control / computer_settings upgrades."""
 
 import sys
-from types import ModuleType
+from types import ModuleType, SimpleNamespace
 from unittest.mock import MagicMock
 
 import pytest
@@ -299,3 +299,46 @@ def test_power_actions_and_safety_classifications(monkeypatch):
     assert commands[2][:2] == ["shutdown", "/h"]
     assert classify("computer_settings", {"action": "sleep_pc"}) == Risk.HIGH
     assert classify("computer_settings", {"action": "hibernate"}) == Risk.HIGH
+
+
+def test_master_volume_supports_modern_endpoint_volume(monkeypatch):
+    endpoint = object()
+    pycaw = ModuleType("pycaw.pycaw")
+    pycaw.AudioUtilities = MagicMock()
+    pycaw.AudioUtilities.GetSpeakers.return_value = SimpleNamespace(EndpointVolume=endpoint)
+    pycaw.IAudioEndpointVolume = SimpleNamespace(_iid_=object())
+    comtypes = ModuleType("comtypes")
+    comtypes.CLSCTX_ALL = 23
+    monkeypatch.setitem(sys.modules, "pycaw.pycaw", pycaw)
+    monkeypatch.setitem(sys.modules, "comtypes", comtypes)
+    assert cs._master_volume() is endpoint
+
+
+def test_master_volume_supports_legacy_activate(monkeypatch):
+    import ctypes
+    speaker = SimpleNamespace(Activate=lambda *args: "legacy-interface")
+    pycaw = ModuleType("pycaw.pycaw")
+    pycaw.AudioUtilities = MagicMock()
+    pycaw.AudioUtilities.GetSpeakers.return_value = speaker
+    pycaw.IAudioEndpointVolume = SimpleNamespace(_iid_="iid")
+    comtypes = ModuleType("comtypes")
+    comtypes.CLSCTX_ALL = 23
+    monkeypatch.setitem(sys.modules, "pycaw.pycaw", pycaw)
+    monkeypatch.setitem(sys.modules, "comtypes", comtypes)
+    monkeypatch.setattr(ctypes, "POINTER", lambda _type: "pointer-type")
+    monkeypatch.setattr(ctypes, "cast", lambda value, target: (value, target))
+    assert cs._master_volume() == ("legacy-interface", "pointer-type")
+
+
+def test_dark_mode_status_is_explicit(monkeypatch):
+    monkeypatch.setattr(cs, "_OS", "Windows")
+    monkeypatch.setattr(cs, "_win_dark_mode_current", lambda: True)
+    assert cs.dark_mode_status() == "Dark mode is enabled."
+    monkeypatch.setattr(cs, "_win_dark_mode_current", lambda: None)
+    assert "unavailable" in cs.dark_mode_status().lower()
+
+
+def test_computer_settings_returns_dark_mode_status(monkeypatch, fake_pg):
+    monkeypatch.setattr(cs, "_OS", "Windows")
+    monkeypatch.setattr(cs, "_win_dark_mode_current", lambda: False)
+    assert cs.computer_settings({"action": "dark_mode_status"}) == "Dark mode is disabled."

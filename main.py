@@ -1920,6 +1920,7 @@ class FridayLive:
                 sheet_name=args.get("sheet_name", "Sheet1"),
                 sheets=args.get("sheets"),
                 summary=args.get("summary"),
+                summary_row=args.get("summary_row"),
             )
 
         def _smart_home(args):

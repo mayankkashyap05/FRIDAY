@@ -718,7 +718,12 @@ def _search_youtube_videos(
     url = SEARCH_ENDPOINT.format(query=quote_plus(query))
     try:
         response = requests.get(url, headers=_request_headers(), timeout=15)
-        html = getattr(response, "text", "") or ""
+        try:
+            html = getattr(response, "text", "") or ""
+        finally:
+            close = getattr(response, "close", None)
+            if close:
+                close()
         data = _extract_yt_initial_data(html)
         results: list[dict] = []
         if data:
@@ -885,7 +890,12 @@ def _scrape_video_info(video_id: str) -> dict:
     url = f"https://www.youtube.com/watch?v={video_id}"
     try:
         response = requests.get(url, headers=_request_headers(), timeout=12)
-        html = getattr(response, "text", "") or ""
+        try:
+            html = getattr(response, "text", "") or ""
+        finally:
+            close = getattr(response, "close", None)
+            if close:
+                close()
         info: dict = {}
         player_response = _extract_json_blob(html, "ytInitialPlayerResponse") or {}
         details = player_response.get("videoDetails") if isinstance(player_response, dict) else None
@@ -965,7 +975,12 @@ def _scrape_trending(region: str | None = None, max_results: int = 8,
     for endpoint in endpoints:
         try:
             response = requests.get(endpoint, headers=_request_headers(), timeout=15)
-            html = getattr(response, "text", "") or ""
+            try:
+                html = getattr(response, "text", "") or ""
+            finally:
+                close = getattr(response, "close", None)
+                if close:
+                    close()
             data = _extract_yt_initial_data(html)
             raw: list[dict] = []
             if data:

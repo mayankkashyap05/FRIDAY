@@ -98,7 +98,8 @@ def test_every_model_caller_imports_the_shared_constant():
     """No call site may hard-code the lite id again."""
     for rel in MODEL_CALLERS:
         text = (REPO / rel).read_text(encoding="utf-8-sig")
-        assert "MODEL_FLASH_LITE" in text, f"{rel} does not use the shared constant"
+        expected = "MODEL_FLASH" if rel.startswith("agent/") else "MODEL_FLASH_LITE"
+        assert expected in text, f"{rel} does not use the shared constant {expected}"
         assert "from config.models import" in text, f"{rel} does not import it"
         # The literal must be gone from the call sites themselves.
         for line in text.splitlines():

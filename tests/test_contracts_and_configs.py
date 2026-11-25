@@ -42,8 +42,9 @@ def test_config_models_exports_and_no_stale_models():
     for attr in ("MODEL", "LITE_MODEL", "MODEL_FLASH", "MODEL_FLASH_LITE", "MODEL_LIVE"):
         val = getattr(models, attr, None)
         assert isinstance(val, str) and len(val) > 0, f"Missing {attr}"
+    assert models.MODEL_FLASH == "gemini-3.8-flash"
 
-    stale_patterns = ("gemini-2.5-flash-lite", "gemini-3.8-flash", "gemini-2.0-flash")
+    stale_patterns = ("gemini-2.5-flash", "gemini-3.8-flash", "gemini-2.0-flash")
     for py_file in ROOT.rglob("*.py"):
         rel = py_file.relative_to(ROOT).as_posix()
         if (

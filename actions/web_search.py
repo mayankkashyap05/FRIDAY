@@ -234,7 +234,7 @@ def _ddgs_import():
         return DDGS
     except ImportError:
         with warnings.catch_warnings():
-            warnings.simplefilter("ignore", DeprecationWarning)
+            warnings.simplefilter("ignore", (DeprecationWarning, RuntimeWarning))
             from duckduckgo_search import DDGS as LegacyDDGS
         return LegacyDDGS
 
@@ -456,14 +456,15 @@ def web_search(
             result = _gemini_search(query, **kwargs)
     except Exception as exc:
         print(f"[WebSearch] Gemini unavailable ({exc}); trying DuckDuckGo")
+    if (not str(result or "").strip()
+            or str(result).strip().lower().startswith("no results found")):
         try:
             hits = _ddg_search(query or ", ".join(items), max_results=max_results,
                                mode=mode, time_range=time_range, region=region)
-            result = _format_ddg(query, hits)
-            if result.startswith("No results found"):
-                result = _instant_answer(query) if query else ""
+            result = _format_ddg(query or ", ".join(items), hits)
         except Exception as ddg_exc:
             print(f"[WebSearch] ddgs unavailable ({ddg_exc}); trying instant answers")
+        if not str(result or "").strip() or str(result).startswith("No results found"):
             result = _instant_answer(query) if query else ""
 
     result = str(result or "").strip()

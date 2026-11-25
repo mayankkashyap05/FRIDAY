@@ -287,3 +287,15 @@ def test_desktop_control_new_actions_are_patchable(monkeypatch, tmp_path):
         {"action": "list", "sort_by": "size", "limit": "5"})
     assert "Dry run" in desktop.desktop_control(
         {"action": "organize", "dry_run": "true"})
+
+
+def test_desktop_cleanup_and_organize_preserve_windows_metadata(monkeypatch, tmp_path):
+    monkeypatch.setattr(desktop, "_get_desktop", lambda: tmp_path)
+    for name in ("Desktop.INI", "THUMBS.DB", ".DS_STORE", "report.pdf"):
+        (tmp_path / name).write_text("metadata" if name != "report.pdf" else "data")
+    plan, _ = desktop._organize_plan(tmp_path, "by_type")
+    assert [src.name for src, _ in plan] == ["report.pdf"]
+    desktop.clean_desktop()
+    assert (tmp_path / "Desktop.INI").exists()
+    assert (tmp_path / "THUMBS.DB").exists()
+    assert (tmp_path / ".DS_STORE").exists()

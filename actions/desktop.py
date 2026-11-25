@@ -454,7 +454,8 @@ def _organize_plan(desktop: Path, mode: str) -> tuple[list[tuple[Path, Path]], l
     moves: list[tuple[Path, Path]] = []
     skipped: list[str] = []
     for item in sorted(desktop.iterdir()):
-        if item.is_dir() or item.name.startswith(".") or item.suffix.lower() == ".lnk":
+        if (item.is_dir() or item.name.startswith(".") or item.suffix.lower() == ".lnk"
+                or item.name.casefold() in {"desktop.ini", "thumbs.db", ".ds_store"}):
             continue
         if mode == "by_date":
             folder_name = datetime.fromtimestamp(item.stat().st_mtime).strftime("%Y-%m")
@@ -547,6 +548,7 @@ def clean_desktop(dry_run: bool = False) -> str:
     archive_dir = desktop / f"Desktop Archive {datetime.now():%Y-%m-%d}"
     candidates = [item for item in sorted(desktop.iterdir())
                   if item.is_file() and not item.name.startswith(".")
+                  and item.name.casefold() not in {"desktop.ini", "thumbs.db", ".ds_store"}
                   and item.suffix.lower() != ".lnk"
                   and not (archive_dir / item.name).exists()]
     if dry_run:

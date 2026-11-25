@@ -247,6 +247,7 @@ def create_spreadsheet(
     sheet_name: str = "Sheet1",
     sheets=None,
     summary=None,
+    summary_row=None,
 ) -> str:
     """Create a styled .xlsx, optionally with multiple sheets and a summary."""
     try:
@@ -263,12 +264,13 @@ def create_spreadsheet(
                     definitions.append((
                         _sheet_name(str(item.get("name") or f"Sheet{len(definitions) + 1}")),
                         item.get("headers") or [], item.get("rows") or [],
-                        item.get("summary"),
+                        item.get("summary") if item.get("summary") is not None else item.get("summary_row"),
                     ))
                 else:
                     definitions.append((_sheet_name(f"Sheet{len(definitions) + 1}"), [], item or [], None))
         else:
-            definitions = [(_sheet_name(sheet_name, "Sheet1"), headers or [], rows or [], summary)]
+            definitions = [(_sheet_name(sheet_name, "Sheet1"), headers or [], rows or [],
+                           summary if summary is not None else summary_row)]
 
         first = True
         used_names = set()

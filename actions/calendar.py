@@ -41,8 +41,8 @@ def _service():
     creds = google_oauth.get_credentials()
     if not creds:
         raise RuntimeError(
-            "Google is not authorized yet. Run 'google_auth' first, or say "
-            "'googleni avtorizatsiya qil' and follow the code link.")
+            "Google Calendar is not authorized yet. Run 'google_auth' first and "
+            "follow the sign-in instructions.")
     return build("calendar", "v3", credentials=creds)
 
 

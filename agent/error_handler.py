@@ -3,7 +3,7 @@ import re
 import sys
 from pathlib import Path
 
-from config.models import MODEL_FLASH_LITE
+from config.models import MODEL_FLASH
 from enum import Enum
 
 
@@ -80,8 +80,6 @@ def analyze_error(
             "user_message": str
         }
     """
-    import google.generativeai as genai
-
     if attempt >= max_attempts:
         print(f"[ErrorHandler] ⚠️ Max attempts reached for step {step.get('step')} — forcing replan")
         return {
@@ -92,11 +90,7 @@ def analyze_error(
             "user_message":  "Trying a different approach, sir."
         }
 
-    genai.configure(api_key=_get_api_key())
-    model = genai.GenerativeModel(
-        model_name=MODEL_FLASH_LITE,
-        system_instruction=ERROR_ANALYST_PROMPT
-    )
+    from api_keys import generate_with_retry
 
     prompt = f"""Failed step:
 Tool: {step.get('tool')}
@@ -110,7 +104,7 @@ Error:
 Attempt number: {attempt}"""
 
     try:
-        response = model.generate_content(prompt)
+        response = generate_with_retry(MODEL_FLASH, prompt, config={"system_instruction": ERROR_ANALYST_PROMPT})
         text     = response.text.strip()
         text     = re.sub(r"```(?:json)?", "", text).strip().rstrip("`").strip()
 
@@ -150,11 +144,7 @@ def generate_fix(step: dict, error: str, fix_suggestion: str) -> dict:
 
     Returns a modified step dict.
     """
-    import google.generativeai as genai
-
-    genai.configure(api_key=_get_api_key())
-    from config.models import MODEL_FLASH
-    model = genai.GenerativeModel(model_name=MODEL_FLASH)
+    from api_keys import generate_with_retry
 
     prompt = f"""A task step failed. Generate a replacement step.
 
@@ -170,7 +160,7 @@ Write a Python script that accomplishes the same goal differently.
 Return ONLY the Python code, no explanation."""
 
     try:
-        response = model.generate_content(prompt)
+        response = generate_with_retry(MODEL_FLASH, prompt)
         code = response.text.strip()
         code = re.sub(r"```(?:python)?", "", code).strip().rstrip("`").strip()
 

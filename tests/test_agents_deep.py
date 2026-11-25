@@ -172,3 +172,35 @@ def test_task_queue_priority_and_history_pruning():
     # Next submit triggers pruning
     q.submit("goal final", priority=TaskPriority.HIGH)
     assert len(q._tasks) <= 6
+
+
+def test_agent_llm_calls_use_retry_helper_and_shared_flash(monkeypatch):
+    import api_keys
+    from pathlib import Path
+    from types import SimpleNamespace
+    from config.models import MODEL_FLASH
+    from agent import planner, error_handler, executor
+
+    seen = []
+    responses = [
+        '{"goal":"g","steps":[]}',
+        '{"decision":"retry","reason":"temporary","max_retries":1}',
+        'print("fixed")',
+    ]
+    def generate(model, contents, config=None, **kwargs):
+        seen.append((model, contents, config))
+        return SimpleNamespace(text=responses.pop(0))
+    monkeypatch.setattr(api_keys, "generate_with_retry", generate)
+    assert planner.create_plan("goal")["goal"] == "g"
+    decision = error_handler.analyze_error(
+        {"step": 1, "tool": "x", "description": "do it", "parameters": {}},
+        "temporary", attempt=1, max_attempts=3,
+    )
+    assert decision["decision"] == ErrorDecision.RETRY
+    assert error_handler.generate_fix(
+        {"step": 1, "tool": "x", "description": "do it", "parameters": {}},
+        "failure", "different route",
+    )["tool"] == "code_helper"
+    assert all(call[0] == MODEL_FLASH for call in seen)
+    for module in (planner, error_handler, executor):
+        assert "google.generativeai" not in Path(module.__file__).read_text(encoding="utf-8")

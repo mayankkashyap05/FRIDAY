@@ -4,6 +4,7 @@
 import hashlib
 import json
 import os
+import platform
 import shutil
 import sys
 import tempfile
@@ -105,6 +106,11 @@ def _is_system_path(path: Path) -> bool:
     return bool(parts & _SYSTEM_DIRS)
 
 
+_PROTECTED_DESKTOP_NAMES = {"desktop.ini", "thumbs.db", ".ds_store"}
+
+def _is_protected_desktop_metadata(path) -> bool:
+    return Path(path).name.casefold() in _PROTECTED_DESKTOP_NAMES
+
 def _iter_files(root: Path, recursive: bool = True):
     """Yield a bounded number of safe files, skipping system directories."""
     count = 0
@@ -112,7 +118,8 @@ def _iter_files(root: Path, recursive: bool = True):
         for item in root.iterdir():
             if count >= MAX_SCAN:
                 break
-            if item.is_file() and not item.name.startswith("."):
+            if (item.is_file() and not item.name.startswith(".")
+                    and not _is_protected_desktop_metadata(item)):
                 count += 1
                 yield item
         return
@@ -122,7 +129,7 @@ def _iter_files(root: Path, recursive: bool = True):
         for filename in filenames:
             if count >= MAX_SCAN:
                 return
-            if filename.startswith("."):
+            if filename.startswith(".") or _is_protected_desktop_metadata(filename):
                 continue
             count += 1
             yield Path(dirpath) / filename
@@ -332,8 +339,18 @@ def _resolve_path(raw: str) -> Path:
     Resolves a path from user input.
     Supports shortcuts: 'desktop', 'downloads', 'documents', 'home'
     """
+    desktop = Path.home() / "Desktop"
+    if platform.system() == "Windows":
+        try:
+            import winreg
+            with winreg.OpenKey(winreg.HKEY_CURRENT_USER,
+                    r"Software\Microsoft\Windows\CurrentVersion\Explorer\User Shell Folders") as key:
+                value = winreg.QueryValueEx(key, "Desktop")[0]
+            desktop = Path(os.path.expandvars(str(value))).expanduser()
+        except Exception:
+            pass
     shortcuts = {
-        "desktop":   Path.home() / "Desktop",
+        "desktop":   desktop,
         "downloads": Path.home() / "Downloads",
         "documents": Path.home() / "Documents",
         "pictures":  Path.home() / "Pictures",
@@ -415,6 +432,8 @@ def delete_file(path: str, confirm: bool = True) -> str:
     try:
         target = Path(path).expanduser().resolve()
         home = Path.home().resolve()
+        if _is_protected_desktop_metadata(target):
+            return f"Refusing to delete protected system metadata: {target.name}"
         if target in (Path(target.anchor), home) or target == Path(__file__).resolve().parent.parent:
             return f"Refusing to delete a protected root folder: {target}"
         if not target.exists():
@@ -638,7 +657,8 @@ def organize_desktop() -> str:
 
         for item in desktop.iterdir():
 
-            if item.is_dir() or item.name.startswith("."):
+            if (item.is_dir() or item.name.startswith(".")
+                    or item.name.casefold() in {"desktop.ini", "thumbs.db", ".ds_store"}):
                 continue
 
             ext        = item.suffix.lower()
