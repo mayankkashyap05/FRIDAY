@@ -8,9 +8,12 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
+import functools
 import importlib
 import inspect
 import json
+import sys
 import threading
 import time
 from pathlib import Path
@@ -58,6 +61,9 @@ def _pyaudio():
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 MODELS_DIR = BASE_DIR / "models"
+MELSPEC_MODEL_FILE = "melspectrogram.onnx"
+EMBEDDING_MODEL_FILE = "embedding_model.onnx"
+CONFIG_FILE_NAME = "wake_word.json"
 
 RATE = 16000
 CHANNELS = 1
@@ -69,23 +75,157 @@ DEFAULT_COOLDOWN_S = 2.5
 DEFAULT_PATIENCE = 2
 DEFAULT_MIN_RMS = 120
 
+_OWW_INIT_LOCK = threading.Lock()
+
+
+def resolve_feature_models(
+    models_dir: Path | str | None = None,
+    *,
+    must_exist: bool = False,
+) -> tuple[Path, Path]:
+    """Return local (melspectrogram.onnx, embedding_model.onnx) paths.
+
+    openwakeword's Python 3.11+/3.13 wheels omit bundled ONNX resources inside
+    site-packages, while FRIDAY ships both models in ``models/``. Resolving
+    against ``models_dir`` (default: ``MODELS_DIR``) guarantees both training
+    and runtime inference use the exact same local ONNX feature front-end.
+    """
+    base = Path(models_dir) if models_dir is not None else MODELS_DIR
+    mel_path = base / MELSPEC_MODEL_FILE
+    emb_path = base / EMBEDDING_MODEL_FILE
+    if must_exist:
+        missing = [str(p) for p in (mel_path, emb_path) if not p.is_file()]
+        if missing:
+            raise FileNotFoundError(
+                "Missing openWakeWord feature model(s) in "
+                f"{base}: {', '.join(missing)}. Ensure "
+                f"{MELSPEC_MODEL_FILE} and {EMBEDDING_MODEL_FILE} are present."
+            )
+    return mel_path, emb_path
+
+
+@contextlib.contextmanager
+def _oww_feature_models_context(mel_path: Path, emb_path: Path):
+    """Ensure openwakeword.model.Model wires local ONNX feature models."""
+    oww_model_mod = sys.modules.get("openwakeword.model")
+    orig_af = getattr(oww_model_mod, "AudioFeatures", None) if oww_model_mod else None
+    if oww_model_mod is None or not callable(orig_af):
+        yield
+        return
+
+    try:
+        af_sig = inspect.signature(orig_af)
+        af_params = set(af_sig.parameters)
+        af_var_kw = any(
+            p.kind == inspect.Parameter.VAR_KEYWORD
+            for p in af_sig.parameters.values()
+        )
+    except (TypeError, ValueError):
+        af_params = set()
+        af_var_kw = True
+
+    @functools.wraps(orig_af)
+    def _patched_af(*args, **kwargs):
+        if af_var_kw or "melspec_model_path" in af_params:
+            kwargs.setdefault("melspec_model_path", str(mel_path))
+        if af_var_kw or "embedding_model_path" in af_params:
+            kwargs.setdefault("embedding_model_path", str(emb_path))
+        if af_var_kw or "inference_framework" in af_params:
+            kwargs.setdefault("inference_framework", "onnx")
+        return orig_af(*args, **kwargs)
+
+    with _OWW_INIT_LOCK:
+        setattr(oww_model_mod, "AudioFeatures", _patched_af)
+        try:
+            yield
+        finally:
+            setattr(oww_model_mod, "AudioFeatures", orig_af)
+
+
+def _prime_oww_model(model) -> None:
+    """Replace openwakeword's random reset() buffer with steady-state silence.
+
+    openwakeword's ``AudioFeatures.reset()`` seeds ``melspectrogram_buffer``
+    with ones and ``feature_buffer`` with 41 random embeddings (plus zeroes out
+    frames 0..4 when ``len(prediction_buffer) < 5``). Priming with exact
+    16-frame silence state matches steady-state live streaming from frame 0.
+    """
+    if np is None or model is None:
+        return
+    pre = getattr(model, "preprocessor", None)
+    if pre is not None and all(
+        hasattr(pre, attr)
+        for attr in (
+            "_get_melspectrogram",
+            "embedding_model_predict",
+            "melspectrogram_buffer",
+            "feature_buffer",
+            "raw_data_buffer",
+        )
+    ):
+        try:
+            cached = getattr(pre, "_friday_silence_state", None)
+            if cached is None:
+                zeros_pcm = np.zeros(160 * (76 + 3), dtype=np.int16)
+                mel_zero = np.asarray(
+                    pre._get_melspectrogram(zeros_pcm), dtype=np.float32
+                )
+                if mel_zero.shape[0] > 76:
+                    mel_zero = mel_zero[-76:]
+                emb_zero = np.asarray(
+                    pre.embedding_model_predict(mel_zero[None, :, :, None]),
+                    dtype=np.float32,
+                ).reshape(1, -1)
+                cached = (mel_zero, emb_zero)
+                setattr(pre, "_friday_silence_state", cached)
+            mel_zero, emb_zero = cached
+            if hasattr(pre.raw_data_buffer, "clear"):
+                pre.raw_data_buffer.clear()
+                pre.raw_data_buffer.extend([0] * 480)
+            if hasattr(pre, "accumulated_samples"):
+                pre.accumulated_samples = 0
+            if hasattr(pre, "raw_data_remainder"):
+                pre.raw_data_remainder = np.empty(0)
+            pre.melspectrogram_buffer = mel_zero.copy()
+            pre.feature_buffer = np.repeat(emb_zero, 16, axis=0).copy()
+        except Exception:
+            pass
+
+    pred_buf = getattr(model, "prediction_buffer", None)
+    models_map = getattr(model, "models", None)
+    if isinstance(models_map, dict) and pred_buf is not None:
+        try:
+            for name in models_map:
+                buf = pred_buf[name]
+                while len(buf) < 5:
+                    buf.append(0.0)
+        except Exception:
+            pass
+
 
 class WakeWordService:
     """Streaming local wake-word detector with false-trigger protection."""
 
-    def __init__(self, model_file: str = "hey_friday_v0.1.onnx",
-                 phrase: str = "Hey Friday"):
+    def __init__(
+        self,
+        model_file: str = "hey_friday_v0.1.onnx",
+        phrase: str = "Hey Friday",
+        models_dir: Path | str | None = None,
+    ):
         self._running = False
         self._thread = None
         self._on_detect = None
         self._model = None
         self._model_path = None
         self._model_file = model_file
+        self._models_dir = Path(models_dir) if models_dir is not None else None
         self._phrase = phrase
+        self._phrase_explicit = phrase != "Hey Friday"
         self._lock = threading.RLock()
         self._audio_buffer = []          # legacy attribute kept for compatibility
         self._residual = self._empty_samples()
         self._threshold = DETECT_THRESHOLD
+        self._threshold_explicit = False
         self._vad_threshold = 0.0
         self._cooldown_s = DEFAULT_COOLDOWN_S
         self._patience = DEFAULT_PATIENCE
@@ -98,6 +238,34 @@ class WakeWordService:
         self._paused = False
         self._device = None
         self._backend = ""
+        self._sync_persisted_config()
+
+    def _resolve_models_dir(self) -> Path:
+        return self._models_dir if self._models_dir is not None else MODELS_DIR
+
+    def _sync_persisted_config(self) -> None:
+        """Adopt calibrated threshold and custom phrase from wake_word.json."""
+        cfg_path = self._resolve_models_dir() / CONFIG_FILE_NAME
+        if not cfg_path.is_file():
+            return
+        try:
+            data = json.loads(cfg_path.read_text(encoding="utf-8"))
+        except Exception:
+            return
+        if not isinstance(data, dict):
+            return
+        with self._lock:
+            if not self._threshold_explicit and "threshold" in data:
+                try:
+                    thr = float(data["threshold"])
+                    if 0.1 <= thr <= 0.99:
+                        self._threshold = thr
+                except (TypeError, ValueError):
+                    pass
+            if not self._phrase_explicit:
+                raw_phrase = " ".join(str(data.get("phrase") or "").split())
+                if raw_phrase:
+                    self._phrase = raw_phrase
 
     @staticmethod
     def _empty_samples():
@@ -110,7 +278,7 @@ class WakeWordService:
     # -- model loading -------------------------------------------------------
 
     @staticmethod
-    def _model_init_params(Model) -> set[str]:
+    def _model_init_signature(Model) -> tuple[set[str], bool]:
         """Inspect openwakeword's real __init__ across wrapped versions."""
         init = getattr(Model, "__init__", None)
         candidates = [getattr(init, "__wrapped__", None), init]
@@ -119,21 +287,35 @@ class WakeWordService:
             if callable(value):
                 candidates.append(value)
         best: set[str] = set()
+        best_var_kw = False
         for candidate in candidates:
             if not callable(candidate):
                 continue
             try:
-                names = set(inspect.signature(candidate).parameters)
+                sig = inspect.signature(candidate)
             except (TypeError, ValueError):
                 continue
+            names = set(sig.parameters)
+            has_var_kw = any(
+                p.kind == inspect.Parameter.VAR_KEYWORD
+                for p in sig.parameters.values()
+            )
             if "wakeword_models" in names or "wakeword_model_paths" in names:
-                return names
-            best = best or names
-        return best
+                return names, has_var_kw
+            if not best and (names - {"self", "args", "kwargs"} or has_var_kw):
+                best = names
+                best_var_kw = has_var_kw
+        return best, best_var_kw
+
+    @classmethod
+    def _model_init_params(cls, Model) -> set[str]:
+        """Inspect openwakeword's real __init__ parameter names."""
+        names, _ = cls._model_init_signature(Model)
+        return names
 
     def _new_model(self, Model, candidate: str):
-        """Build a Model with version-safe kwargs; ONNX on Windows by default."""
-        params = self._model_init_params(Model)
+        """Build a Model with version-safe kwargs and local ONNX front-end."""
+        params, has_var_kw = self._model_init_signature(Model)
         kwargs: dict = {}
         if "wakeword_models" in params:
             kwargs["wakeword_models"] = [candidate]
@@ -144,18 +326,43 @@ class WakeWordService:
         if self._vad_threshold > 0 and "vad_threshold" in params:
             kwargs["vad_threshold"] = self._vad_threshold
 
-        try:
-            return Model(**kwargs)
-        except Exception as exc:
-            message = str(exc).lower()
-            if "vad_threshold" in kwargs and any(
-                hint in message for hint in ("vad", "silero", "onnx", "model")
-            ):
-                print(f"[WakeWord] VAD init failed ({exc}); retrying without VAD")
-                kwargs.pop("vad_threshold", None)
-                self._last_error = "VAD unavailable; loaded without vad_threshold"
-                return Model(**kwargs)
-            raise
+        models_dir = self._resolve_models_dir()
+        mel_path, emb_path = resolve_feature_models(models_dir, must_exist=False)
+        have_local_features = mel_path.is_file() and emb_path.is_file()
+        if have_local_features:
+            if "melspec_model_path" in params or has_var_kw:
+                kwargs["melspec_model_path"] = str(mel_path)
+            if "embedding_model_path" in params or has_var_kw:
+                kwargs["embedding_model_path"] = str(emb_path)
+
+        ctx = (
+            _oww_feature_models_context(mel_path, emb_path)
+            if have_local_features
+            else contextlib.nullcontext()
+        )
+        with ctx:
+            try:
+                model = Model(**kwargs)
+            except Exception as exc:
+                message = str(exc).lower()
+                if "vad_threshold" in kwargs and any(
+                    hint in message for hint in ("vad", "silero", "onnx", "model")
+                ):
+                    print(f"[WakeWord] VAD init failed ({exc}); retrying without VAD")
+                    kwargs.pop("vad_threshold", None)
+                    self._last_error = "VAD unavailable; loaded without vad_threshold"
+                    model = Model(**kwargs)
+                elif not have_local_features and any(
+                    hint in message
+                    for hint in ("melspectrogram", "embedding_model", "no_suchfile")
+                ):
+                    resolve_feature_models(models_dir, must_exist=True)
+                    raise
+                else:
+                    raise
+
+        _prime_oww_model(model)
+        return model
 
     def load(self) -> bool:
         """Load the model without opening a microphone stream.
@@ -164,13 +371,14 @@ class WakeWordService:
         startup path (service bootstrap + first engine probe) can no longer
         print the same warning twice back to back.
         """
+        self._sync_persisted_config()
         if self._model is not None:
             return True
         Model = _get_oww()
         if Model is None:
             self._last_error = "openwakeword not installed"
             return False
-        candidate = str(MODELS_DIR / self._model_file)
+        candidate = str(self._resolve_models_dir() / self._model_file)
         if not Path(candidate).exists():
             self._last_error = f"model not found: {candidate}"
             if candidate not in _WARNED_MISSING:
@@ -254,6 +462,7 @@ class WakeWordService:
             return "Please give a threshold between 0.1 and 0.99, sir."
         with self._lock:
             self._threshold = threshold
+            self._threshold_explicit = True
         return f"Wake word threshold set to {threshold:.2f}, sir."
 
     def set_cooldown(self, value) -> str:
@@ -377,6 +586,12 @@ class WakeWordService:
                 frame.astype(np.float64)
             ))))
             if rms < self._min_rms:
+                pre = getattr(self._model, "preprocessor", None)
+                if callable(pre):
+                    try:
+                        pre(frame)
+                    except Exception:
+                        pass
                 with self._lock:
                     self._hits = 0
                 continue
@@ -399,6 +614,7 @@ class WakeWordService:
         try:
             if hasattr(self._model, "reset"):
                 self._model.reset()
+            _prime_oww_model(self._model)
         except Exception as exc:
             self._last_error = str(exc)
         with self._lock:
