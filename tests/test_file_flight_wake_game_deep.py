@@ -5,8 +5,6 @@ import wave
 from pathlib import Path
 from types import SimpleNamespace
 
-import pytest
-
 from actions import file_controller, flight_finder, friday_wake, game_updater
 from config.models import MODEL_FLASH_LITE
 
@@ -35,6 +33,22 @@ def test_system_dirs_skipped_and_delete_guards_root(tmp_path, monkeypatch):
                         lambda path: called.append(path), raising=False)
     assert "Refusing" in file_controller.delete_file(str(Path.home()))
     assert called == []
+
+
+def test_temp_workspaces_allowed_but_system_roots_blocked(tmp_path, monkeypatch):
+    fake_temp = tmp_path / "AppData" / "Local" / "Temp"
+    fake_temp.mkdir(parents=True)
+    monkeypatch.setattr(file_controller.tempfile, "gettempdir", lambda: str(fake_temp))
+    workspace = fake_temp / "pytest-of-user" / "test_case0"
+    workspace.mkdir(parents=True)
+
+    assert not file_controller._is_system_path(fake_temp)
+    assert not file_controller._is_system_path(workspace)
+    assert file_controller._is_system_path(fake_temp.parent)      # AppData\Local
+    assert file_controller._is_system_path(fake_temp.parent.parent)  # AppData
+    assert file_controller._is_system_path(Path.home())
+    assert file_controller._is_system_path(Path("/"))
+    assert file_controller._is_system_path(Path("C:" + chr(92)))
 
 
 def test_organize_and_undo_cleans_empty_folders(tmp_path, monkeypatch):

@@ -67,13 +67,14 @@ def test_dry_run_does_not_execute(no_shell):
     no_shell.assert_not_called()
 
 
-def test_shell_cwd_timeout_validation(no_shell):
+def test_shell_cwd_timeout_validation(no_shell, tmp_path):
     assert "Invalid shell" in cc.cmd_control({"command": "echo hi", "shell": "zsh"})
     assert "Invalid working directory" in cc.cmd_control(
         {"command": "echo hi", "cwd": "/definitely/not/a/real/dir"})
     result = cc.cmd_control({"command": "echo hi", "visible": "false", "timeout": 9999,
-                             "shell": "powershell", "cwd": "/tmp", "dry_run": "true"})
+                             "shell": "powershell", "cwd": str(tmp_path), "dry_run": "true"})
     assert "timeout=120" in result and "powershell" in result
+    assert str(tmp_path) in result
     assert "Dry run" in cc.cmd_control({"command": "echo hi", "dry_run": "TRUE"})
 
 

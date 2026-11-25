@@ -186,9 +186,10 @@ def _handle_desktop_task(task: str) -> str:
         "For direct mouse or keyboard automation, use computer_control."
     )
 
+# winreg REG_SZ values must be strings on Windows — even the numeric style code.
 _WALLPAPER_STYLES = {
-    "fill": (10, "0"), "fit": (6, "0"), "stretch": (2, "0"),
-    "tile": (0, "1"), "center": (0, "0"), "span": (22, "0"),
+    "fill": ("10", "0"), "fit": ("6", "0"), "stretch": ("2", "0"),
+    "tile": ("0", "1"), "center": ("0", "0"), "span": ("22", "0"),
 }
 _WALLPAPER_EXTS = {".jpg", ".jpeg", ".png", ".bmp", ".webp", ".gif", ".tif", ".tiff"}
 
@@ -230,15 +231,16 @@ def _set_wallpaper_style(style: str) -> None:
     style = str(style or "fill").lower()
     if style not in _WALLPAPER_STYLES:
         return
-    wallpaper_style, tile = _WALLPAPER_STYLES[style]
+    style_code, tile_flag = _WALLPAPER_STYLES[style]
     if sys.platform != "win32":
         return
     try:
         import winreg
         key = winreg.OpenKey(winreg.HKEY_CURRENT_USER, r"Control Panel\Desktop",
                              0, winreg.KEY_SET_VALUE)
-        winreg.SetValueEx(key, "WallpaperStyle", 0, winreg.REG_SZ, wallpaper_style)
-        winreg.SetValueEx(key, "TileWallpaper", 0, winreg.REG_SZ, tile)
+        # REG_SZ requires str on Windows 3.13 — never pass ints or tuples.
+        winreg.SetValueEx(key, "WallpaperStyle", 0, winreg.REG_SZ, str(style_code))
+        winreg.SetValueEx(key, "TileWallpaper", 0, winreg.REG_SZ, str(tile_flag))
         winreg.CloseKey(key)
     except Exception as e:
         print(f"[Desktop] ⚠️ Wallpaper style failed: {e}")
