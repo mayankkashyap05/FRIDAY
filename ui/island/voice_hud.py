@@ -2,7 +2,7 @@
 import math
 import time
 from pathlib import Path
-from PySide6.QtCore import Qt, QRectF, QTimer, Signal, QPoint, QPointF
+from PySide6.QtCore import Qt, QRectF, QTimer, Signal, QPoint, QPointF, QEvent
 from PySide6.QtGui import (
     QColor, QPainter, QFont, QCursor, QPen, QLinearGradient,
 )
@@ -109,6 +109,15 @@ class VoiceHUD(QWidget):
         if win32_overlay.IS_WINDOWS:
             self._fullscreen_timer.start(1000)
 
+        self._topmost_guard = win32_overlay.Win32TopmostGuard(self._schedule_topmost_assert)
+        self._topmost_debounce_timer = QTimer(self)
+        self._topmost_debounce_timer.setSingleShot(True)
+        self._topmost_debounce_timer.setInterval(40)
+        self._topmost_debounce_timer.timeout.connect(self._reassert_topmost)
+        self._topmost_timer = QTimer(self)
+        self._topmost_timer.setInterval(750)
+        self._topmost_timer.timeout.connect(self._reassert_topmost)
+
         self._anchor()
         win32_overlay.configure_overlay(self)
 
@@ -123,6 +132,59 @@ class VoiceHUD(QWidget):
     def shutdown(self):
         self._timer.stop()
         self._fullscreen_timer.stop()
+        self._topmost_timer.stop()
+        self._topmost_debounce_timer.stop()
+        self._topmost_guard.uninstall()
+
+    def _allow_above_hwnds(self):
+        hwnds = []
+        self_id = int(self.winId())
+        for widget in QApplication.topLevelWidgets():
+            if widget is not self and widget.isVisible():
+                try:
+                    wid = int(widget.winId())
+                    if wid and wid != self_id:
+                        hwnds.append(wid)
+                except Exception:
+                    pass
+        return hwnds
+
+    def _schedule_topmost_assert(self):
+        if self.isVisible() and not self._topmost_debounce_timer.isActive():
+            self._topmost_debounce_timer.start()
+
+    def _reassert_topmost(self, force=False):
+        if win32_overlay.IS_WINDOWS and self.isVisible():
+            win32_overlay.ensure_topmost(
+                int(self.winId()),
+                force=force,
+                allow_above_hwnds=self._allow_above_hwnds(),
+            )
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        if win32_overlay.IS_WINDOWS:
+            win32_overlay.configure_overlay(self)
+            self._reassert_topmost(force=True)
+            self._topmost_guard.install()
+            if not self._topmost_timer.isActive():
+                self._topmost_timer.start()
+
+    def hideEvent(self, event):
+        self._topmost_timer.stop()
+        self._topmost_debounce_timer.stop()
+        self._topmost_guard.uninstall()
+        super().hideEvent(event)
+
+    def changeEvent(self, event):
+        super().changeEvent(event)
+        if win32_overlay.IS_WINDOWS and self.isVisible() and event.type() in (
+            QEvent.WinIdChange,
+            QEvent.ActivationChange,
+            QEvent.WindowStateChange,
+        ):
+            win32_overlay.configure_overlay(self)
+            self._reassert_topmost(force=True)
 
     def closeEvent(self, event):
         self.shutdown()
@@ -842,6 +904,8 @@ class VoiceHUD(QWidget):
         event.accept()
 
     def nativeEvent(self, event_type, message):
+        if win32_overlay.IS_WINDOWS:
+            win32_overlay.enforce_topmost_on_windowposchanging(message)
         result = win32_overlay.hit_test(self, message)
         if result is not None:
             return True, result
