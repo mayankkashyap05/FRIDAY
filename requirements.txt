@@ -1,19 +1,17 @@
 # ============================================================
-# FRIDAY — Main Requirements
-# Original dependencies preserved + new cross-platform packages
+# FRIDAY — Cross-Platform Requirements (Windows / macOS / Linux)
 # ============================================================
 
 # ----------------------------
-# Core Audio & GenAI (ORIGINAL — UNCHANGED)
+# Core Audio & GenAI
 # ----------------------------
 sounddevice>=0.5.0,<=0.6.0
 google-genai>=1.0.0,<2.0.0
-# google-generativeai>=0.8.0,<1.0.0  # optional / legacy
 requests>=2.30.0,<3.0.0
 websockets>=13.0,<17.0
 
 # ----------------------------
-# Desktop GUI & Automation (ORIGINAL — UNCHANGED)
+# Desktop GUI & Cross-Platform Automation
 # ----------------------------
 PySide6>=6.8.0
 pillow>=10.0.0,<13.0.0
@@ -22,21 +20,29 @@ pyperclip>=1.9.0
 pygetwindow>=0.0.9
 mss>=9.0.0
 psutil>=5.9.0
-comtypes>=1.4.0
-pycaw>=20240000
 send2trash>=1.8.0
-pywinauto>=0.6.8
-keyboard>=0.13.5
 pystray>=0.19.5
-winotify>=1.1.0
-pytest
-pyflakes
+keyboard>=0.13.5
 
 # ----------------------------
-# Document & Web Operations (ORIGINAL — UNCHANGED)
+# Windows-Only Dependencies
+# ----------------------------
+comtypes>=1.4.0; sys_platform == "win32"
+pycaw>=20240000; sys_platform == "win32"
+pywinauto>=0.6.8; sys_platform == "win32"
+winotify>=1.1.0; sys_platform == "win32"
+
+# ----------------------------
+# macOS-Only Dependencies (ui_mac Cocoa Bridge)
+# ----------------------------
+pyobjc-framework-Cocoa>=10.0; sys_platform == "darwin"
+pyobjc-framework-Quartz>=10.0; sys_platform == "darwin"
+pyobjc-framework-ApplicationServices>=10.0; sys_platform == "darwin"
+
+# ----------------------------
+# Document, Office & Web Operations
 # ----------------------------
 beautifulsoup4>=4.12.0
-# duckduckgo-search>=7.0.0  # optional / legacy
 ddgs>=7.0.0
 playwright>=1.40.0
 python-pptx>=1.0.0
@@ -45,13 +51,14 @@ pypdf>=5.0.0
 youtube-transcript-api>=0.6.0
 
 # ----------------------------
-# Google OAuth Integrations (ORIGINAL — UNCHANGED)
+# Google Workspace / OAuth
 # ----------------------------
+google-auth>=2.20.0
 google-auth-oauthlib>=1.2.0
 google-api-python-client>=2.100.0
 
 # ----------------------------
-# Computer Vision & Machine Learning (ORIGINAL — UNCHANGED)
+# Computer Vision, Wake Word & Local ML
 # ----------------------------
 opencv-python>=4.9.0
 numpy>=1.26.0,<3.0.0
@@ -59,35 +66,20 @@ mediapipe>=0.10.0
 ultralytics>=8.0.0
 pytesseract>=0.3.10
 openwakeword>=0.6.0
-
-# ============================================================
-# NEW PACKAGES — ADDED FROM CROSS-PLATFORM REQUIREMENTS
-# ============================================================
-
-# New Google authentication dependency
-google-auth>=2.20.0
-
-# New DuckDuckGo package (kept alongside original duckduckgo-search)
-ddgs>=7.0.0
-
-# ----------------------------
-# Windows-specific dependencies
-# ----------------------------
-# Original Windows dependencies above remain unchanged.
-# No additional Windows packages required.
-
-# ----------------------------
-# macOS-specific dependencies
-# ----------------------------
-pyobjc-framework-Cocoa>=10.0; sys_platform == "darwin"
-pyobjc-framework-Quartz>=10.0; sys_platform == "darwin"
-pyobjc-framework-ApplicationServices>=10.0; sys_platform == "darwin"
-
-# ----------------------------
-# New Optional Dependencies
-# Install only when required by specific features.
-# ----------------------------
+onnx>=1.16.0
 onnxruntime>=1.17.0
 torch>=2.0.0
-# face_recognition>=1.3.0  # optional / legacy
-# pyaudio>=0.2.14  # optional / legacy
+
+# ----------------------------
+# Development & Testing
+# ----------------------------
+pytest
+pyflakes
+
+# ----------------------------
+# Optional / Legacy (uncomment only if explicitly needed)
+# ----------------------------
+google-generativeai>=0.8.0,<1.0.0
+duckduckgo-search>=7.0.0
+face_recognition>=1.3.0
+pyaudio>=0.2.14
