@@ -240,3 +240,28 @@ def test_unrelated_low_risk_tool_does_not_discard_pending_approval():
         result = await live._dispatch_tool('cmd_control', {**args, 'confirm': True, 'confirm_token': token})
         assert result.content == 'done'
     asyncio.run(run())
+
+
+def test_first_call_confirm_true_without_token_creates_pending_card_and_succeeds_after_approval():
+    import asyncio
+    from unittest.mock import MagicMock
+    import main
+
+    live = main.FridayLive(MagicMock())
+    calls = []
+    live._tool_handlers['task_manager'] = (lambda a: calls.append(a.copy()) or 'killed', 10)
+
+    async def run():
+        args = {'action': 'kill', 'process_name': 'notepad.exe'}
+        first = await live._dispatch_tool('task_manager', {**args, 'confirm': True})
+        assert first.error_kind == 'confirmation'
+        assert calls == []
+        token = live._pending_card_token
+        assert token
+
+        live._mark_human_confirmed()
+        second = await live._dispatch_tool('task_manager', {**args, 'confirm': True, 'confirm_token': token})
+        assert second.content == 'killed'
+        assert calls == [args]
+
+    asyncio.run(run())
