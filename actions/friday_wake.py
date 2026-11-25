@@ -2047,6 +2047,21 @@ class _FridayEngine:
 
     def __init__(self):
         self._svc = None  # wake_word is imported only when the engine is used
+        # Callbacks are kept here as well as on the service: ``reload()``
+        # replaces the classifier mid-session (guided setup does exactly that)
+        # and must never detach the wake/sleep hooks installed by main.py.
+        self._session_on_detect = None
+        self._session_on_state_change = None
+
+    def _configure_service(self, service):
+        configure = getattr(service, "configure", None)
+        if not callable(configure):
+            return
+        try:
+            configure(on_detect=self._session_on_detect,
+                      on_state_change=self._session_on_state_change)
+        except TypeError:
+            configure(on_detect=self._session_on_detect)
 
     def _get_service(self):
         if self._svc is None:
@@ -2056,6 +2071,7 @@ class _FridayEngine:
                 phrase=current_phrase(),
                 models_dir=MODELS_DIR,
             )
+            self._configure_service(self._svc)
         return self._svc
 
     @property
@@ -2072,10 +2088,34 @@ class _FridayEngine:
 
     @property
     def _on_detect(self):
+        if self._session_on_detect is not None:
+            return self._session_on_detect
         return self._svc._on_detect if self._svc else None
 
-    def configure(self, on_detect=None):
-        self._get_service().configure(on_detect)
+    def configure(self, on_detect=None, on_state_change=None):
+        if on_detect is not None:
+            self._session_on_detect = on_detect
+        if on_state_change is not None:
+            self._session_on_state_change = on_state_change
+        if self._svc is not None:
+            self._configure_service(self._svc)
+
+    def pause(self) -> str:
+        """Gate re-triggers while Friday is already in conversation."""
+        return self._get_service().pause()
+
+    def resume(self) -> str:
+        """Re-arm detection as soon as Friday returns to standby."""
+        return self._get_service().resume()
+
+    def set_threshold(self, value) -> str:
+        return self._get_service().set_threshold(value)
+
+    def set_cooldown(self, value) -> str:
+        return self._get_service().set_cooldown(value)
+
+    def list_input_devices(self) -> str:
+        return self._get_service().list_input_devices()
 
     def start(self) -> str:
         if not self.available:
@@ -2112,6 +2152,9 @@ class _FridayEngine:
                 sync_fn()
         except Exception:
             pass
+        # Re-install after the model swap: setup/reload is the exact path that
+        # used to leave ``_matcher._svc`` without main.py's wake callback.
+        self._configure_service(service)
         if start or was_running:
             start_fn = getattr(service, "start", None)
             if callable(start_fn):

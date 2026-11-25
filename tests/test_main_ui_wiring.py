@@ -265,3 +265,48 @@ def test_first_call_confirm_true_without_token_creates_pending_card_and_succeeds
         assert calls == [args]
 
     asyncio.run(run())
+
+
+def test_standby_facade_keeps_dock_dormant_and_mac_parity():
+    """Wake-word standby is its own state, not an always-listening dock."""
+    from types import SimpleNamespace
+    from unittest.mock import MagicMock
+    import ui
+    import ui_mac
+
+    stub = SimpleNamespace(standby=False, _lock=threading.Lock(),
+                           bridge=MagicMock(), _dispatch=MagicMock(),
+                           status_text='')
+    stub.set_state = lambda value: ui.FridayUI.set_state(stub, value)
+    ui.FridayUI.set_standby(stub, True)
+    assert stub.standby is True
+    assert stub.status_text == 'IDLE'
+    stub._dispatch.assert_called_once()
+    assert stub._dispatch.call_args.args[1] == 0.0
+
+    # Late LISTENING requests (reconnect, tool result, speech release) are
+    # swallowed while dormant, but still work after a wake.
+    stub.set_state('LISTENING')
+    assert stub.status_text == 'IDLE'
+    ui.FridayUI.set_standby(stub, False)
+    stub.set_state('LISTENING')
+    assert stub.status_text == 'LISTENING'
+
+    # ui_mac is a dynamic facade; the macOS build must expose the same method.
+    assert callable(getattr(ui_mac.FridayUI, 'set_standby', None))
+
+
+def test_main_keeps_reconnect_and_watchdog_out_of_always_listening():
+    import ast
+
+    tree = ast.parse(Path('main.py').read_text(encoding='utf-8'))
+    live = next(n for n in tree.body if isinstance(n, ast.ClassDef) and
+                n.name == 'FridayLive')
+    methods = {n.name: ast.unparse(n) for n in live.body
+               if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))}
+    assert '_watch_wake_idle' in methods
+    assert '_maybe_autostart_wake_word' in methods
+    assert '_last_activity_ts' in methods['_wake_up']
+    assert "_wake_engine_action('resume')" in methods['_enter_standby']
+    assert 'awake_for_mic' in methods['_listen_audio']
+    assert 'tg.create_task(self._watch_wake_idle())' in methods['run']

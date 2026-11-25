@@ -107,7 +107,11 @@ class FridayUI:
         self._MAX_PENDING_LOGS = 200
         self.muted = False; self.silent_mode = False; self.speaking = False
         self.connected = False; self.connecting = False
+        # Standby is the calm, dormant dock state used by wake-word mode. It is
+        # deliberately separate from ``muted`` (an explicit user choice).
+        self.standby = False
         self.on_text_command = None; self.on_silent_change = None
+        self.on_wake_request = None
         self.vision_preview_open = False; self.arcade_open = False
         self.vision_mode = 'STANDBY'; self.vision_signal = 'Awaiting camera input'
         self.persona_mode = 'normal'; self.persona_mood = 'calm'; self.persona_voice = 'Aoede'
@@ -143,14 +147,29 @@ class FridayUI:
         if callable(self.on_text_command): self.on_text_command(text)
     def submit_text(self, text): return self._dispatch(self.controller.submit_text, text)
     def _on_mode_requested(self, mode):
-        if mode == 'listening' and self.muted: self._toggle_mute()
+        if mode == 'listening':
+            if callable(self.on_wake_request): self.on_wake_request('manual')
+            if self.muted: self._toggle_mute()
         if mode == 'dictation': self.write_log('SYS: Dictation target-app integration is not available yet.')
 
     def set_state(self, state):
         name = str(state or '').upper()
+        # Standby must never look like active listening, no matter which
+        # producer (reconnect loop, tool result, speech release) asks for it.
+        if self.standby and name in ('LISTENING', 'ONLINE', 'PROCESSING', 'THINKING'):
+            name = 'IDLE'
         with self._lock:
             self.status_text = name; self.speaking = name == 'SPEAKING'
         self.bridge.set_state(name)
+
+    def set_standby(self, active=True):
+        """Park the dock/orb in its calm dormant state (no mic reactivity)."""
+        active = bool(active)
+        self.standby = active
+        if active:
+            self._dispatch(self.bridge.setAmplitude, 0.0)
+            self.set_state('IDLE')
+        return active
     def set_connection(self, ok):
         with self._lock: self.connected = bool(ok); self.connecting = False
         self.bridge.set_connection(ok)
@@ -182,6 +201,8 @@ class FridayUI:
     def _toggle_mute(self):
         with self._lock: self.muted = not self.muted; muted = self.muted
         self.bridge.set_muted(muted)
+        if not muted and self.standby and callable(self.on_wake_request):
+            self.on_wake_request('unmute')
     def _draw_mute_button(self): self.bridge.set_muted(self.muted)
     def _toggle_silent_mode(self):
         with self._lock: self.silent_mode = not self.silent_mode; silent = self.silent_mode
@@ -202,7 +223,9 @@ class FridayUI:
         from PySide6.QtGui import QGuiApplication
         if QGuiApplication.platformName() != 'offscreen':
             self._dispatch(self.hud.raise_)
-    def invoke(self): self.show(); self.set_state('LISTENING')
+    def invoke(self):
+        self.standby = False
+        self.show(); self.set_state('LISTENING')
     def dismiss(self): self.hide()
     def _shutdown_gui(self):
         if self._gui_shutdown: return

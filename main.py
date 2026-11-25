@@ -85,6 +85,13 @@ LONG_RUNNING_TOOLS = {"wake_word"}
 # How long a background tool waits for a reconnecting session to become usable.
 TOOL_READY_GRACE_S = 15.0
 
+# Hands-free standby: a local wake-word listener runs while the Gemini mic
+# path is closed. Idle activity is sampled twice a second; a short grace
+# period after a wake enables "Hey Friday, open Chrome" without a pause.
+WAKE_IDLE_TICK_S = 0.5
+WAKE_STANDBY_GRACE_S = 1.5
+MIC_ACTIVITY_RMS = 0.01       # ~327 int16: above room noise, below speech
+
 
 _WAKE_ACTIVE_CHECK = None
 
@@ -1037,7 +1044,11 @@ TOOL_DECLARATIONS = [
             "one step. Use action='test' for a live confidence check, "
             "action='list_clips' to inspect recordings and action='reset' to start "
             "fresh. Use action='start' when the user says 'activate wake word' or "
-            "'listen for hey friday'."
+            "'listen for hey friday'. When hands-free mode is on, Friday sleeps "
+            "until 'Hey Friday' is spoken and returns to standby after the "
+            "configurable idle timeout. Use action='sleep' or 'standby' when the "
+            "user says 'go to sleep' or 'go to standby', and action='stop' to "
+            "leave hands-free mode."
         ),
         "parameters": {
             "type": "OBJECT",
@@ -1045,10 +1056,11 @@ TOOL_DECLARATIONS = [
                 "action": {
                     "type": "STRING",
                     "description": (
-                        "setup | test | list_clips | reset | start | stop | status | "
-                        "record | train | pause | resume | set_threshold | devices | "
-                        "diagnostics (default: status). Use 'setup' for any request to "
-                        "set up, create, record or train the wake word."
+                        "setup | test | list_clips | reset | start | stop | sleep | "
+                        "standby | set_idle_timeout | status | record | train | pause | "
+                        "resume | set_threshold | devices | diagnostics (default: "
+                        "status). Use 'setup' for any request to set up, create, record "
+                        "or train the wake word."
                     ),
                 },
                 "phrase":    {"type": "STRING", "description": "Custom wake phrase for setup/record (default: 'Hey Friday')"},
@@ -1059,6 +1071,8 @@ TOOL_DECLARATIONS = [
                 "auto_train": {"type": "BOOLEAN", "description": "When true, 'record' also trains and activates the model"},
                 "threshold": {"type": "NUMBER", "description": "Detection threshold 0.1-0.99 for set_threshold"},
                 "cooldown":  {"type": "NUMBER", "description": "Post-trigger cooldown in seconds"},
+                "idle_timeout": {"type": "NUMBER", "description": (
+                    "Seconds of inactivity before returning to standby (5-120, default 15)")},
                 "device":    {"type": "INTEGER", "description": "Optional microphone device index"},
             },
             "required": []
@@ -1587,27 +1601,248 @@ class FridayLive:
         # Strong refs for fire-and-forget tool tasks (see _receive_audio).
         self._background_tasks: set[asyncio.Task] = set()
 
+        # Wake-word standby state. Kept separate from ``ui.muted`` so an
+        # explicit mute never turns into "asleep" and vice versa.
+        self._wake_lock = threading.RLock()
+        self._wake_mode_active = False
+        self._awake = True
+        self._wake_engine = None
+        self._standby_pending = None
+        self._wake_autostart_done = False
+        self._last_activity_ts = time.monotonic()
+        self._wake_idle_timeout_s = 15.0
         try:
-            from actions.wake_word import _service as wake_service
-            wake_service.configure(on_detect=self._on_wake_detect)
+            from actions import wake_word as wake_module
+            wake_module.configure_listeners(
+                on_detect=self._on_wake_detect,
+                on_state_change=self._on_wake_engine_state,
+            )
+            self._wake_idle_timeout_s = wake_module.get_idle_timeout()
+        except Exception as exc:
+            print(f"[WakeWord] Session hooks unavailable: {exc}")
+        try:
+            self.ui.on_wake_request = self._on_manual_wake_request
         except Exception:
             pass
 
+    # ── hands-free standby lifecycle ────────────────────────────────────────
+
+    def _get_wake_engine(self):
+        """The engine that is actually detecting (custom matcher or service)."""
+        try:
+            from actions.wake_word import _pick_engine
+            return _pick_engine()[1]
+        except Exception:
+            return None
+
+    def _wake_engine_action(self, action: str) -> None:
+        engine = self._wake_engine or self._get_wake_engine()
+        callback = getattr(engine, action, None)
+        if callable(callback):
+            try:
+                callback()
+            except Exception as exc:
+                print(f"[WakeWord] {action} failed: {exc}")
+
+    def _note_activity(self) -> None:
+        """Reset the auto-sleep countdown from any session activity signal."""
+        if not self._wake_mode_active:
+            return
+        with self._wake_lock:
+            self._last_activity_ts = time.monotonic()
+
+    def _session_is_busy(self) -> bool:
+        """True while sleeping would cut off speech, a tool or a card."""
+        with self._speaking_lock:
+            if self._is_speaking:
+                return True
+        queue = self.audio_in_queue
+        if queue is not None:
+            try:
+                if not queue.empty():
+                    return True
+            except Exception:
+                pass
+        if self._current_phase() in (PHASE_THINKING, PHASE_SPEAKING):
+            return True
+        if self._background_tasks:
+            return True
+        if _wake_recording_active():
+            return True
+        with self._confirmation_lock:
+            if self._pending_card_token is not None:
+                return True
+        return False
+
+    def _ui_enter_standby(self) -> None:
+        self.ui.set_standby(True)
+        self.ui._dispatch(self.ui.bridge.setAmplitude, 0.0)
+
+    def _ui_leave_standby(self) -> None:
+        self.ui.set_standby(False)
+
+    def _flush_mic_queue(self) -> None:
+        """Drop mic PCM captured just before standby so nothing leaks to Live."""
+        queue = self.out_queue
+        if queue is None:
+            return
+        try:
+            while True:
+                queue.get_nowait()
+        except Exception:
+            pass
+
+    def _wake_up(self, reason: str = "manual") -> bool:
+        """Standby → active: open the mic path and gate local re-triggers."""
+        with self._wake_lock:
+            was_asleep = self._wake_mode_active and not self._awake
+            self._awake = True
+            self._standby_pending = None
+            self._last_activity_ts = time.monotonic()
+        if not was_asleep:
+            return False
+        # Pausing (not stopping) keeps the local listener warm but prevents a
+        # second "Hey Friday" or Friday's own TTS from re-triggering mid-talk.
+        self._wake_engine_action("pause")
+        self._ui_leave_standby()
+        self.ui.invoke()
+        self.ui.write_log(f"SYS: Waking ({reason}) — listening.")
+        return True
+
+    def _enter_standby(self, reason: str = "manual", *, defer: bool = True) -> bool:
+        """Active → standby: close the mic path, park the dock, re-arm wake."""
+        with self._wake_lock:
+            if not self._wake_mode_active:
+                return False
+            if defer and self._session_is_busy():
+                self._standby_pending = reason
+                self._last_activity_ts = time.monotonic()
+                return False
+            self._awake = False
+            self._standby_pending = None
+            self._last_activity_ts = time.monotonic()
+        self._flush_mic_queue()
+        self._ui_enter_standby()
+        self._wake_engine_action("resume")
+        self.ui.write_log("SYS: Returning to standby — say 'Hey Friday' to wake me.")
+        return True
+
+    def _request_standby(self, reason: str, *, defer: bool = True) -> bool:
+        """Defer standby while a spoken acknowledgement / tool is still busy."""
+        if defer and (
+            self._session_is_busy()
+            or time.monotonic() - self._last_activity_ts < WAKE_STANDBY_GRACE_S
+        ):
+            with self._wake_lock:
+                self._standby_pending = reason
+            return False
+        return self._enter_standby(reason, defer=False)
+
+    def _on_wake_engine_state(self, active: bool) -> None:
+        """Engine start/stop (voice, tray, setup) synchronises standby mode."""
+        active = bool(active)
+        with self._wake_lock:
+            was_active = self._wake_mode_active
+            self._wake_mode_active = active
+            if active:
+                self._wake_engine = self._wake_engine or self._get_wake_engine()
+            else:
+                self._awake = True
+                self._standby_pending = None
+                self._last_activity_ts = time.monotonic()
+        if active:
+            if not was_active:
+                self.ui.write_log("SYS: Wake word active — standing by for 'Hey Friday'.")
+            self._request_standby("wake-enabled")
+        else:
+            self._ui_leave_standby()
+            self.ui.write_log("SYS: Wake word disabled — manual mode.")
+
+    def _maybe_autostart_wake_word(self) -> None:
+        """Boot with a trained model → local listener on, session in standby."""
+        if self._wake_autostart_done:
+            return
+        self._wake_autostart_done = True
+        if self._wake_mode_active:
+            return
+        try:
+            from actions import wake_word as wake_module
+            _name, engine = wake_module._pick_engine()
+            if not getattr(engine, "available", False):
+                return
+            with self._wake_lock:
+                self._wake_engine = engine
+            result = engine.start()
+            ok = bool(getattr(engine, "_running", False)) or any(
+                marker in str(result).lower() for marker in ("active", "already")
+            )
+            if ok:
+                self._on_wake_engine_state(True)
+                # Boot has no spoken acknowledgement to wait for: park the
+                # dock in standby immediately rather than waiting for grace.
+                if self._awake:
+                    self._enter_standby("boot", defer=False)
+        except Exception as exc:
+            print(f"[WakeWord] Auto-start unavailable: {exc}")
+
+    def _sync_ui_state(self) -> None:
+        """Connect/reconnect must never wake a sleeping dock."""
+        if self._wake_mode_active and not self._awake:
+            self._ui_enter_standby()
+        else:
+            self._ui_leave_standby()
+            self.ui.set_state("LISTENING")
+
+    def _on_manual_wake_request(self, source: str = "manual") -> None:
+        """Orb click, mic button or unmute always wakes a sleeping session."""
+        self._note_activity()
+        if self._wake_mode_active:
+            self._wake_up(f"manual:{source}")
+
     def _on_wake_detect(self):
-        """Excited when the wake word is heard — un-mute, invoke Siri, listen."""
+        """Local offline detection fired — unmute, invoke, open mic forwarding."""
         try:
             if not self._ready or not self.session:
                 print("[WakeWord] ⚠️ Ignored — session not ready.")
+                return
+            if not self._wake_mode_active:
                 return
             # Un-mute on the GUI thread so the orb's muted colour follows.
             self.ui._dispatch(self.ui.state_machine.set_muted, False, "wake-word")
             self.ui.muted = False
             self.set_speaking(False)
-            # Invoke Siri: the orb springs into view (dormant → listening).
-            self.ui.invoke()
-            self.ui.write_log("SYS: Wake word heard — listening.")
+            self._wake_up("wake-word")
         except Exception as e:
             print(f"[WakeWord] ⚠️ {e}")
+
+    def _watch_wake_idle_once(self) -> None:
+        """One inactivity tick; separated out so tests need no real clock."""
+        with self._wake_lock:
+            if not self._wake_mode_active or not self._awake:
+                return
+            pending = self._standby_pending
+            timeout = self._wake_idle_timeout_s
+        if self._session_is_busy():
+            self._note_activity()
+            return
+        quiet_for = time.monotonic() - self._last_activity_ts
+        if pending:
+            if quiet_for >= WAKE_STANDBY_GRACE_S:
+                self._enter_standby(pending, defer=False)
+            return
+        if quiet_for >= timeout:
+            self._enter_standby("idle-timeout", defer=False)
+
+    async def _watch_wake_idle(self):
+        """Auto-sleep watchdog: only runs while hands-free mode is awake."""
+        while True:
+            await asyncio.sleep(WAKE_IDLE_TICK_S)
+            try:
+                self._watch_wake_idle_once()
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                print(f"[WakeWord] Idle watchdog error: {exc}")
 
     def attach_tray(self):
         """Register optional global shortcuts; the Qt UI owns the tray icon."""
@@ -1615,16 +1850,13 @@ class FridayLive:
             from actions import system_tray
             def toggle_wake():
                 try:
-                    from actions.wake_word import _pick_engine
+                    from actions.wake_word import _pick_engine, wake_word as wake_action
                     _, engine = _pick_engine()
                     if not engine.available:
                         self.ui.write_log('SYS: Wake word engine unavailable.')
                         return
-                    if engine._running:
-                        result = engine.stop()
-                    else:
-                        engine.configure(on_detect=self._on_wake_detect)
-                        result = engine.start()
+                    action = 'stop' if engine._running else 'start'
+                    result = wake_action({'action': action})
                     self.ui.write_log(f'SYS: {result}')
                 except Exception as exc:
                     self.ui.write_log(f'ERR: Wake word: {exc}')
@@ -1717,6 +1949,9 @@ class FridayLive:
                               "ha", "albatta", "evet", "olur"}
 
     def _on_text_command(self, text: str):
+        self._note_activity()
+        if self._wake_mode_active:
+            self._wake_up("text")
         if not self._loop or not self.session or not self._send_lock:
             return
         if self._is_explicit_approval(text):
@@ -1739,15 +1974,21 @@ class FridayLive:
             self._set_phase(PHASE_SPEAKING)
         elif was:
             self.ui._dispatch(self.ui.bridge.setAmplitude, 0.0)
+            # The idle window starts only once playback has drained, so the
+            # user always gets the full timeout to reply to a finished answer.
+            self._note_activity()
             # Releasing must be unconditional. `_set_phase(PHASE_LISTENING)`
-            # deliberately does nothing when muted, which left the machine (and
-            # therefore audio ducking) stuck on SPEAKING for the rest of the
+            # deliberately does nothing when muted, which left the machine
+            # (and audio ducking) stuck on SPEAKING for the rest of the
             # session. release_speech() always publishes the transition.
             self._set_phase(PHASE_LISTENING)
-            try:
-                self.ui.stop_speaking()
-            except Exception:
-                self._set_phase(PHASE_LISTENING)
+            if self._wake_mode_active and not self._awake:
+                self._ui_enter_standby()
+            else:
+                try:
+                    self.ui.stop_speaking()
+                except Exception:
+                    self._set_phase(PHASE_LISTENING)
 
     def _persona_info(self) -> tuple[str, str, str]:
         """Return (mode, mood, voice) for the UI header badges."""
@@ -1762,6 +2003,11 @@ class FridayLive:
     def _set_phase(self, phase: str):
         with self._phase_lock:
             self._phase = phase
+        # A sleeping session must look dormant even when a late tool result or
+        # speech-release callback asks for LISTENING/THINKING.
+        if self._wake_mode_active and not self._awake:
+            self._ui_enter_standby()
+            return
         if phase == PHASE_THINKING:
             self.ui.set_state("THINKING")
         elif phase == PHASE_SPEAKING:
@@ -1884,8 +2130,23 @@ class FridayLive:
             return clear_memory(args.get("category", ""))
 
         def _wake(args):
-            from actions.wake_word import wake_word as wake_word_action
-            return wake_word_action(parameters=args, player=ui)
+            from actions import wake_word as wake_module
+            action = str(args.get("action") or "status").strip().lower()
+            action = wake_module._ACTION_ALIASES.get(action, action)
+            # "go to sleep" / "standby" must work even if hands-free mode was
+            # not yet enabled: start the trained listener first, then park.
+            if action in ("sleep", "standby") and not self._wake_mode_active:
+                try:
+                    wake_module.wake_word(parameters={"action": "start"}, player=ui)
+                except Exception:
+                    pass
+            result = wake_module.wake_word(parameters=args, player=ui)
+            if action in ("sleep", "standby"):
+                self._request_standby("voice:" + action)
+            elif action in ("set_idle_timeout", "idle_timeout"):
+                self._wake_idle_timeout_s = wake_module.get_idle_timeout()
+                self._note_activity()
+            return result
 
         def _save_memory(args):
             category = args.get("category", "notes")
@@ -2134,6 +2395,7 @@ class FridayLive:
         return None
 
     async def _dispatch_tool(self, name: str, args: dict) -> ToolResult:
+        self._note_activity()
         from safety import sanitize as _sanitize
         gate_result = await self._run_safety_gate(name, args)
         if gate_result is not None:
@@ -2209,6 +2471,7 @@ class FridayLive:
     async def _execute_tool(self, fc) -> types.FunctionResponse:
         name = fc.name
         args = dict(fc.args or {})
+        self._note_activity()
 
         from safety import sanitize as _sanitize
         log_tool(name, _sanitize(name, args))
@@ -2469,20 +2732,29 @@ class FridayLive:
             # live session cannot reply, talk over the prompts, or fire a
             # duplicate wake_word(record) call.
             recording = _wake_recording_active()
-            if not assistant_speaking and not self.ui.muted and not recording:
+            # Wake-word standby is NOT the same thing as user mute: in standby
+            # the local detector keeps listening while the Gemini mic path is
+            # completely closed (zero room chatter reaches the session).
+            awake_for_mic = not self._wake_mode_active or self._awake
+            if (not assistant_speaking and not self.ui.muted and not recording
+                    and awake_for_mic):
                 data = indata.tobytes()
                 loop.call_soon_threadsafe(self._safe_put_mic, data)
 
             # Voice reactivity: feed live mic energy to the Siri orb so the
             # ribbons respond to the user's voice in real time. Kept cheap and
             # throttled (~30 Hz) so the audio callback never blocks and the
-            # cross-thread dispatcher is never flooded.
+            # cross-thread dispatcher is never flooded. While dormant the orb
+            # always gets 0.0, so background noise cannot animate the dock.
             try:
                 if (np is not None and not assistant_speaking
                         and not self.ui.muted and not recording):
                     rms = float(np.sqrt(np.mean(
                         np.square(indata.astype(np.float32))))) / 32768.0
-                    amp = min(1.0, rms * 3.0)
+                    amp = min(1.0, rms * 3.0) if awake_for_mic else 0.0
+                    if awake_for_mic and rms >= MIC_ACTIVITY_RMS:
+                        # Continuous speech must never time out mid-sentence.
+                        self._note_activity()
                 else:
                     amp = 0.0
             except Exception:
@@ -2565,6 +2837,7 @@ class FridayLive:
                         sc = response.server_content
 
                         if sc.output_transcription and sc.output_transcription.text:
+                            self._note_activity()
                             if not getattr(self.ui, "silent_mode", False):
                                 self.set_speaking(True)
                             txt = sc.output_transcription.text.strip()
@@ -2573,12 +2846,14 @@ class FridayLive:
                                 self.ui.set_live_transcript(" ".join(out_buf))
 
                         if sc.input_transcription and sc.input_transcription.text:
+                            self._note_activity()
                             txt = sc.input_transcription.text.strip()
                             if txt:
                                 in_buf.append(txt)
                                 self.ui.set_live_transcript(" ".join(in_buf))
 
                         if sc.turn_complete:
+                            self._note_activity()
                             self._turn_complete = True
 
                             full_in = " ".join(in_buf).strip()
@@ -2613,6 +2888,7 @@ class FridayLive:
                                 self._persist_rolling_summary()
 
                     if response.tool_call:
+                        self._note_activity()
                         # Live can emit a tool call before turn_complete. Arm an
                         # exact spoken affirmation before dispatch, not afterward.
                         if not input_approval_handled and self._is_explicit_approval(" ".join(in_buf)):
@@ -2768,6 +3044,9 @@ class FridayLive:
         backoff = 3
         while True:
             try:
+                # First connection (and first reconnection after a cold start)
+                # arms the trained local listener before any mic is forwarded.
+                self._maybe_autostart_wake_word()
                 if client is None:
                     try:
                         client = genai.Client(
@@ -2788,7 +3067,10 @@ class FridayLive:
                         await asyncio.sleep(5)
                         continue
                 print("[FRIDAY] 🔌 Connecting...")
-                self.ui.set_state("THINKING")
+                if not (self._wake_mode_active and not self._awake):
+                    self.ui.set_state("THINKING")
+                else:
+                    self._ui_enter_standby()
                 self.ui.set_connecting(True)
                 config = self._build_config()
 
@@ -2808,14 +3090,21 @@ class FridayLive:
                     print("[FRIDAY] ✅ Connected.")
                     self.ui.set_connection(True)
                     self.ui.set_persona(*self._persona_info())
-                    self.ui.set_state("LISTENING")
-                    self.ui.write_log("SYS: Friday online.")
+                    self._note_activity()
+                    # Reconnects keep a sleeping session asleep: no LISTENING,
+                    # no orb pulse, no mic forwarding until a real wake event.
+                    self._sync_ui_state()
+                    if self._wake_mode_active:
+                        self.ui.write_log("SYS: Friday on standby — say 'Hey Friday'.")
+                    else:
+                        self.ui.write_log("SYS: Friday online.")
 
                     tg.create_task(self._send_realtime())
                     tg.create_task(self._listen_audio())
                     tg.create_task(self._receive_audio())
                     tg.create_task(self._play_audio())
                     tg.create_task(self._watch_speaking())
+                    tg.create_task(self._watch_wake_idle())
                     tg.create_task(self._scheduler_loop())
                     tg.create_task(self._monitor_loop())
 
@@ -2865,7 +3154,10 @@ class FridayLive:
             self.audio_in_queue = None
             self.set_speaking(False)
             self.ui.set_connection(False)
-            self.ui.set_state("THINKING")
+            if self._wake_mode_active and not self._awake:
+                self._ui_enter_standby()
+            else:
+                self.ui.set_state("THINKING")
             log(f"Session lost — reconnecting in {backoff}s", level="WARN")
             print(f"[FRIDAY] 🔄 Reconnecting in {backoff}s...")
             await asyncio.sleep(backoff)
