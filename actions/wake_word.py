@@ -7,6 +7,7 @@
 
 from __future__ import annotations
 
+import argparse
 import importlib
 import inspect
 import json
@@ -20,6 +21,10 @@ except ImportError:                                    # pragma: no cover - envi
     np = None
 
 _OWW = None  # None=not checked yet, False=unavailable, Model class=available
+# Model paths whose "missing" hint was already printed. Module level on purpose:
+# startup probes more than one engine instance, and the warning must appear at
+# most once per path per process.
+_WARNED_MISSING: set[str] = set()
 
 
 def _get_oww():
@@ -153,7 +158,12 @@ class WakeWordService:
             raise
 
     def load(self) -> bool:
-        """Load the model without opening a microphone stream."""
+        """Load the model without opening a microphone stream.
+
+        The "Model missing" hint is printed at most once per model path so the
+        startup path (service bootstrap + first engine probe) can no longer
+        print the same warning twice back to back.
+        """
         if self._model is not None:
             return True
         Model = _get_oww()
@@ -163,10 +173,13 @@ class WakeWordService:
         candidate = str(MODELS_DIR / self._model_file)
         if not Path(candidate).exists():
             self._last_error = f"model not found: {candidate}"
-            print(
-                "[WakeWord] Model missing. Record/train it with: "
-                "'record the wake word', then 'train the wake word'."
-            )
+            if candidate not in _WARNED_MISSING:
+                _WARNED_MISSING.add(candidate)
+                print(
+                    "[WakeWord] Model missing. Say 'open wake word setup' (or "
+                    "'set up the wake word') to record, train and activate it in "
+                    "one step, sir."
+                )
             return False
         try:
             self._model = self._new_model(Model, candidate)
@@ -192,8 +205,9 @@ class WakeWordService:
                 return "Wake word is already listening, sir."
         if not self.load():
             return (
-                "Wake word model not found in models/. Record and train it first "
-                "by saying 'record the wake word', then 'train the wake word', sir."
+                "Wake word model not found in models/. Say 'open wake word setup' "
+                "(or 'set up the wake word') to record, train and activate it in "
+                "one step, sir."
             )
         with self._lock:
             if self._running:
@@ -311,6 +325,40 @@ class WakeWordService:
 
     # -- streaming detection -------------------------------------------------
 
+    def _prediction_keys(self) -> set[str]:
+        """Model output keys to read, tolerant of renamed exports."""
+        stem = Path(self._model_file).stem
+        keys = {stem, "hey_friday"} if stem.startswith("hey_friday") else {stem}
+        keys.add("hey_friday")
+        return keys
+
+    def _score(self, frame) -> float:
+        """Single-frame wake-word probability (0.0 on any backend error)."""
+        if self._model is None or np is None:
+            return 0.0
+        try:
+            prediction = self._model.predict(frame)
+        except Exception as exc:
+            with self._lock:
+                self._last_error = str(exc)
+            return 0.0
+        if not isinstance(prediction, dict):
+            return 0.0
+        return max((float(prediction.get(key) or 0) for key in self._prediction_keys()),
+                   default=0.0)
+
+    def score_frame(self, frame) -> float:
+        """Score one 1280-sample frame for the interactive live test."""
+        if np is None:
+            return 0.0
+        samples = np.asarray(frame, dtype=np.int16).reshape(-1)
+        if samples.size < CHUNK:
+            samples = np.pad(samples, (0, CHUNK - samples.size))
+        score = self._score(samples[:CHUNK])
+        with self._lock:
+            self._last_score = score
+        return score
+
     def _feed(self, block: np.ndarray):
         """Feed exact non-overlapping 1280-sample frames into Model.predict()."""
         if self._model is None or self._paused or np is None:
@@ -324,9 +372,6 @@ class WakeWordService:
                 np.empty((0, CHUNK), dtype=np.int16)
             self._residual = combined[usable:].copy()
 
-        stem = Path(self._model_file).stem
-        keys = {stem, "hey_friday"} if stem.startswith("hey_friday") else {stem}
-
         for frame in frames:
             rms = float(np.sqrt(np.mean(np.square(
                 frame.astype(np.float64)
@@ -336,15 +381,7 @@ class WakeWordService:
                     self._hits = 0
                 continue
 
-            try:
-                prediction = self._model.predict(frame)
-            except Exception as exc:
-                with self._lock:
-                    self._last_error = str(exc)
-                continue
-            score = 0.0
-            if isinstance(prediction, dict):
-                score = max((float(prediction.get(key) or 0) for key in keys), default=0.0)
+            score = self._score(frame)
             with self._lock:
                 self._last_score = score
                 if score >= self._threshold:
@@ -415,11 +452,12 @@ class WakeWordService:
         return "No audio backend is available on this machine, sir."
 
     def stats(self) -> dict:
+        phrase = _helper_phrase(self._phrase)      # disk read: keep off the lock
         with self._lock:
             state = "active" if self._running else "inactive"
             return {
                 "state": "paused" if self._paused and self._running else state,
-                "phrase": self._phrase,
+                "phrase": phrase,
                 "model_path": self._model_path,
                 "threshold": self._threshold,
                 "patience": self._patience,
@@ -431,8 +469,96 @@ class WakeWordService:
                                              "pyaudio" if _pyaudio() else "none"),
             }
 
+    # -- diagnostics helpers -------------------------------------------------
+
+    def describe(self) -> dict:
+        """Compact status dict used by the CLI and the voice status action."""
+        detail = self.stats()
+        detail["model_file"] = self._model_file
+        detail["model_present"] = (MODELS_DIR / self._model_file).exists()
+        return detail
+
+
+def _set_phrase(phrase) -> str:
+    """Persist a custom wake phrase so recording, training and the UI agree."""
+    text = " ".join(str(phrase or "").split())
+    if not text:
+        return ""
+    try:
+        text = _helper().normalise_phrase(text)
+        _helper().save_config(phrase=text)
+    except Exception:
+        pass
+    _service._phrase = text
+    return text
+
 
 _service = WakeWordService()
+
+
+BUSY_RECORDING_MESSAGE = "Wake-word recording is already in progress, sir."
+
+# Natural-language action words the model may emit -> canonical action.
+_ACTION_ALIASES = {
+    "guided_setup": "setup",
+    "setup_wake_word": "setup",
+    "create": "setup",
+    "create_wake_word": "setup",
+    "record_and_train": "setup",
+    "calibrate": "test",
+    "live_test": "test",
+    "test_wake_word": "test",
+    "clips": "list_clips",
+    "list": "list_clips",
+    "reset_wake_word": "reset",
+    "clear_all": "reset",
+    "help": "status",
+}
+
+
+def _helper():
+    """Return the guided-workflow module (runtime import keeps tray alive)."""
+    return importlib.import_module("actions.friday_wake")
+
+
+def is_recording_active() -> bool:
+    """True while the wake-word recorder or live test owns the microphone.
+
+    ``main.py`` consults this before forwarding mic audio to Gemini Live, so a
+    guided setup (five "Hey Friday" takes) can never leak into the live session,
+    trigger a second ``record`` call, or get talked over mid-prompt.
+    """
+    try:
+        return bool(_helper().is_recording_active())
+    except Exception:
+        return False
+
+
+def recording_in_progress() -> tuple[bool, str]:
+    """``(busy, activity)`` for status output and the setup guard."""
+    try:
+        return _helper().activity_in_progress()
+    except Exception:
+        return False, ""
+
+
+def _helper_phrase(default: str = "Hey Friday") -> str:
+    try:
+        return _helper().current_phrase(default)
+    except Exception:
+        return default
+
+
+def _threshold_value(params: dict, fallback: float) -> float:
+    """Parse a threshold from tool params, clamped to the supported range."""
+    raw = params.get("threshold", params.get("value"))
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        return fallback
+    if not 0.1 <= value <= 0.99:
+        return fallback
+    return value
 
 
 def _load_matcher():
@@ -463,6 +589,45 @@ def _pick_engine():
     return "friday", _service
 
 
+def _int_param(params: dict, keys, default: int, low: int, high: int) -> int:
+    """Read the first present integer param, clamped to [low, high]."""
+    for key in keys:
+        if params.get(key) is None:
+            continue
+        try:
+            return max(low, min(int(params[key]), high))
+        except (TypeError, ValueError):
+            continue
+    return default
+
+
+def _float_param(params: dict, keys, default: float, low: float, high: float) -> float:
+    """Read the first present float param, clamped to [low, high]."""
+    for key in keys:
+        if params.get(key) is None:
+            continue
+        try:
+            return max(low, min(float(params[key]), high))
+        except (TypeError, ValueError):
+            continue
+    return default
+
+
+def _bool_param(params: dict, keys, default: bool = False) -> bool:
+    for key in keys:
+        if key in params and params[key] is not None:
+            value = params[key]
+            if isinstance(value, str):
+                return value.strip().lower() in ("1", "true", "yes", "on")
+            return bool(value)
+    return default
+
+
+def _phrase_param(params: dict) -> str:
+    phrase = params.get("phrase", params.get("word", params.get("name")))
+    return str(phrase or "").strip()
+
+
 def wake_word(
     parameters: dict,
     response=None,
@@ -472,27 +637,82 @@ def wake_word(
     """Control the wake word listener (Hey Friday)."""
     params = parameters if isinstance(parameters, dict) else {}
     action = str(params.get("action") or "status").strip().lower()
+    action = _ACTION_ALIASES.get(action, action)
 
     matcher = _load_matcher()
+    try:
+        helper = _helper()
+    except Exception:
+        helper = None
+
+    phrase = _phrase_param(params)
+
+    if action == "setup":
+        if helper is None:
+            return ("Guided wake-word setup needs actions/friday_wake.py, "
+                    "which could not be imported, sir.")
+        if phrase:
+            _set_phrase(phrase)
+        return helper.run_setup(
+            phrase=phrase or _helper_phrase(),
+            positives=_int_param(params, ("positives", "samples", "clips", "count"),
+                                 5, 1, 30),
+            negatives=_int_param(params, ("negatives", "backgrounds"),
+                                 3, 0, 15),
+            seconds=_float_param(params, ("seconds", "duration"),
+                                 helper.RECORD_SECONDS, 0.5, 5.0),
+            steps=_int_param(params, ("steps", "epochs"), 900, 50, 5000),
+            player=player,
+            engine=matcher,
+            activate=True,
+        )
 
     if action in ("record", "record_wake_word"):
         if matcher is None:
             return ("Custom wake-word recording is unavailable: "
                     "actions.friday_wake could not be imported.")
-        try:
-            clips = int(params.get("clips") or params.get("count") or 5)
-        except (TypeError, ValueError):
-            clips = 5
-        return matcher.record(n_clips=clips)
+        clips = _int_param(params, ("clips", "positives", "samples", "count"),
+                           5, 1, 30)
+        negatives = _int_param(params, ("negatives", "backgrounds"), 3, 0, 15)
+        if phrase:
+            _set_phrase(phrase)
+        if _bool_param(params, ("auto_train", "train", "then_train")):
+            return matcher.setup(phrase=phrase or _helper_phrase(), positives=clips,
+                                 negatives=negatives, player=player, activate=True)
+        busy, _activity = recording_in_progress()
+        if busy:
+            return BUSY_RECORDING_MESSAGE
+        result = matcher.record(n_clips=clips, negatives=negatives,
+                                phrase=phrase or None, player=player)
+        return result if isinstance(result, str) else str(result.get("message") or result)
 
     if action in ("train", "train_wake_word", "train_model"):
         if matcher is None:
-            return "Custom wake-word training is unavailable: actions.friday_wake could not be imported."
-        try:
-            steps = int(params.get("steps") or params.get("epochs") or 900)
-        except (TypeError, ValueError):
-            steps = 900
+            return ("Custom wake-word training is unavailable: "
+                    "actions.friday_wake could not be imported.")
+        steps = _int_param(params, ("steps", "epochs"), 900, 50, 5000)
         return matcher.train(steps=steps)
+
+    if action == "test":
+        if helper is None:
+            return "Live wake-word testing needs actions/friday_wake.py, sir."
+        return helper.live_test(
+            seconds=_float_param(params, ("seconds", "duration"), 8.0, 1.0, 15.0),
+            threshold=_threshold_value(params, None),
+            phrase=phrase or _helper_phrase(),
+            player=player,
+        )
+
+    if action in ("list_clips", "clips"):
+        if helper is None:
+            return "Wake-word clip listing needs actions/friday_wake.py, sir."
+        return helper.list_clips()
+
+    if action in ("reset", "clear", "forget"):
+        if helper is None:
+            return "Wake-word reset needs actions/friday_wake.py, sir."
+        return helper.reset(delete_model=_bool_param(params, ("delete_model",),
+                                                     default=True))
 
     engine_name, engine = _pick_engine()
 
@@ -506,7 +726,8 @@ def wake_word(
             except (TypeError, ValueError):
                 pass
         if matcher is not None and engine is matcher \
-                and not engine._on_detect and _service._on_detect:
+                and not getattr(engine, "_on_detect", None) \
+                and _service._on_detect:
             engine.configure(on_detect=_service._on_detect)
         return engine.start()
     if action == "stop":
@@ -514,8 +735,9 @@ def wake_word(
     if action in ("status", "info"):
         state = "active" if engine._running else "inactive"
         detail = target().stats()
+        trained = "trained" if getattr(engine, "available", False) else "not trained yet"
         return (
-            f"Wake word is {state} ({detail['phrase']}). "
+            f"Wake word is {state} ({detail['phrase']}, model {trained}). "
             f"Threshold {detail['threshold']:.2f}, cooldown {detail['cooldown']:.1f}s, "
             f"backend {detail['backend']}."
         )
@@ -530,10 +752,185 @@ def wake_word(
         return target().set_cooldown(params.get("cooldown", params.get("value")))
     if action in ("devices", "list_devices"):
         return target().list_input_devices()
-    if action in ("diagnostics", "test"):
+    if action == "diagnostics":
         return json.dumps(target().stats(), ensure_ascii=False, indent=2)
 
     return (
-        f"Unknown wake word action: {action}, sir. Use start | stop | status | "
-        "pause | resume | set_threshold | devices | diagnostics | record | train"
+        f"Unknown wake word action: {action}, sir. Use status | setup | start | stop | "
+        "record | train | test | list_clips | reset | pause | resume | set_threshold | "
+        "devices | diagnostics."
     )
+
+
+# ── standalone CLI wizard ---------------------------------------------------
+
+_MENU = """\
+Wake Word Studio — what would you like to do?
+  1. Guided Setup (Record + Train + Test)
+  2. Record More Clips
+  3. Train Model
+  4. Live Test & Calibrate
+  5. Status / Clips
+  6. Reset
+  7. Quit
+"""
+
+
+def _cli_status(_args=None) -> int:
+    helper = _helper()
+    _engine_name, engine = _pick_engine()
+    print(json.dumps(engine.stats(), ensure_ascii=False, indent=2))
+    print(helper.list_clips())
+    return 0
+
+
+def _cli_setup(args) -> int:
+    helper = _helper()
+    transcript = helper.run_setup(
+        phrase=getattr(args, "phrase", None),
+        positives=max(1, int(args.positives)),
+        negatives=max(0, int(args.negatives)),
+        seconds=float(args.seconds),
+        steps=int(args.steps),
+        activate=True,
+    )
+    print()
+    print(transcript)
+    print()
+    seconds = 8.0 if getattr(args, "test_seconds", None) is None else float(args.test_seconds)
+    if seconds > 0:
+        print(helper.live_test(seconds=seconds))
+    return 0
+
+
+def _cli_record(args) -> int:
+    helper = _helper()
+    result = helper.record_guided(
+        positives=max(1, int(args.positives)),
+        negatives=max(0, int(args.negatives)),
+        seconds=float(args.seconds),
+        phrase=getattr(args, "phrase", None),
+    )
+    print()
+    print(result["message"])
+    return 0 if result.get("positives_saved") else 1
+
+
+def _cli_train(args) -> int:
+    helper = _helper()
+    print(helper.train_model(steps=int(args.steps),
+                             phrase=getattr(args, "phrase", None)))
+    return 0
+
+
+def _cli_test(args) -> int:
+    helper = _helper()
+    seconds = max(1.0, min(float(args.seconds), 15.0))
+    result = helper._live_test(seconds=seconds,
+                               threshold=getattr(args, "threshold", None),
+                               phrase=getattr(args, "phrase", None))
+    print()
+    print(f"{helper.confidence_bar(result['peak'])} {result['peak']:.2f}  "
+          f"threshold {result['threshold']:.2f}  "
+          f"{'TRIGGERED!' if result['triggered'] else 'not triggered'}")
+    print(result["hint"])
+    return 0 if result.get("ok") else 1
+
+
+def _cli_reset(args) -> int:
+    helper = _helper()
+    print(helper.reset(delete_model=not getattr(args, "keep_model", False)))
+    return 0
+
+
+def _interactive_menu() -> int:
+    while True:
+        print()
+        print(_MENU)
+        try:
+            choice = input("Choose 1-7: ").strip()
+        except (EOFError, KeyboardInterrupt):
+            print()
+            return 0
+        if choice in ("7", "q", "quit", "exit", ""):
+            return 0
+        if choice == "1":
+            phrase = input(f"Phrase [{_helper_phrase()}]: ").strip()
+            print(_helper().run_setup(phrase=phrase or None))
+            print(_helper().live_test(seconds=8))
+        elif choice == "2":
+            print(_helper().record_guided()["message"])
+        elif choice == "3":
+            print(_helper().train_model())
+        elif choice == "4":
+            print(_helper().live_test())
+        elif choice == "5":
+            _cli_status()
+        elif choice == "6":
+            confirm = input("Delete clips and the trained model? [y/N]: ").strip().lower()
+            print(_helper().reset(delete_model=confirm in ("y", "yes")))
+        else:
+            print("Please choose a number between 1 and 7, sir.")
+
+
+def _build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        prog="python -m actions.wake_word",
+        description="FRIDAY wake-word studio: guided record, train, test and reset.",
+    )
+    sub = parser.add_subparsers(dest="command")
+
+    setup = sub.add_parser("setup", help="guided record -> auto-train -> live test")
+    setup.add_argument("--phrase", default=None, help="custom wake phrase")
+    setup.add_argument("--positives", type=int, default=5, help="positive takes (1-30)")
+    setup.add_argument("--negatives", type=int, default=3, help="background clips (0-15)")
+    setup.add_argument("--seconds", type=float, default=2.0, help="clip length in seconds")
+    setup.add_argument("--steps", type=int, default=900, help="training steps")
+    setup.add_argument("--test-seconds", type=float, default=8.0,
+                       help="live confidence test length (0 skips the test)")
+    setup.set_defaults(func=_cli_setup)
+
+    record = sub.add_parser("record", help="record more clips")
+    record.add_argument("--phrase", default=None, help="custom wake phrase")
+    record.add_argument("--positives", type=int, default=5, help="positive takes (1-30)")
+    record.add_argument("--negatives", type=int, default=3, help="background clips (0-15)")
+    record.add_argument("--seconds", type=float, default=2.0, help="clip length in seconds")
+    record.set_defaults(func=_cli_record)
+
+    train = sub.add_parser("train", help="retrain from models/training/")
+    train.add_argument("--steps", type=int, default=900, help="training steps")
+    train.add_argument("--phrase", default=None, help="custom wake phrase")
+    train.set_defaults(func=_cli_train)
+
+    test = sub.add_parser("test", help="live confidence test with an ASCII meter")
+    test.add_argument("--seconds", type=float, default=8.0, help="listen time (<=15)")
+    test.add_argument("--threshold", type=float, default=None, help="override threshold")
+    test.add_argument("--phrase", default=None, help="custom wake phrase")
+    test.set_defaults(func=_cli_test)
+
+    status = sub.add_parser("status", help="show engine status and saved clips")
+    status.set_defaults(func=_cli_status)
+
+    reset = sub.add_parser("reset", help="clear recorded clips / stale model")
+    reset.add_argument("--keep-model", action="store_true",
+                       help="keep the trained model, only delete clips")
+    reset.set_defaults(func=_cli_reset)
+
+    return parser
+
+
+def main(argv=None) -> int:
+    """CLI entry point; no arguments launches the interactive menu."""
+    parser = _build_parser()
+    args = parser.parse_args(argv)
+    if not getattr(args, "command", None):
+        return _interactive_menu()
+    try:
+        return int(args.func(args) or 0)
+    except KeyboardInterrupt:
+        print("\nCancelled, sir.")
+        return 130
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

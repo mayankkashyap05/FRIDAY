@@ -77,6 +77,38 @@ PHASE_IDLE, PHASE_LISTENING, PHASE_THINKING, PHASE_SPEAKING = (
 )
 MAX_ROLLING_CHARS = 16000
 
+# Tools that legitimately hold the microphone for tens of seconds (wake-word
+# guided setup records, trains and activates in one call). They are dispatched
+# as background tasks so the Live socket keeps draining frames and answering
+# keepalive pings instead of stalling until a 1011 timeout.
+LONG_RUNNING_TOOLS = {"wake_word"}
+# How long a background tool waits for a reconnecting session to become usable.
+TOOL_READY_GRACE_S = 15.0
+
+
+_WAKE_ACTIVE_CHECK = None
+
+
+def _wake_recording_active() -> bool:
+    """True while the wake-word recorder/test owns the mic (see wake_word.py).
+
+    Called from the PortAudio callback on every chunk, so the lookup is resolved
+    once and then cached; any failure means "not recording".
+    """
+    global _WAKE_ACTIVE_CHECK
+    check = _WAKE_ACTIVE_CHECK
+    if check is None:
+        try:
+            from actions.wake_word import is_recording_active
+            check = is_recording_active
+        except Exception:
+            return False
+        _WAKE_ACTIVE_CHECK = check
+    try:
+        return bool(check())
+    except Exception:
+        return False
+
 
 def _ensure_core_deps():
     missing = []
@@ -996,11 +1028,16 @@ TOOL_DECLARATIONS = [
     {
         "name": "wake_word",
         "description": (
-            "Controls the hands-free wake word listener ('Hey Friday'). "
+            "Controls and creates the hands-free wake word listener ('Hey Friday'). "
             "When active, Friday sleeps until the wake word is said, then listens. "
-            "'record' samples your voice and builds a 'Hey Friday' reference. "
-            "Use when the user says 'activate wake word', 'record the wake word', "
-            "'listen for hey friday', or any wake-word command."
+            "Whenever the user says 'open wake word setup', 'set up the wake word', "
+            "'record and train the wake word', or 'create a wake word', call "
+            "action='setup' immediately: it records guided samples with a beep and "
+            "quiet-take retry, trains the classifier and activates the listener in "
+            "one step. Use action='test' for a live confidence check, "
+            "action='list_clips' to inspect recordings and action='reset' to start "
+            "fresh. Use action='start' when the user says 'activate wake word' or "
+            "'listen for hey friday'."
         ),
         "parameters": {
             "type": "OBJECT",
@@ -1008,11 +1045,18 @@ TOOL_DECLARATIONS = [
                 "action": {
                     "type": "STRING",
                     "description": (
-                        "start | stop | status | pause | resume | set_threshold | "
-                        "devices | diagnostics | record | train (default: status)"
+                        "setup | test | list_clips | reset | start | stop | status | "
+                        "record | train | pause | resume | set_threshold | devices | "
+                        "diagnostics (default: status). Use 'setup' for any request to "
+                        "set up, create, record or train the wake word."
                     ),
                 },
+                "phrase":    {"type": "STRING", "description": "Custom wake phrase for setup/record (default: 'Hey Friday')"},
+                "positives": {"type": "INTEGER", "description": "Positive takes to record for setup (default: 5)"},
+                "negatives": {"type": "INTEGER", "description": "Background clips to record for setup (default: 3)"},
                 "clips":     {"type": "INTEGER", "description": "Number of clips to record for 'record' (default: 5)"},
+                "seconds":   {"type": "INTEGER", "description": "Length of each recorded clip in seconds (default: 2)"},
+                "auto_train": {"type": "BOOLEAN", "description": "When true, 'record' also trains and activates the model"},
                 "threshold": {"type": "NUMBER", "description": "Detection threshold 0.1-0.99 for set_threshold"},
                 "cooldown":  {"type": "NUMBER", "description": "Post-trigger cooldown in seconds"},
                 "device":    {"type": "INTEGER", "description": "Optional microphone device index"},
@@ -1540,6 +1584,8 @@ class FridayLive:
         self.enable_bluetooth = False
         self._schedules     = []
         self._sched_lock    = threading.Lock()
+        # Strong refs for fire-and-forget tool tasks (see _receive_audio).
+        self._background_tasks: set[asyncio.Task] = set()
 
         try:
             from actions.wake_word import _service as wake_service
@@ -1974,7 +2020,9 @@ class FridayLive:
             "flight_finder":     (_lazy("actions.flight_finder", "flight_finder", player=ui), 120),
             "notify":            (_lazy("actions.notifications", "notify", player=ui), 30),
             "daily_briefing":    (_lazy("actions.daily_briefing", "daily_briefing", player=ui), 120),
-            "wake_word":         (_wake, 45),
+            # Guided setup records, trains and activates in one call; it runs as a
+            # background task from _receive_audio so the socket keepalive stays alive.
+            "wake_word":         (_wake, 1500),
             "save_memory":       (_save_memory, 10),
             "set_mode":          (_set_mode, 10),
             "set_voice":         (_set_voice, 10),
@@ -2416,7 +2464,12 @@ class FridayLive:
         def callback(indata, frames, time_info, status):
             with self._speaking_lock:
                 assistant_speaking = self._is_speaking
-            if not assistant_speaking and not self.ui.muted:
+            # While the wake-word recorder/test owns the microphone, the user is
+            # repeating "Hey Friday" on purpose: forward nothing to Gemini so the
+            # live session cannot reply, talk over the prompts, or fire a
+            # duplicate wake_word(record) call.
+            recording = _wake_recording_active()
+            if not assistant_speaking and not self.ui.muted and not recording:
                 data = indata.tobytes()
                 loop.call_soon_threadsafe(self._safe_put_mic, data)
 
@@ -2426,7 +2479,7 @@ class FridayLive:
             # cross-thread dispatcher is never flooded.
             try:
                 if (np is not None and not assistant_speaking
-                        and not self.ui.muted):
+                        and not self.ui.muted and not recording):
                     rms = float(np.sqrt(np.mean(
                         np.square(indata.astype(np.float32))))) / 32768.0
                     amp = min(1.0, rms * 3.0)
@@ -2566,19 +2619,57 @@ class FridayLive:
                             self._mark_human_confirmed()
                             input_approval_handled = True
                         fn_responses = []
+                        background = []
                         for fc in response.tool_call.function_calls:
                             print(f"[FRIDAY] 📞 {fc.name}")
-                            fr = await self._execute_tool(fc)
-                            fn_responses.append(fr)
-                        await self.session.send_tool_response(
-                            function_responses=fn_responses
-                        )
+                            if fc.name in LONG_RUNNING_TOOLS:
+                                background.append(self._execute_tool_in_background(fc))
+                            else:
+                                fn_responses.append(await self._execute_tool(fc))
+                        if fn_responses:
+                            await self.session.send_tool_response(
+                                function_responses=fn_responses
+                            )
+                        for task in background:
+                            self._background_tasks.add(task)
+                            task.add_done_callback(self._background_tasks.discard)
                         # ── Boş turn YOK — bu "Anladım." sorununu yaratıyordu ──
 
         except Exception as e:
             print(f"[FRIDAY] ❌ Recv: {e}")
             traceback.print_exc()
             raise
+
+    async def _execute_tool_in_background(self, fc) -> None:
+        """Run a long tool (wake-word setup) without blocking the receive loop.
+
+        Awaiting a ~20-60 s blocking tool inside ``_receive_audio`` starves the
+        WebSocket frame pump, so the server's keepalive ping goes unanswered and
+        the Live session dies with ``1011 keepalive ping timeout``. This runs the
+        same dispatch in its own task and sends the tool response when it lands,
+        ignoring the result if the session closed meanwhile.
+        """
+        await self._await_ready_for_tool()
+        try:
+            fr = await self._execute_tool(fc)
+            session = self.session
+            if session is None or not self._ready:
+                print(f"[FRIDAY] ⏭ {fc.name} finished after the session closed")
+                return
+            async with self._send_lock:
+                await session.send_tool_response(function_responses=[fr])
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            print(f"[FRIDAY] ⚠️ Background tool {fc.name} failed: {exc}")
+
+    async def _await_ready_for_tool(self, timeout: float = None) -> None:
+        """Wait for a reconnect to deliver a usable session before dispatching."""
+        timeout = TOOL_READY_GRACE_S if timeout is None else timeout
+        deadline = time.monotonic() + timeout
+        while (self.session is None or self._send_lock is None) \
+                and time.monotonic() < deadline:
+            await asyncio.sleep(0.1)
 
     async def _play_audio(self):
         print("[FRIDAY] 🔊 Play started")

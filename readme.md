@@ -229,7 +229,7 @@ FRIDAY exposes **53 declared tools** to Gemini Live backed by **39 action module
 | `screen_process` | `actions/screen_processor.py` | Multimodal analysis of full screen, active window, custom region, or webcam (`fast`, `balanced`, `high`, `ocr` modes, multi-monitor support). |
 | `vision_click` | `actions/vision_click.py` | Locates UI targets from natural-language descriptions and performs click/hover/type actions across monitors. |
 | `vision_gesture` | `actions/vision_gesture.py` | Real-time MediaPipe vision modes: `gesture`, `air_mouse`, `volume`, `motion`, `posture`, `objects`, `focus`, plus `face_count`, `qr` scanning, `snapshot`, and `verify_identity`. |
-| `wake_word` | `actions/wake_word.py`, `actions/friday_wake.py` | Hands-free wake-word engine (`openwakeword`) plus local `"Hey Friday"` audio recording, custom model training, threshold/cooldown tuning, and device diagnostics. |
+| `wake_word` | `actions/wake_word.py`, `actions/friday_wake.py` | Hands-free wake-word engine (`openwakeword`) with one-step guided setup (`setup` = record + validate + train + activate), local `"Hey Friday"` or custom-phrase training, live confidence `test`, `list_clips`/`reset` dataset management, threshold/cooldown tuning, and device diagnostics. See [Wake Word Setup](#wake-word-setup-voice--cli). |
 | **Modular Vision Stack** | `vision/` (21 modules) | `object_detector.py` (YOLO11), `ocr_engine.py` (OpenCV + Tesseract), `face_privacy.py` (local face blur), `opencv_face_verifier.py` (YuNet + SFace identity verification), `face_recognition.py`, `segmentation.py` (foreground/background removal), `image_enhancement.py`, `understanding.py` & `multimodal.py` (captioning & VQA), `anomaly_monitor.py`, `recording.py`, `event_store.py` (SQLite), `model_manager.py` (Roboflow/custom exports), `voice_identity.py`, `workflows.py`, and `arcade.py`. |
 
 ### 7. Memory, Persona & Runtime Tools
@@ -335,6 +335,62 @@ When `keyboard` is installed and active (`actions/system_tray.py`), FRIDAY regis
   - **Microphone**: Required for Gemini Live voice input and wake word.
   - **Camera**: Required for `vision_gesture`, `screen_process` (`camera`), and local face verification.
   - **Screen Recording**: Required for `screen_process` and `vision_click`.
+
+### Wake Word Setup (Voice & CLI)
+
+FRIDAY ships a locally trained **"Hey Friday"** wake word. Recording, training, and activation are fully offline: the ONNX feature front-end (`models/melspectrogram.onnx` + `models/embedding_model.onnx`) and the classifier all run on your machine.
+
+> **Nothing to build by hand.** Guided setup records 5 positive takes + 3 background clips with a soft chime before each one, discards silent takes (up to 2 automatic retries), augments the handful of clips into hundreds of training windows, trains the classifier, saves the model atomically, and starts the listener — in one step.
+
+#### 1. Direct Voice Setup — Just Tell FRIDAY (Easiest)
+
+Start FRIDAY (`python main.py`), then simply talk to it:
+
+| Say this | What happens |
+| --- | --- |
+| **"Open wake word setup"** / **"Set up the wake word"** / **"Record and train the wake word"** | Runs the full guided workflow: chime + prompt for each take, quiet-take retry, automatic training, atomic model save, and the listener is reloaded and activated. |
+| **"Set up a custom wake word called ..."** | Records and trains your own phrase (e.g. *"Hey Jarvis"*); the phrase is persisted in `models/wake_word.json`. |
+| **"Test the wake word"** | Listens for ~8 s, reports the peak confidence vs the threshold and suggests a concrete fix (*"try lowering threshold to 0.45 or recording 3 more samples"*). |
+| **"List wake word clips"** | Shows every saved clip with its duration, peak level and an `OK` / `TOO QUIET` / `CLIPPED` badge. |
+| **"Reset wake word"** | Clears `models/training/` and deletes the stale trained model so you can start fresh. |
+| **"Set wake word threshold to 0.55"** | Adjusts detection sensitivity (valid range `0.10` – `0.99`). |
+| **"Activate wake word"** / **"Listen for hey friday"** | Starts the listener with the already-trained model. |
+
+During guided setup and live testing FRIDAY **automatically mutes its live microphone stream to Gemini**, so repeating *"Hey Friday"* never interrupts the session, gets talked over, or triggers a second recording call. Long setup calls also run in the background, so the Live WebSocket keeps answering keepalive pings and the session stays connected.
+
+#### 2. Standalone Terminal Wizard (Optional / Offline)
+
+The same workflow is available without Gemini, as a standalone microphone studio:
+
+```bash
+# Friendly numbered menu (Guided Setup, Record, Train, Live Test, Status, Reset)
+python -m actions.wake_word
+
+# Guided record -> auto-train -> live confidence test
+python -m actions.wake_word setup
+
+# Record more takes (5 positive + 3 background by default)
+python -m actions.wake_word record --positives 5 --negatives 3
+
+# Retrain from the clips already in models/training/
+python -m actions.wake_word train
+
+# Live ASCII confidence meter, e.g. [████████░░] 0.81  TRIGGERED!
+python -m actions.wake_word test --seconds 10
+
+# Inspect saved clips / engine state, or start over
+python -m actions.wake_word status
+python -m actions.wake_word reset
+```
+
+`setup` also accepts `--phrase "Hey Jarvis"`, `--seconds 2`, `--steps 900`, and `--test-seconds 0` (skip the live check).
+
+#### Files & Tips
+
+- `models/training/positive/` and `models/training/negative/` hold the recorded WAV clips; `models/wake_word.json` stores the phrase and suggested threshold; `models/hey_friday_v0.1.onnx` is the trained classifier.
+- The model file is written to a temporary path and `os.replace`d into place, so an interrupted training run can **never** corrupt a working model.
+- If a take is rejected as `TOO QUIET`, check **Windows Settings → Privacy → Microphone**, then pick another input device with *"list wake word devices"* and run setup again.
+- Fewer than 5 clips per class is allowed: training synthesises extra background windows and reports a quality summary (real vs. augmented sample counts, positive/negative score separation, held-out accuracy, and a suggested threshold).
 
 ### Troubleshooting
 
