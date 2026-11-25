@@ -44,11 +44,11 @@ It runs across **Windows, macOS, and Linux** with platform-native overlay integr
 <table>
   <tr>
     <td align="center" width="50%">
-      <img src="artifacts/ui_previews/02_notch_search_popup.png" alt="Dynamic Island with Liquid-Glass Search Pill" width="100%"><br>
+      <img src="assets/1.png" alt="Dynamic Island with Liquid-Glass Search Pill" width="100%"><br>
       <sub><b>Top-Docked Notch &amp; Liquid-Glass "Search or Ask" Pill (Dark)</b></sub>
     </td>
     <td align="center" width="50%">
-      <img src="artifacts/ui_previews/06_speaking.png" alt="Live Speaking Waveform and Transcript" width="100%"><br>
+      <img src="assets/3.png" alt="Live Speaking Waveform and Transcript" width="100%"><br>
       <sub><b>Live Speech State with Transcript &amp; 5-Bar Waveform</b></sub>
     </td>
   </tr>
