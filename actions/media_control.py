@@ -158,12 +158,27 @@ def _query_media_status() -> dict:
     if platform.system() == "Windows":
         try:
             ps = (
-                "$p = Get-Process | Where-Object { $_.MainWindowTitle -ne '' } "
-                "| Select-Object -First 1 -ExpandProperty MainWindowTitle; $p"
+                "$p = Get-Process | Where-Object { $_.MainWindowTitle -ne '' -and "
+                "$_.ProcessName -match 'spotify|vlc|itunes|music|wmplayer|mediaplayer|groove|foobar|chrome|msedge|firefox|brave|opera' } "
+                "| Select-Object -First 1; if ($p) { $p.ProcessName + '|' + $p.MainWindowTitle }"
             )
             out = subprocess.run(["powershell", "-NoProfile", "-Command", ps],
                                  capture_output=True, text=True, timeout=5).stdout.strip()
-            return {"status": "playing" if out else "unknown", "title": out}
+            if "|" not in out:
+                return {}
+            process, title = out.split("|", 1)
+            process = process.lower()
+            title = title.strip()
+            media_apps = {"spotify", "vlc", "itunes", "music", "wmplayer",
+                          "mediaplayer", "groove", "foobar", "foobar2000"}
+            browsers = {"chrome", "msedge", "firefox", "brave", "opera"}
+            browser_media = ("youtube", "netflix", "prime video", "disney+", "spotify",
+                             "apple music", "soundcloud", "twitch")
+            if (not title or (process not in media_apps and
+                              (process not in browsers or not any(token in title.lower()
+                                                                  for token in browser_media)))):
+                return {}
+            return {"status": "playing", "title": title}
         except Exception:
             return {}
     try:

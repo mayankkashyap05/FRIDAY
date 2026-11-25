@@ -56,18 +56,26 @@ def _safe_url(value) -> str | None:
 
 def _windows_toast(title: str, message: str, params: dict) -> bool:
     try:
-        from winotify import Notification, audio
+        from winotify import Notification
+        try:
+            from winotify import audio
+        except ImportError:
+            audio = None
         duration = str(params.get("duration", "short")).lower()
         if duration not in ("short", "long"):
             duration = "short"
         note = Notification(app_id="Friday", title=title, msg=message,
                             duration=duration)
         sound = str(params.get("sound", "default")).lower()
-        sounds = {
-            "default": audio.Default, "none": audio.Silent,
-            "alarm": audio.Alarm, "reminder": audio.Reminder,
+        sound_members = {
+            "default": "Default", "none": "Silent",
+            "alarm": "Alarm", "reminder": "Reminder",
         }
-        note.set_audio(sounds.get(sound, audio.Default), loop=False)
+        if sound != "none":
+            member = sound_members.get(sound, "Default")
+            sound_value = getattr(audio, member, getattr(audio, "Default", None)) if audio else None
+            if sound_value is not None and hasattr(note, "set_audio"):
+                note.set_audio(sound_value, loop=False)
         url = _safe_url(params.get("url") or params.get("link"))
         if url:
             note.add_actions([

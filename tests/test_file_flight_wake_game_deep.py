@@ -222,3 +222,31 @@ def test_game_actions_launch_largest_close_and_cancel(monkeypatch):
 def test_failsafe_is_never_disabled():
     source = Path(game_updater.__file__).read_text(encoding="utf-8")
     assert "pyautogui.FAILSAFE = False" not in source
+
+
+def test_desktop_alias_uses_redirected_user_shell_folder(monkeypatch, tmp_path):
+    import sys
+    from types import SimpleNamespace
+    class Key:
+        def __enter__(self): return self
+        def __exit__(self, *args): return False
+    fake = SimpleNamespace(
+        HKEY_CURRENT_USER=object(),
+        OpenKey=lambda *args: Key(),
+        QueryValueEx=lambda key, name: (str(tmp_path / "OneDrive Desktop"), 1),
+    )
+    redirected = tmp_path / "OneDrive Desktop"
+    redirected.mkdir()
+    monkeypatch.setattr(file_controller.platform, "system", lambda: "Windows")
+    monkeypatch.setitem(sys.modules, "winreg", fake)
+    assert file_controller._resolve_path("desktop") == redirected
+
+
+def test_file_organizer_and_delete_protect_metadata(monkeypatch, tmp_path):
+    monkeypatch.setattr(file_controller, "_resolve_path", lambda _: tmp_path)
+    for name in ("Desktop.INI", "THUMBS.DB", ".DS_STORE", "ordinary.txt"):
+        (tmp_path / name).write_text("x")
+    file_controller.organize_folder(str(tmp_path))
+    for name in ("Desktop.INI", "THUMBS.DB", ".DS_STORE"):
+        assert (tmp_path / name).exists()
+        assert "protected" in file_controller.delete_file(str(tmp_path / name)).lower()

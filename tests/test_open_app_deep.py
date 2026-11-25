@@ -191,7 +191,7 @@ def test_focus_and_status_actions(monkeypatch):
     monkeypatch.setattr(oa, "_build_windows_app_index", lambda **k: [
         {"name": "Chrome"}, {"name": "Spotify"}])
     result = oa.open_app({"action": "list", "query": "Chrome"})
-    assert "Chrome" in result and "Spotify" in result
+    assert "Chrome" in result and "Spotify" not in result
 
 
 def test_url_scheme_allowlist(monkeypatch):
@@ -228,3 +228,15 @@ def test_parameters_none_and_player_log():
     oa.open_app({"app_name": "echo"}, player=player)
     monkeypatch.undo()
     assert logs and "echo" in logs[0]
+
+
+def test_list_filters_query_and_status_does_not_log_launch(monkeypatch, capsys):
+    monkeypatch.setattr(oa, "_build_windows_app_index", lambda **kwargs: [
+        {"name": "Chrome"}, {"name": "Spotify"}, {"name": "Chrome Helper"},
+    ])
+    listing = oa.open_app({"action": "list", "query": "Chrome"})
+    assert "Chrome" in listing and "Spotify" not in listing
+    monkeypatch.setattr(oa, "_is_running", lambda app: True)
+    result = oa.open_app({"action": "status", "app_name": "Chrome"})
+    assert "running" in result
+    assert "Launching" not in capsys.readouterr().out

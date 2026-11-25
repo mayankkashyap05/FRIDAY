@@ -1185,3 +1185,20 @@ def test_fullscreen_toggle_reads_real_dom_state_and_volume_is_exact():
 
 def test_http_headers_use_a_modern_chrome_user_agent():
     assert "Chrome/136.0.0.0" in yt.HEADERS["User-Agent"]
+
+
+def test_youtube_http_responses_are_closed(monkeypatch):
+    closed = []
+    class Response:
+        status_code = 200
+        def __init__(self, text): self.text = text
+        def close(self): closed.append(self)
+    monkeypatch.setattr(yt.requests, "get", lambda url, **kwargs:
+                        Response(initial_data_html([video_renderer("abcdefghijk", "Closed")])))
+    assert yt._search_youtube_videos("close response")
+    assert len(closed) == 1
+    details = {"videoDetails": {"title": "Closed info", "author": "Channel"}}
+    html = "var ytInitialPlayerResponse = " + json.dumps(details) + ";"
+    monkeypatch.setattr(yt.requests, "get", lambda url, **kwargs: Response(html))
+    assert yt._scrape_video_info(VIDEO_ID)["title"] == "Closed info"
+    assert len(closed) == 2

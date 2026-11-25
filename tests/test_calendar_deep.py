@@ -190,3 +190,12 @@ def test_timezone_and_bounds_contracts():
     start, end = cal._day_bounds(datetime(2026, 11, 24, 15, tzinfo=cal._local_now().tzinfo))
     assert "T00:00:00" in start and "T00:00:00" in end
     assert cal._clamp(9999, 1, 50, 10) == 50
+
+
+def test_calendar_authorization_error_is_english(monkeypatch):
+    monkeypatch.setattr(cal.google_oauth, "get_credentials", lambda: None)
+    with pytest.raises(RuntimeError) as caught:
+        cal._service()
+    message = str(caught.value)
+    assert "Google Calendar is not authorized yet" in message
+    assert "googleni" not in message

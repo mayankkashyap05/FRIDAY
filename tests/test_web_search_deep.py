@@ -329,3 +329,10 @@ def test_non_list_items_and_bad_max_results_are_safe(monkeypatch):
                         lambda query, max_results=6, **kw: seen.append(max_results) or [])
     ws.web_search({"query": "q", "max_results": "bogus", "fresh": True})
     assert seen[-1] == 5
+
+
+def test_empty_gemini_and_ddg_results_reach_tier_three(monkeypatch):
+    monkeypatch.setattr(ws, "_gemini_search", lambda *a, **k: "")
+    monkeypatch.setattr(ws, "_ddg_search", lambda *a, **k: [])
+    monkeypatch.setattr(ws, "_instant_answer", lambda query: f"Tier three: {query}")
+    assert ws.web_search({"query": "offline fallback", "fresh": True}) == "Tier three: offline fallback"

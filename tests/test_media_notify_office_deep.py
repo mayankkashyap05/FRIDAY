@@ -154,3 +154,43 @@ def test_spreadsheet_multisheet_formula_and_summary(tmp_path, monkeypatch):
 def test_sheet_names_avoid_reserved_and_invalid_characters():
     assert office_builder._sheet_name("Q4:Report/2026") == "Q4Report2026"
     assert office_builder._sheet_name("CON") == "_CON"
+
+
+def test_notify_missing_optional_audio_and_silent_mode(monkeypatch):
+    calls = []
+
+    class Note:
+        def __init__(self, **kwargs): pass
+        def set_audio(self, *args, **kwargs): calls.append((args, kwargs))
+        def show(self): pass
+
+    monkeypatch.setitem(sys.modules, "winotify", types.SimpleNamespace(Notification=Note))
+    assert notifications._windows_toast("t", "m", {"sound": "none"})
+    assert calls == []
+    incomplete = types.SimpleNamespace(Default="default")
+    monkeypatch.setitem(sys.modules, "winotify",
+                        types.SimpleNamespace(Notification=Note, audio=incomplete))
+    assert notifications._windows_toast("t", "m", {"sound": "alarm"})
+    assert calls == [(('default',), {"loop": False})]
+
+
+def test_create_spreadsheet_accepts_summary_row(tmp_path, monkeypatch):
+    monkeypatch.setattr(office_builder, "OUT_DIR", tmp_path)
+    result = office_builder.create_spreadsheet(
+        filename="summary-row", headers=["Name", "Value"], rows=[["Total", 5]],
+        summary_row=["Grand total", 5],
+    )
+    assert "created" in result.lower()
+    from openpyxl import load_workbook
+    sheet = load_workbook(tmp_path / "summary-row.xlsx").active
+    assert sheet.cell(row=3, column=1).value == "Grand total"
+
+
+def test_media_status_ignores_generic_windows_titles(monkeypatch):
+    monkeypatch.setattr(media_control.platform, "system", lambda: "Windows")
+    monkeypatch.setattr(media_control.subprocess, "run", lambda *a, **k:
+                        types.SimpleNamespace(stdout="SystemSettings|Settings"))
+    assert media_control._query_media_status() == {}
+    monkeypatch.setattr(media_control.subprocess, "run", lambda *a, **k:
+                        types.SimpleNamespace(stdout="Spotify|Track Name"))
+    assert media_control._query_media_status()["title"] == "Track Name"

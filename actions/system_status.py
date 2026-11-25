@@ -259,7 +259,7 @@ def _gpu() -> str:
             ["nvidia-smi",
              "--query-gpu=name,utilization.gpu,memory.used,memory.total,temperature.gpu",
              "--format=csv,noheader,nounits"],
-            capture_output=True, text=True, timeout=3, check=False,
+            capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=3, check=False,
         )
     except Exception as exc:
         return _error("GPU", exc)
@@ -318,7 +318,7 @@ def _wifi() -> str:
     try:
         result = subprocess.run(
             ["netsh", "wlan", "show", "interfaces"],
-            capture_output=True, text=True, timeout=3, check=False,
+            capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=3, check=False,
         )
     except Exception:
         return ""
@@ -378,7 +378,13 @@ def _network(detailed: bool = False) -> str:
     lines = list(dict.fromkeys(physical or fallback)) or ["no network address"]
     try:
         stats = psutil.net_if_stats() or {}
-        active = [name for name, state in stats.items() if getattr(state, "isup", False)]
+        active_physical, active_virtual = [], []
+        for name, state in stats.items():
+            if not getattr(state, "isup", False):
+                continue
+            target = active_virtual if any(tag in name.lower() for tag in _VIRTUAL_ADAPTERS) else active_physical
+            target.append(name)
+        active = active_physical or active_virtual
         if active:
             lines.append("Active: " + ", ".join(active[:5]))
     except Exception:

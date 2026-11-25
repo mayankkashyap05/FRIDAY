@@ -311,3 +311,33 @@ def test_hardware_focus_specs(monkeypatch):
     _fake_psutil(monkeypatch)
     result = ss.system_status({"focus": "hardware"})
     assert "Python 3." in result and "GB RAM" in result
+
+
+def test_network_active_interfaces_prefers_physical(monkeypatch):
+    fake, _ = _fake_psutil(monkeypatch)
+    monkeypatch.setattr(fake, "net_if_addrs", lambda: {
+        "Ethernet": [SimpleNamespace(family=socket.AF_INET, address="10.0.0.2")],
+        "vEthernet (WSL)": [SimpleNamespace(family=socket.AF_INET, address="172.20.0.1")],
+    })
+    monkeypatch.setattr(fake, "net_if_stats", lambda: {
+        "Ethernet": SimpleNamespace(isup=True),
+        "vEthernet (WSL)": SimpleNamespace(isup=True),
+    })
+    monkeypatch.setattr(ss, "_wifi", lambda: "")
+    result = ss._network()
+    assert "Active: Ethernet" in result
+    assert "Active: Ethernet, vEthernet" not in result
+
+
+def test_wifi_decodes_using_explicit_utf8(monkeypatch):
+    _fake_psutil(monkeypatch)
+    monkeypatch.setattr(ss.platform, "system", lambda: "Windows")
+    monkeypatch.setattr(ss.shutil, "which", lambda name: "netsh.exe")
+    observed = {}
+    def run(*args, **kwargs):
+        observed.update(kwargs)
+        return SimpleNamespace(stdout="SSID : Café\nSignal : 90%\n", returncode=0)
+    monkeypatch.setattr(ss.subprocess, "run", run)
+    assert "Café" in ss._wifi()
+    assert observed["encoding"].lower() == "utf-8"
+    assert observed["errors"] == "replace"

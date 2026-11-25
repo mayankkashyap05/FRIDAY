@@ -1,15 +1,8 @@
 """Model identifiers used with the Gemini API — the single source of truth.
 
-Every ``genai.GenerativeModel(...)`` / ``client.models.generate_content(...)``
-call site in FRIDAY imports its model name from here instead of hard-coding a
-string. That matters because Google retires model ids on a schedule: the live
-API failed with
-
-    404 NOT_FOUND: models/gemini-2.5-flash-lite is no longer available to new
-    users. Please update your code to use models/gemini-3.5-flash-lite
-
-which had to be fixed in nine files at once because the name was copy-pasted
-everywhere. Add a new id here and every caller follows.
+Every Gemini call site in FRIDAY imports its model name from here instead of
+hard-coding a string. Centralizing identifiers makes model migrations reliable:
+update an id here and all callers follow.
 
 This module must stay import-free (no ``google``, no project imports) so it can
 be imported from ``actions/``, ``agent/``, ``memory/`` and tests alike without
@@ -21,13 +14,11 @@ from __future__ import annotations
 # ── primary models ──────────────────────────────────────────────────────────
 #: General-purpose flash model. Fast enough for interactive turns, strong
 #: enough for planning and code.
-MODEL_FLASH = "gemini-2.5-flash"
+MODEL_FLASH = "gemini-3.8-flash"
 
 #: Cheap/fast tier. Used for classification, routing, summarisation, language
 #: detection and as the overload fallback when the flash tier 429s.
 #:
-#: NOTE: the previous id, ``gemini-2.5-flash-lite``, now returns
-#: ``404 NOT_FOUND ... no longer available to new users``.
 MODEL_FLASH_LITE = "gemini-3.5-flash-lite"
 
 #: Live/realtime audio conversation model (``FridayLive`` in ``agent/live.py``).

@@ -77,6 +77,9 @@ def _master_volume():
     from comtypes import CLSCTX_ALL
     from pycaw.pycaw import AudioUtilities, IAudioEndpointVolume
     device = AudioUtilities.GetSpeakers()
+    endpoint = getattr(device, "EndpointVolume", None)
+    if endpoint is not None:
+        return endpoint
     interface = device.Activate(IAudioEndpointVolume._iid_, CLSCTX_ALL, None)
     return cast(interface, POINTER(IAudioEndpointVolume))
 
@@ -741,7 +744,13 @@ def light_mode_on():
 
 
 light_mode = light_mode_on
-dark_mode_status = _win_dark_mode_current
+
+def dark_mode_status():
+    """Report the current appearance, or clearly indicate it is unavailable."""
+    current = _win_dark_mode_current() if _OS == "Windows" else None
+    if current is None:
+        return "Dark mode status unavailable."
+    return f"Dark mode is {'enabled' if current else 'disabled'}."
 
 
 def _win_wifi_interface() -> str:
@@ -1172,7 +1181,7 @@ def computer_settings(
         return f"Unknown action: '{raw_action}', sir."
 
     try:
-        func()
-        return f"Done: {action}."
+        result = func()
+        return result if isinstance(result, str) and result else f"Done: {action}."
     except Exception as e:
         return f"Action failed ({action}): {e}"

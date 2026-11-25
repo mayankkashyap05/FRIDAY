@@ -503,8 +503,10 @@ def open_app(
 
     if action == "list":
         entries = _build_windows_app_index(refresh=bool(params.get("refresh")))
-        query = app_name.lower()
-        matches = _rank_candidates(app_name, entries) if query else entries[:40]
+        query = str(params.get("query") or app_name).strip().lower()
+        matches = _rank_candidates(query, entries) if query else entries[:40]
+        if query:
+            matches = [e for e in matches if query in str(e.get("name") or "").lower()]
         names = [str(e.get("name")) for e in matches[:40] if e.get("name")]
         return ("Indexed apps: " + ", ".join(names)) if names else "No apps are indexed on this system."
 
@@ -530,8 +532,9 @@ def open_app(
         return f"I can't open {app_name}, sir — that name isn't safe."
 
     normalized = _normalize(app_name)
-    print(f"[open_app] Launching: {app_name} -> {normalized} ({system})")
-    if player:
+    if action not in ("is_running", "status"):
+        print(f"[open_app] Launching: {app_name} -> {normalized} ({system})")
+    if player and action not in ("is_running", "status"):
         try:
             player.write_log(f"[open_app] {app_name}")
         except Exception:

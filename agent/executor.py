@@ -1,4 +1,3 @@
-import json
 import re
 import sys
 import threading
@@ -8,7 +7,7 @@ import os
 from pathlib import Path
 from typing import Callable
 
-from config.models import MODEL_FLASH_LITE
+from config.models import MODEL_FLASH
 
 from agent.planner       import create_plan, replan
 from agent.error_handler import analyze_error, generate_fix, ErrorDecision
@@ -33,8 +32,6 @@ def _get_api_key() -> str:
     return next_key()
 
 def _run_generated_code(description: str, speak: Callable | None = None) -> str:
-    import google.generativeai as genai
-
     if speak:
         speak("Writing custom code for this task, sir.")
 
@@ -52,27 +49,18 @@ def _run_generated_code(description: str, speak: Callable | None = None) -> str:
         except Exception:
             pass
 
-    from config.models import MODEL_FLASH
-    genai.configure(api_key=_get_api_key())
-    model = genai.GenerativeModel(
-        model_name=MODEL_FLASH,
-        system_instruction=(
-            "You are an expert Python developer. "
-            "Write clean, complete, working Python code. "
-            "Use standard library + common packages. "
-            "Install missing packages with subprocess + pip if needed. "
-            "Return ONLY the Python code. No explanation, no markdown, no backticks.\n\n"
-            f"SYSTEM PATHS:\n"
-            f"  Desktop   = r'{desktop}'\n"
-            f"  Downloads = r'{downloads}'\n"
-            f"  Documents = r'{documents}'\n"
-            f"  Home      = r'{home}'\n"
-        )
+    from api_keys import generate_with_retry
+    system_instruction = (
+        "You are an expert Python developer. Write clean, complete, working Python code. "
+        "Use standard library + common packages. Return ONLY Python code, no markdown.\n\n"
+        f"SYSTEM PATHS:\n  Desktop = r'{desktop}'\n  Downloads = r'{downloads}'\n"
+        f"  Documents = r'{documents}'\n  Home = r'{home}'\n"
     )
 
     try:
-        response = model.generate_content(
-            f"Write Python code to accomplish this task:\n\n{description}"
+        response = generate_with_retry(
+            MODEL_FLASH, f"Write Python code to accomplish this task:\n\n{description}",
+            config={"system_instruction": system_instruction},
         )
         code = response.text.strip()
         code = re.sub(r"```(?:python)?", "", code).strip().rstrip("`").strip()
@@ -131,16 +119,14 @@ def _inject_context(params: dict, tool: str, step_results: dict, goal: str = "")
                 combined = "\n\n---\n\n".join(all_results)
                 translated = _translate_to_goal_language(combined, goal)
                 params["content"] = translated
-                print(f"[Executor] 💉 Injected + translated content")
+                print("[Executor] 💉 Injected + translated content")
 
     return params
 def _detect_language(text: str) -> str:
-    import google.generativeai as genai
-    genai.configure(api_key=_get_api_key())
-    model = genai.GenerativeModel(MODEL_FLASH_LITE)
+    from api_keys import generate_with_retry
     try:
-        response = model.generate_content(
-            f"What language is this text written in? "
+        response = generate_with_retry(
+            MODEL_FLASH, f"What language is this text written in? "
             f"Reply with ONLY the language name in English (e.g. Turkish, English, French).\n\n"
             f"Text: {text[:200]}"
         )
@@ -153,10 +139,7 @@ def _translate_to_goal_language(content: str, goal: str) -> str:
     if not goal:
         return content
     try:
-        import google.generativeai as genai
-        genai.configure(api_key=_get_api_key())
-        from config.models import MODEL_FLASH
-        model = genai.GenerativeModel(MODEL_FLASH)
+        from api_keys import generate_with_retry
 
         target_lang = _detect_language(goal)
         print(f"[Executor] 🌐 Translating to: {target_lang}")
@@ -171,7 +154,7 @@ def _translate_to_goal_language(content: str, goal: str) -> str:
             f"- Output ONLY the translated text, nothing else\n\n"
             f"Text to translate:\n{content[:4000]}"
         )
-        response = model.generate_content(prompt)
+        response = generate_with_retry(MODEL_FLASH, prompt)
         translated = response.text.strip()
         print(f"[Executor] ✅ Translation done ({target_lang})")
         return translated
@@ -365,7 +348,7 @@ def _call_tool(tool: str, parameters: dict, speak: Callable | None) -> str:
         return drive_action(parameters=parameters, response=None, player=None) or "Done."
 
     elif tool == "schedule":
-        return f"Schedule handled by the main session, sir — background agent doesn't run timers."
+        return "Schedule handled by the main session, sir — background agent doesn't run timers."
 
     elif tool == "create_presentation":
         from actions.office_builder import create_presentation as _make_pptx
@@ -563,9 +546,7 @@ class AgentExecutor:
     def _summarize(self, goal: str, completed_steps: list, speak: Callable | None) -> str:
         fallback = f"All done, sir. Completed {len(completed_steps)} steps for: {goal[:60]}."
         try:
-            import google.generativeai as genai
-            genai.configure(api_key=_get_api_key())
-            model     = genai.GenerativeModel(model_name=MODEL_FLASH_LITE)
+            from api_keys import generate_with_retry
             steps_str = "\n".join(f"- {s.get('description', '')}" for s in completed_steps)
             prompt    = (
                 f'User goal: "{goal}"\n'
@@ -573,7 +554,7 @@ class AgentExecutor:
                 "Write a single natural sentence summarizing what was accomplished. "
                 "Address the user as 'sir'. Be direct and positive."
             )
-            response = model.generate_content(prompt)
+            response = generate_with_retry(MODEL_FLASH, prompt)
             summary  = response.text.strip()
             if speak: speak(summary)
             return summary
