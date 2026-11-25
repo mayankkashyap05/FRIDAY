@@ -315,15 +315,6 @@ def _configure_app(app) -> None:
     _set_accessory_policy()
     # Ensure crisp tray icons in macOS menu bar - Qt handles this, but we can
     # set the attribute if available.
-    try:
-        from PySide6.QtCore import Qt
-
-        # AA_UseHighDpiPixmaps is default in Qt6, but harmless to set.
-        attr = getattr(Qt.ApplicationAttribute, "AA_UseHighDpiPixmaps", None)
-        if attr is not None:
-            app.setAttribute(attr, True)
-    except Exception:
-        pass
 
 
 def _install_event_filter(app) -> None:
