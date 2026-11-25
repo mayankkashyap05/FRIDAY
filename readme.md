@@ -58,7 +58,7 @@ It runs across **Windows, macOS, and Linux** with platform-native overlay integr
       <sub><b>Light Mode Notch &amp; Search Pill</b></sub>
     </td>
     <td align="center" width="50%">
-      <img src="artifacts/ui_previews/13_settings_hub_general.png" alt="FRIDAY Settings Hub" width="100%"><br>
+      <img src="assets/4.png" alt="FRIDAY Settings Hub" width="100%"><br>
       <sub><b>Unified 6-Tab Settings Hub (General, Chat, Media, Tasks, Vision, Shelf)</b></sub>
     </td>
   </tr>
