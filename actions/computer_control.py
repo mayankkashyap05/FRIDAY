@@ -17,7 +17,10 @@
 #   - Hotkey sequences
 #   - Find and click image/element on screen
 
+import base64
 import json
+import re
+import secrets
 import sys
 import time
 
@@ -86,6 +89,31 @@ def _ensure_pyautogui():
         )
 
 
+def _screen_size_tuple() -> tuple[int, int] | None:
+    try:
+        pg = _pg()
+        if pg is None:
+            return None
+        width, height = pg.size()
+        return max(1, int(width)), max(1, int(height))
+    except Exception:
+        return None
+
+
+def _clamp_number(value, low: float, high: float, default: float = 0) -> float:
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return default
+    return max(low, min(high, number))
+
+
+def _clamp_coord(value, axis: str) -> int:
+    size = _screen_size_tuple()
+    limit = (size[0] if axis == "x" else size[1]) if size else 3840 if axis == "x" else 2160
+    return int(_clamp_number(value, 0, max(0, limit - 1), 0))
+
+
 _FIRST_NAMES = [
     "Alex", "Jordan", "Taylor", "Morgan", "Casey", "Riley", "Drew", "Quinn",
     "Avery", "Blake", "Cameron", "Dakota", "Emerson", "Finley", "Harper"
@@ -97,14 +125,30 @@ _LAST_NAMES = [
 _DOMAINS = ["gmail.com", "yahoo.com", "outlook.com", "proton.me", "mail.com"]
 
 
-def generate_random_data(data_type: str) -> str:
+def _cryptographic_choice(sequence):
+    """Single character chosen with the OS CSPRNG (never ``random``)."""
+    return secrets.choice(sequence)
+
+
+def generate_random_data(data_type: str, locale: str = "") -> str:
     """
     Generates random realistic data for form filling.
 
     Types: name | first_name | last_name | email | username |
            password | phone | birthday | address | zip_code
+
+    ``locale="IN"`` (also accepted as ``password_IN`` / ``password|IN``)
+    produces a longer, India-flavoured password.  Passwords always use
+    :mod:`secrets`, never the Mersenne Twister used for fake profile data.
     """
-    dt = data_type.lower().strip()
+    raw = str(data_type or "").strip()
+    locale = str(locale or "").strip()
+    dt = raw.lower()
+    for separator in ("|", "_", ":"):
+        head, sep, tail = dt.partition(separator)
+        if sep and head == "password" and tail in ("in", "india", "ind"):
+            dt, locale = "password", "IN"
+            break
 
     if dt == "first_name":
         return random.choice(_FIRST_NAMES)
@@ -127,14 +171,27 @@ def generate_random_data(data_type: str) -> str:
         return f"{first}{num}"
 
     elif dt == "password":
-        chars = string.ascii_letters + string.digits + "!@#$%"
-        pwd   = (
-            random.choice(string.ascii_uppercase) +
-            random.choice(string.digits) +
-            random.choice("!@#$%") +
-            "".join(random.choices(chars, k=9))
-        )
-        return "".join(random.sample(pwd, len(pwd)))
+        specials = "!@#$%"
+        length = 12
+        if str(locale).strip().upper() in ("IN", "IND", "INDIA"):
+            # Indian locale: longer, richer alphabet; still pasted safely via
+            # the Unicode-safe clipboard path below.
+            specials = "!@#$%&₹"
+            length = 16
+        chars = string.ascii_letters + string.digits + specials
+        pwd = [
+            _cryptographic_choice(string.ascii_uppercase),
+            _cryptographic_choice(string.ascii_lowercase),
+            _cryptographic_choice(string.digits),
+            _cryptographic_choice(specials),
+        ]
+        pwd += [_cryptographic_choice(chars) for _ in range(length - len(pwd))]
+        # Fisher-Yates with the CSPRNG, so the required character classes do
+        # not stay in predictable positions.
+        for idx in range(len(pwd) - 1, 0, -1):
+            swap = secrets.randbelow(idx + 1)
+            pwd[idx], pwd[swap] = pwd[swap], pwd[idx]
+        return "".join(pwd)
 
     elif dt == "phone":
         return f"+1{random.randint(200,999)}{random.randint(1000000,9999999)}"
@@ -159,11 +216,43 @@ def generate_random_data(data_type: str) -> str:
     return f"random_{data_type}_{random.randint(1000,9999)}"
 
 
+def _needs_paste(text: str) -> bool:
+    """Unicode, newlines and long strings cannot be typed key-by-key."""
+    if not isinstance(text, str):
+        return False
+    return (not text.isascii()) or "\n" in text or "\r" in text or len(text) > 20
+
+
+def _paste_with_restore(text: str) -> str:
+    """Paste ``text`` via the clipboard, restoring the old clipboard in finally."""
+    if not _PYPERCLIP:
+        return "pyperclip not available"
+    previous = None
+    try:
+        previous = pyperclip.paste()
+    except Exception:
+        previous = None
+    try:
+        pyperclip.copy(str(text))
+        time.sleep(0.05)
+        _hotkey("ctrl", "v")
+        return f"Pasted: {str(text)[:50]}"
+    finally:
+        if previous is not None:
+            try:
+                pyperclip.copy(previous)
+            except Exception:
+                pass
+
+
 def _type_text(text: str, interval: float = 0.03) -> str:
-    """Types text at the current cursor position."""
+    """Types text at the current cursor position (Unicode-safe)."""
     _ensure_pyautogui()
-    time.sleep(0.3)
-    _pg().typewrite(text, interval=interval)
+    text = str(text or "")
+    time.sleep(0.2)
+    if _needs_paste(text) and _PYPERCLIP:
+        return _paste_with_restore(text)
+    _pg().typewrite(text, interval=max(0.0, min(float(interval), 0.5)))
     return f"Typed: {text[:50]}{'...' if len(text) > 50 else ''}"
 
 
@@ -186,18 +275,48 @@ def _click(x: int = None, y: int = None, button: str = "left",
             return f"Image click failed: {e}"
 
     if x is not None and y is not None:
+        x, y = _clamp_coord(x, "x"), _clamp_coord(y, "y")
         _pg().click(x, y, button=button, clicks=clicks)
         return f"Clicked ({x}, {y}) with {button} button"
 
     _pg().click(button=button, clicks=clicks)
-    return f"Clicked at current position"
+    return "Clicked at current position"
+
+
+_HOTKEY_ALIASES = {
+    "control": "ctrl", "ctl": "ctrl", "cmd": "win", "command": "win",
+    "meta": "win", "super": "win", "return": "enter", "esc": "esc",
+    "escape": "esc", "del": "delete", "spacebar": "space", "space_bar": "space",
+    "pageup": "pageup", "pagedown": "pagedown", "shiftkey": "shift",
+}
+
+
+def _normalise_hotkey(keys) -> tuple[str, ...]:
+    """Accept lists or 'ctrl+shift+t' style strings and normalise aliases."""
+    if isinstance(keys, str):
+        parts = [part for part in re.split(r"[+,]", keys) if part.strip()]
+    else:
+        parts = []
+        for key in keys or ():
+            parts.extend(p for p in re.split(r"\s*\+\s*", str(key)) if p.strip())
+    normalised = []
+    for part in parts:
+        token = str(part).strip().lower()
+        token = _HOTKEY_ALIASES.get(token, token)
+        # The new Google keyboard uses 'meta' on macOS / 'win' on Windows;
+        # pyautogui expects the platform name.
+        if token == "win" and platform.system() != "Windows":
+            token = "super"
+        normalised.append(token)
+    return tuple(normalised)
 
 
 def _hotkey(*keys) -> str:
     """Presses a key combination. E.g. hotkey('ctrl', 'c')"""
     _ensure_pyautogui()
-    _pg().hotkey(*keys)
-    return f"Hotkey: {'+'.join(keys)}"
+    normalised = _normalise_hotkey(keys)
+    _pg().hotkey(*normalised)
+    return f"Hotkey: {'+'.join(normalised)}"
 
 
 def _press(key: str) -> str:
@@ -208,8 +327,10 @@ def _press(key: str) -> str:
 
 
 def _scroll(direction: str = "down", amount: int = 3) -> str:
-    """Scrolls in the specified direction."""
+    """Scrolls in the specified direction (bounded to a sane number of ticks)."""
     _ensure_pyautogui()
+    amount = int(_clamp_number(amount, 1, 5000, 3))
+    direction = str(direction or "down").lower().strip()
     clicks = amount if direction in ("up", "right") else -amount
     if direction in ("up", "down"):
         _pg().scroll(clicks)
@@ -219,18 +340,30 @@ def _scroll(direction: str = "down", amount: int = 3) -> str:
 
 
 def _move_mouse(x: int, y: int, duration: float = 0.3) -> str:
-    """Moves mouse to coordinates."""
+    """Moves mouse to coordinates, clamped to the logical screen."""
     _ensure_pyautogui()
+    x, y = _clamp_coord(x, "x"), _clamp_coord(y, "y")
+    duration = _clamp_number(duration, 0.0, 5.0, 0.3)
     _pg().moveTo(x, y, duration=duration)
     return f"Mouse moved to ({x}, {y})"
 
 
 def _drag(x1: int, y1: int, x2: int, y2: int, duration: float = 0.5) -> str:
-    """Drags from (x1,y1) to (x2,y2)."""
+    """Drags from (x1,y1) to (x2,y2); both endpoints stay on-screen."""
     _ensure_pyautogui()
+    x1, y1 = _clamp_coord(x1, "x"), _clamp_coord(y1, "y")
+    x2, y2 = _clamp_coord(x2, "x"), _clamp_coord(y2, "y")
+    duration = _clamp_number(duration, 0.0, 5.0, 0.5)
     _pg().moveTo(x1, y1)
     _pg().dragTo(x2, y2, duration=duration)
     return f"Dragged from ({x1},{y1}) to ({x2},{y2})"
+
+
+def _mouse_pos() -> str:
+    """Reports the current cursor position."""
+    _ensure_pyautogui()
+    x, y = _pg().position()
+    return f"Mouse position: ({int(x)}, {int(y)})"
 
 
 def _clipboard_copy() -> str:
@@ -263,9 +396,10 @@ def _screenshot(save_path: str = None) -> str:
 
 
 def _wait(seconds: float) -> str:
-    """Waits for specified seconds."""
+    """Waits for specified seconds, bounded to 0..60 to avoid hung tools."""
+    seconds = _clamp_number(seconds, 0.0, 60.0, 1.0)
     time.sleep(seconds)
-    return f"Waited {seconds}s"
+    return f"Waited {seconds:g}s"
 
 
 def _wait_for_image(image_path: str, timeout: int = 10) -> str:
@@ -290,13 +424,80 @@ def _get_screen_size() -> str:
     return f"{w}x{h}"
 
 
-def _focus_window(title: str) -> str:
-    """Brings a window to focus by title (Windows)."""
-    if platform.system() == "Windows":
+def _native_user32():
+    """Returns ctypes.windll.user32 on Windows, otherwise None (never imports ctypes on Linux paths that matter)."""
+    if platform.system() != "Windows":
+        return None
+    try:
+        import ctypes
+        return ctypes.windll.user32
+    except Exception:
+        return None
+
+
+def _enum_windows_native() -> list[tuple[int, str]]:
+    """Enumerate visible top-level windows as ``(hwnd, title)`` pairs."""
+    user32 = _native_user32()
+    if user32 is None:
+        return []
+    import ctypes
+    found: list[tuple[int, str]] = []
+    skip = {"", "Program Manager", "Default IME"}
+    proc_type = ctypes.WINFUNCTYPE(ctypes.c_bool, ctypes.c_void_p, ctypes.c_void_p)
+
+    @proc_type
+    def _visit(hwnd, _unused):
         try:
-            # Single-quote the title and double any embedded quotes so a
-            # malicious title can never break out of the PowerShell script.
-            safe_title = title.replace("'", "''")
+            if user32.IsWindowVisible(hwnd):
+                length = user32.GetWindowTextLengthW(hwnd)
+                if length:
+                    buf = ctypes.create_unicode_buffer(length + 1)
+                    user32.GetWindowTextW(hwnd, buf, length + 1)
+                    title = buf.value.strip()
+                    if title and title not in skip:
+                        found.append((int(hwnd), title))
+        except Exception:
+            pass
+        return True
+
+    user32.EnumWindows(_visit, None)
+    return found
+
+
+def _find_window(title: str):
+    """Find a visible window by exact (preferred) or substring title match."""
+    needle = str(title or "").strip().lower()
+    if not needle:
+        return None
+    windows = _enum_windows_native()
+    for hwnd, name in windows:
+        if name.lower() == needle:
+            return hwnd, name
+    for hwnd, name in windows:
+        if needle in name.lower():
+            return hwnd, name
+    return None
+
+
+def _focus_window(title: str) -> str:
+    """Brings a window to the foreground via native Win32 APIs."""
+    if platform.system() == "Windows":
+        match = _find_window(title)
+        if match:
+            try:
+                user32 = _native_user32()
+                hwnd, name = match
+                if user32.IsIconic(hwnd):
+                    user32.ShowWindow(hwnd, 9)   # SW_RESTORE
+                user32.SetForegroundWindow(hwnd)
+                time.sleep(0.2)
+                return f"Focused window: {name}"
+            except Exception as e:
+                return f"Could not focus window: {e}"
+        try:
+            # Single-quote the title and double embedded quotes so a malicious
+            # title can never break out of the PowerShell script (fallback).
+            safe_title = str(title or "").replace("'", "''")
             script = f"(New-Object -ComObject WScript.Shell).AppActivate('{safe_title}')"
             subprocess.run(
                 ["powershell", "-NoProfile", "-Command", script],
@@ -311,35 +512,57 @@ def _focus_window(title: str) -> str:
 
 def _list_windows() -> str:
     """Enumerates open top-level window titles (Windows)."""
-    if platform.system() != "Windows":
-        return "Window listing only supported on Windows"
+    titles = [title for _, title in _enum_windows_native()]
+    if not titles:
+        return "Window listing only supported on Windows" if platform.system() != "Windows" else "No windows detected."
+    return "Open windows: " + " | ".join(list(dict.fromkeys(titles))[:15])
+
+
+def _active_window() -> str:
+    """Reports the currently focused window title."""
+    user32 = _native_user32()
+    if user32 is None:
+        return "Active window only supported on Windows"
     try:
         import ctypes
-        user32 = ctypes.windll.user32
-        titles = []
-        skip = {"", "Program Manager", "Default IME"}
-
-        EnumWindowsProc = ctypes.WINFUNCTYPE(ctypes.c_bool, ctypes.c_void_p, ctypes.c_void_p)
-
-        @EnumWindowsProc
-        def _enum(hwnd, _):
-            if not user32.IsWindowVisible(hwnd):
-                return True
-            length = user32.GetWindowTextLengthW(hwnd)
-            if length == 0:
-                return True
-            buf = ctypes.create_unicode_buffer(length + 1)
-            user32.GetWindowTextW(hwnd, buf, length + 1)
-            title = buf.value.strip()
-            if title and title not in skip:
-                titles.append(title)
-            return True
-
-        user32.EnumWindows(_enum, None)
-        titles = list(dict.fromkeys(titles))
-        return "Open windows: " + " | ".join(titles[:15]) if titles else "No windows detected."
+        hwnd = user32.GetForegroundWindow()
+        if not hwnd:
+            return "No active window detected."
+        length = user32.GetWindowTextLengthW(hwnd)
+        buf = ctypes.create_unicode_buffer(length + 1)
+        user32.GetWindowTextW(hwnd, buf, length + 1)
+        return f"Active window: {buf.value.strip() or '(untitled)'}"
     except Exception as e:
-        return f"Could not list windows: {e}"
+        return f"Could not get active window: {e}"
+
+
+_WINDOW_SW = {"minimize": 6, "minimize_all": 6, "maximize": 3, "restore": 9, "show": 9}
+
+
+def _window_action(action: str, title: str = "") -> str:
+    """Minimize / maximize / restore / close a window without a shell."""
+    action = str(action or "").strip().lower()
+    user32 = _native_user32()
+    if user32 is None:
+        return "Window management only supported on Windows"
+    if action not in set(_WINDOW_SW) | {"close", "focus"}:
+        return f"Unknown window_action: '{action}'"
+    match = _find_window(title)
+    if not match:
+        return f"Window not found: {title}"
+    hwnd, name = match
+    try:
+        if action == "focus":
+            user32.SetForegroundWindow(hwnd)
+        elif action == "close":
+            user32.PostMessageW(hwnd, 0x0010, 0, 0)  # WM_CLOSE
+        else:
+            user32.ShowWindow(hwnd, _WINDOW_SW[action])
+            if action in ("restore", "show", "maximize"):
+                user32.SetForegroundWindow(hwnd)
+        return f"{action.capitalize()}d window: {name}"
+    except Exception as e:
+        return f"Could not {action} window: {e}"
 
 
 def _select_all() -> str:
@@ -355,77 +578,129 @@ def _clear_field() -> str:
 
 
 def _smart_type(text: str, clear_first: bool = True) -> str:
-    """
-    Types text into the currently focused field.
-    Optionally clears the field first.
-    Uses clipboard for long text (faster, more reliable).
-    """
+    """Types into the focused field. Unicode/newline/long text goes via paste."""
     _ensure_pyautogui()
+    text = str(text or "")
 
     if clear_first:
         _clear_field()
         time.sleep(0.1)
 
-    if len(text) > 20 and _PYPERCLIP:
-        pyperclip.copy(text)
-        time.sleep(0.1)
-        _pg().hotkey("ctrl", "v")
+    if _needs_paste(text) and _PYPERCLIP:
+        _paste_with_restore(text)
         return f"Smart-typed (clipboard): {text[:50]}"
-    else:
-        _pg().typewrite(text, interval=0.04)
-        return f"Smart-typed: {text[:50]}"
+    _pg().typewrite(text, interval=0.04)
+    return f"Smart-typed: {text[:50]}"
+
+
+def _parse_grounding_response(text: str, width: int, height: int) -> tuple[int, int] | None:
+    """Parse model grounding output, supporting JSON 0..1000 and legacy ``x,y``.
+
+    Modern responses are JSON (``{"x": 512, "y": 250}``) whose coordinates are
+    normalised to a 0..1000 logical grid.  Older models returned raw
+    ``x,y`` pixels; those are still accepted and clamped to the screen.
+    """
+    if not isinstance(text, str) or not text.strip():
+        return None
+    raw = text.strip()
+    if "NOT_FOUND" in raw.upper():
+        return None
+    # Be tolerant of ```json ... ``` fences.
+    fenced = re.search(r"```(?:json)?\s*(.*?)```", raw, flags=re.S | re.I)
+    if fenced:
+        raw = fenced.group(1).strip()
+
+    payload = None
+    try:
+        start, end = raw.index("{"), raw.rindex("}")
+        payload = json.loads(raw[start:end + 1])
+    except (ValueError, TypeError):
+        payload = None
+
+    if isinstance(payload, dict):
+        # New normalised grid.
+        if all(key in payload for key in ("x", "y")):
+            try:
+                x_norm = float(payload["x"])
+                y_norm = float(payload["y"])
+            except (TypeError, ValueError):
+                return None
+            # Explicit pixel overrides are useful for high-DPI callers.
+            if "pixel_x" in payload or "pixel_y" in payload:
+                try:
+                    x_norm = float(payload.get("pixel_x", x_norm)) * 1000.0 / max(1, width)
+                    y_norm = float(payload.get("pixel_y", y_norm)) * 1000.0 / max(1, height)
+                except (TypeError, ValueError):
+                    pass
+            value = payload.get("found", True)
+            if isinstance(value, str) and value.lower() in ("false", "no"):
+                return None
+            return (
+                int(max(0, min(width - 1, round(x_norm * width / 1000.0)))),
+                int(max(0, min(height - 1, round(y_norm * height / 1000.0)))),
+            )
+        # Also accept {"point": [x, y]} / nested point objects.
+        point = payload.get("point")
+        if isinstance(point, (list, tuple)) and len(point) >= 2:
+            try:
+                return (
+                    int(max(0, min(width - 1, round(float(point[0]) * width / 1000.0)))),
+                    int(max(0, min(height - 1, round(float(point[1]) * height / 1000.0)))),
+                )
+            except (TypeError, ValueError):
+                return None
+
+    # Legacy raw-pixel format.
+    match = re.search(r"(\d+(?:\.\d+)?)\s*,\s*(\d+(?:\.\d+)?)", raw)
+    if match:
+        return (
+            int(max(0, min(width - 1, round(float(match.group(1)))))),
+            int(max(0, min(height - 1, round(float(match.group(2)))))),
+        )
+    return None
 
 
 def _analyze_screen_for_element(description: str) -> tuple[int, int] | None:
-    """
-    Takes a screenshot and asks Gemini to find the coordinates
-    of a described element on screen. Returns (x, y) or None.
-    """
+    """Screenshot + Gemini grounding → logical ``(x, y)`` pixel coordinates."""
     try:
-        import google.generativeai as genai
         import io
         import api_keys
 
-        api_key = api_keys.next_key()
-        if not api_key:
-            return None
-
-        genai.configure(api_key=api_key)
-        model = genai.GenerativeModel(MODEL_FLASH_LITE)
-
-
         _ensure_pyautogui()
-        w, h  = _pg().size()
-        img   = _pg().screenshot()
-        buf   = io.BytesIO()
+        w, h = _screen_size_tuple() or (1920, 1080)
+        img = _pg().screenshot()
+        buf = io.BytesIO()
         img.save(buf, format="PNG")
-        buf.seek(0)
 
         prompt = (
-            f"This is a screenshot of a computer screen ({w}x{h} pixels). "
-            f"Find the element: '{description}'. "
-            f"Return ONLY: x,y (the center coordinates of the element). "
-            f"If not found, return: NOT_FOUND"
+            f"This is a screenshot of a {w}x{h} logical screen. "
+            f"Locate: '{description}'. "
+            "Return ONLY JSON: {\"x\": <0-1000>, \"y\": <0-1000>} using "
+            "coordinates scaled to a 1000x1000 grid, or {\"found\": false}."
         )
-
-        response = model.generate_content([
-            {"mime_type": "image/png", "data": buf.getvalue()},
-            prompt
-        ])
-
-        text = response.text.strip()
-        if "NOT_FOUND" in text:
-            return None
-
-        import re
-        match = re.search(r"(\d+)\s*,\s*(\d+)", text)
-        if match:
-            return int(match.group(1)), int(match.group(2))
-
+        response = api_keys.generate_with_retry(
+            MODEL_FLASH_LITE,
+            [
+                {"inline_data": {"mime_type": "image/png",
+                                  "data": base64.b64encode(buf.getvalue()).decode("ascii")}},
+                prompt,
+            ],
+            config={"temperature": 0},
+        )
+        return _parse_grounding_response(
+            getattr(response, "text", "") or "", w, h
+        )
     except Exception as e:
         print(f"[ComputerControl] ⚠️ Screen analysis failed: {e}")
-
     return None
+
+def _as_bool(value, default: bool = False) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return value.strip().lower() in ("true", "yes", "1", "on")
+    return bool(value) if value is not None else default
+
 
 _SENSITIVE_PARAM_KEYS = {"text", "value", "password", "content", "message", "data"}
 
@@ -471,10 +746,13 @@ def computer_control(
       focus_window  : Bring window to foreground
       screen_find   : AI-powered element finder — returns coordinates
       screen_click  : AI-powered element finder + click
-      random_data   : Generate random data for forms
+      random_data   : Generate random data for forms (locale="IN" available)
       user_data     : Get user's real data from memory
+      triple_click / middle_click / hover / mouse_pos
+      active_window / window_action (minimize|maximize|restore|close|focus)
     """
-    action = (parameters or {}).get("action", "").lower().strip()
+    parameters = parameters if isinstance(parameters, dict) else {}
+    action = str(parameters.get("action", "") or "").lower().strip()
 
     if not action:
         return "Please specify an action for computer_control, sir."
@@ -491,7 +769,7 @@ def computer_control(
 
         elif action == "smart_type":
             text        = parameters.get("text", "")
-            clear_first = parameters.get("clear_first", True)
+            clear_first = _as_bool(parameters.get("clear_first"), True)
             return _smart_type(text, clear_first=clear_first)
         
         elif action in ("click", "left_click"):
@@ -520,19 +798,35 @@ def computer_control(
                 clicks=1
             )
 
-        elif action == "move":
+        elif action == "triple_click":
+            return _click(
+                x=parameters.get("x"), y=parameters.get("y"),
+                button="left", clicks=3, image=parameters.get("image")
+            )
+
+        elif action == "middle_click":
+            return _click(
+                x=parameters.get("x"), y=parameters.get("y"),
+                button="middle", clicks=1, image=parameters.get("image")
+            )
+
+        elif action in ("move", "hover"):
             return _move_mouse(
                 x=int(parameters.get("x", 0)),
                 y=int(parameters.get("y", 0)),
                 duration=float(parameters.get("duration", 0.3))
             )
 
+        elif action in ("mouse_pos", "mouse_position", "cursor_position"):
+            return _mouse_pos()
+
         elif action == "drag":
             return _drag(
                 x1=int(parameters.get("x1", 0)),
                 y1=int(parameters.get("y1", 0)),
                 x2=int(parameters.get("x2", 0)),
-                y2=int(parameters.get("y2", 0))
+                y2=int(parameters.get("y2", 0)),
+                duration=float(parameters.get("duration", 0.5)),
             )
 
         elif action == "hotkey":
@@ -574,6 +868,15 @@ def computer_control(
         elif action == "focus_window":
             return _focus_window(parameters.get("title", ""))
 
+        elif action in ("active_window", "current_window"):
+            return _active_window()
+
+        elif action == "window_action":
+            return _window_action(
+                parameters.get("window_action") or parameters.get("mode") or parameters.get("value", ""),
+                parameters.get("title", ""),
+            )
+
         elif action in ("list_windows", "windows", "what_is_open"):
             return _list_windows()
 
@@ -598,7 +901,7 @@ def computer_control(
 
         elif action == "random_data":
             data_type = parameters.get("type", "name")
-            result    = generate_random_data(data_type)
+            result    = generate_random_data(data_type, parameters.get("locale", ""))
             print(f"[ComputerControl] 🎲 Random {data_type} generated")
             return result
 

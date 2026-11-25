@@ -1,10 +1,17 @@
+import ast
+import heapq
+import json
+import os
+import re
 import shlex
+import shutil
 import subprocess
 import sys
-import json
-import re
 import time
 from pathlib import Path
+
+from api_keys import generate_with_retry
+from config.models import MODEL_FLASH
 
 
 def get_base_dir():
@@ -15,20 +22,36 @@ def get_base_dir():
 
 BASE_DIR         = get_base_dir()
 API_CONFIG_PATH  = BASE_DIR / "config" / "api_keys.json"
-PROJECTS_DIR     = Path.home() / "Desktop" / "FridayProjects"
 MAX_FIX_ATTEMPTS = 5
-MODEL_PLANNER    = "gemini-2.5-flash"
-MODEL_WRITER     = "gemini-2.5-flash"
-
-def _get_api_key() -> str:
-    from api_keys import next_key
-    return next_key()
+MODEL_PLANNER    = MODEL_FLASH
+MODEL_WRITER     = MODEL_FLASH
 
 
-def _get_model(model_name: str):
-    import google.generativeai as genai
-    genai.configure(api_key=_get_api_key())
-    return genai.GenerativeModel(model_name)
+def _projects_dir() -> Path:
+    """Projects live next to the real (possibly OneDrive-redirected) Desktop."""
+    try:
+        from actions.desktop import _get_desktop
+        return Path(_get_desktop()) / "FridayProjects"
+    except Exception:
+        return Path.home() / "Desktop" / "FridayProjects"
+
+
+PROJECTS_DIR = _projects_dir()
+METADATA_NAME = "friday_project.json"
+
+
+def _as_bool(value, default: bool = False) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return value.strip().lower() in ("true", "yes", "1", "on")
+    return bool(value) if value is not None else default
+
+
+def _model_response(prompt: str) -> str:
+    """One Gemini call through the shared, key-rotating, retrying client."""
+    response = generate_with_retry(MODEL_FLASH, prompt, config={"temperature": 0.2})
+    return str(getattr(response, "text", "") or "")
 
 
 def _safe_project_path(project_dir: Path, rel_path: str) -> Path | None:
@@ -50,6 +73,85 @@ def _strip_fences(text: str) -> str:
     text = re.sub(r"^```[a-zA-Z]*\r?\n?", "", text)
     text = re.sub(r"\r?\n?```\s*$", "", text)
     return text.strip()
+
+
+def _clean_file_path(path: str) -> str:
+    return str(path or "").replace("\\", "/").lstrip("./").strip()
+
+
+def _topological_order(files: list[dict]) -> list[dict]:
+    """Deterministic Kahn sort of plan files; cycles fall back to alpha order."""
+    by_key = {_clean_file_path(f.get("path", "")): f for f in files
+              if _clean_file_path(f.get("path", ""))}
+    keys = sorted(by_key)
+    deps_for: dict[str, set[str]] = {key: set() for key in keys}
+    for key in keys:
+        for imported in by_key[key].get("imports", []) or []:
+            dotted = str(imported).replace("/", ".").removesuffix(".py")
+            candidates = (
+                dotted.replace(".", "/") + ".py",
+                dotted.replace(".", "/") + "/__init__.py",
+                _clean_file_path(dotted),
+            )
+            for candidate in candidates:
+                dep = _clean_file_path(candidate)
+                if dep in by_key and dep != key:
+                    deps_for[key].add(dep)
+                    break
+    dependents: dict[str, list[str]] = {key: [] for key in keys}
+    for key, deps in deps_for.items():
+        for dep in deps:
+            dependents[dep].append(key)
+    indegree = {key: len(deps_for[key]) for key in keys}  # dependencies first
+
+    ready = [key for key in keys if indegree[key] == 0]
+    heapq.heapify(ready)
+    ordered = []
+    while ready:
+        key = heapq.heappop(ready)
+        ordered.append(by_key[key])
+        for candidate in dependents[key]:
+            indegree[candidate] -= 1
+            if indegree[candidate] == 0:
+                heapq.heappush(ready, candidate)
+    if len(ordered) < len(keys):
+        seen = {_clean_file_path(f.get("path", "")) for f in ordered}
+        ordered.extend(by_key[key] for key in keys if key not in seen)
+    return ordered
+
+
+def _scaffold_project(project_dir: Path, files: list[dict], dependencies: list[str]) -> None:
+    """Add package markers and a requirements file so generated code imports cleanly."""
+    for file_info in files:
+        rel = _clean_file_path(file_info.get("path", ""))
+        if "/" not in rel:
+            continue
+        parent = project_dir / rel.rsplit("/", 1)[0]
+        marker = parent / "__init__.py"
+        if parent.is_dir() and not marker.exists():
+            marker.write_text('"""Generated package."""\n', encoding="utf-8")
+    if dependencies:
+        requirements = project_dir / "requirements.txt"
+        if not requirements.exists():
+            requirements.write_text(
+                "\n".join(str(dep) for dep in dependencies) + "\n", encoding="utf-8")
+
+
+def _save_metadata(project_dir: Path, payload: dict) -> None:
+    try:
+        target = project_dir / METADATA_NAME
+        tmp = target.with_suffix(".json.tmp")
+        tmp.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+        os.replace(tmp, target)
+    except Exception as e:
+        print(f"[DevAgent] ⚠️ Could not save metadata: {e}")
+
+
+def _load_metadata(project_dir: Path) -> dict:
+    try:
+        return json.loads((project_dir / METADATA_NAME).read_text(encoding="utf-8"))
+    except Exception:
+        return {}
 
 
 def _is_rate_limit(error: Exception) -> bool:
@@ -112,8 +214,6 @@ class RateLimitError(Exception):
 
 
 def _plan_project(description: str, language: str) -> dict:
-    model = _get_model(MODEL_PLANNER)
-
     prompt = f"""You are a senior software architect. Create a minimal, complete file plan for this project.
 
 Language: {language}
@@ -149,12 +249,12 @@ Critical rules:
 
 JSON:"""
 
+    raw = ""
     try:
-        response = model.generate_content(prompt)
-        raw = _strip_fences(response.text)
+        raw = _strip_fences(_model_response(prompt))
         return json.loads(raw)
     except json.JSONDecodeError as e:
-        raise ValueError(f"Planner returned invalid JSON: {e}\nRaw: {response.text[:300]}")
+        raise ValueError(f"Planner returned invalid JSON: {e}\nRaw: {raw[:300]}")
     except Exception as e:
         if _is_rate_limit(e):
             raise RateLimitError(str(e))
@@ -168,8 +268,6 @@ def _write_file(
     project_dir: Path,
     already_written: dict[str, str],
 ) -> str:
-    model = _get_model(MODEL_WRITER)
-
     file_path = file_info["path"]
     file_desc = file_info.get("description", "")
     file_imports = file_info.get("imports", [])
@@ -229,8 +327,7 @@ General rules:
 Code for {file_path}:"""
 
     try:
-        response = model.generate_content(prompt)
-        code = _strip_fences(response.text)
+        code = _strip_fences(_model_response(prompt))
 
         full_path = _safe_project_path(project_dir, file_path)
         if full_path is None:
@@ -281,36 +378,60 @@ def _install_dependencies(dependencies: list[str], project_dir: Path) -> str:
     except Exception as e:
         return f"Install error (non-fatal): {e}"
 
-def _open_vscode(project_dir: Path) -> bool:
-    vscode_candidates = [
-        "code",
+def _open_vscode(project_dir: Path, enabled: bool = True) -> bool:
+    """Open the project in VS Code only when enabled; never use shell=True."""
+    if not enabled:
+        return False
+    candidates = []
+    found = shutil.which("code") or shutil.which("code.cmd")
+    if found:
+        candidates.append(found)
+    candidates.extend([
         rf"C:\Users\{Path.home().name}\AppData\Local\Programs\Microsoft VS Code\bin\code.cmd",
         r"C:\Program Files\Microsoft VS Code\bin\code.cmd",
-    ]
-    for cmd in vscode_candidates:
+    ])
+    for cmd in candidates:
+        if cmd not in (found,) and not Path(cmd).exists():
+            continue
         try:
             subprocess.Popen(
-                [cmd, str(project_dir)],
-                shell=True,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL
+                [cmd, str(project_dir)], shell=False,
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
             )
-            time.sleep(1.5)
             print(f"[DevAgent] 💻 VSCode opened: {project_dir}")
             return True
         except Exception:
             continue
     return False
 
-def _run_project(run_command: str, project_dir: Path, timeout: int = 30) -> str:
+def _run_project(run_command: str, project_dir: Path, timeout: int = 30,
+                 run_tests: bool = False) -> str:
+    """Run a generated Python script after strict argument/path validation."""
     print(f"[DevAgent] 🚀 Running: {run_command}")
     try:
-        parts = shlex.split(run_command)
+        parts = shlex.split(str(run_command or ""))
         if not parts:
             return "Empty run command."
         if parts[0].lower() not in ("python", "py"):
-            return ("Only `python <script>` run commands are allowed, sir.")
-        parts[0] = sys.executable
+            return "Only `python <script>` run commands are allowed, sir."
+        if any(re.match(r"^-[ceCExX](?:$|[^a-zA-Z])", arg) for arg in parts[1:]):
+            return "Blocked run command: -c/-e execution is not allowed."
+
+        root = project_dir.resolve()
+        if len(parts) > 1 and parts[1] == "-m":
+            module = parts[2] if len(parts) > 2 else ""
+            if not run_tests or module.split(".")[0] not in ("pytest", "unittest"):
+                return "Blocked run command: only python <script> is allowed."
+            parts = [sys.executable, "-m", module] + parts[3:]
+        else:
+            if len(parts) < 2:
+                return "No script specified in run command."
+            script = parts[1]
+            resolved = _safe_project_path(root, script)
+            if resolved is None or not resolved.is_file() or resolved.suffix != ".py":
+                return "Blocked run command: script must be a .py file inside the project."
+            # Rebase onto this interpreter without allowing injected flags.
+            parts = [sys.executable, str(resolved)] + parts[2:]
 
         result = subprocess.run(
             parts,
@@ -337,6 +458,28 @@ def _run_project(run_command: str, project_dir: Path, timeout: int = 30) -> str:
         return f"Command not found: {e}"
     except Exception as e:
         return f"Run error: {e}"
+
+def _syntax_errors(file_codes: dict[str, str], language: str) -> list[tuple[str, int, str]]:
+    """Parse generated Python files before any subprocess is started."""
+    if str(language).lower() not in ("python", "py"):
+        return []
+    problems = []
+    for path, code in file_codes.items():
+        try:
+            ast.parse(code or "", filename=str(path))
+        except SyntaxError as exc:
+            problems.append((str(path), int(exc.lineno or 1), str(exc.msg)))
+        except Exception as exc:
+            problems.append((str(path), 1, str(exc)))
+    return problems
+
+
+def _syntax_error_output(problems: list[tuple[str, int, str]]) -> str:
+    return "\n".join(
+        f'  File "{path}", line {line}\nSyntaxError: {message}'
+        for path, line, message in problems
+    )
+
 
 def _try_auto_install(error_output: str, project_dir: Path) -> bool:
     """ModuleNotFoundError varsa eksik paketi otomatik kurmaya çalışır."""
@@ -371,8 +514,6 @@ def _fix_files(
     project_dir: Path,
     entry_point: str,
 ) -> dict[str, str]:
-
-    model = _get_model(MODEL_PLANNER)
 
     error_file, error_line = _parse_traceback(error_output, list(file_codes.keys()))
     error_type = _classify_error(error_output)
@@ -434,8 +575,7 @@ Rules:
 Fixed code for {fix_path}:"""
 
         try:
-            response = model.generate_content(prompt)
-            fixed = _strip_fences(response.text)
+            fixed = _strip_fences(_model_response(prompt))
 
             full_path = _safe_project_path(project_dir, fix_path)
             if full_path is None:
@@ -460,6 +600,8 @@ def _build_project(
     timeout: int,
     speak=None,
     player=None,
+    open_editor: bool = True,
+    run_tests: bool = False,
 ) -> str:
 
     def log(msg: str):
@@ -491,10 +633,7 @@ def _build_project(
 
     log(f"Project: {proj_name} | Files: {len(files)} | Entry: {entry_point}")
 
-    def _dep_sort_key(fi: dict) -> int:
-        return len(fi.get("imports", []))
-
-    sorted_files = sorted(files, key=_dep_sort_key)
+    sorted_files = _topological_order(files)
 
     file_codes: dict[str, str] = {}
 
@@ -533,18 +672,54 @@ def _build_project(
         if speak: speak(msg)
         return msg
 
+    _scaffold_project(project_dir, files, dependencies or [])
+    _save_metadata(project_dir, {
+        "description": description,
+        "language": language,
+        "project_name": proj_name,
+        "entry_point": entry_point,
+        "run_command": run_command,
+        "dependencies": dependencies or [],
+        "files": files,
+    })
+
     if dependencies:
         install_result = _install_dependencies(dependencies, project_dir)
         log(install_result)
 
-    _open_vscode(project_dir)
+    _open_vscode(project_dir, enabled=open_editor)
+
+    # Syntax gate: never start a subprocess for code that cannot even parse.
+    problems = _syntax_errors(file_codes, language)
+    if problems:
+        log("Syntax errors detected before run — asking the fixer...")
+        try:
+            updated = _fix_files(
+                error_output=_syntax_error_output(problems),
+                project_description=description,
+                all_files=files,
+                file_codes=file_codes,
+                language=language,
+                project_dir=project_dir,
+                entry_point=entry_point,
+            )
+            file_codes.update(updated)
+        except Exception as e:
+            log(f"Syntax fix step failed: {e}")
+        problems = _syntax_errors(file_codes, language)
+        if problems:
+            msg = (f"Generated code still has syntax errors in "
+                   f"{', '.join(p for p, _, _ in problems[:3])}, sir. "
+                   f"Project saved at {project_dir}.")
+            if speak: speak(msg)
+            return msg
 
     last_output   = ""
-    auto_installs = 0  
+    auto_installs = 0
 
     for attempt in range(1, MAX_FIX_ATTEMPTS + 1):
         log(f"Running project (attempt {attempt}/{MAX_FIX_ATTEMPTS})...")
-        last_output = _run_project(run_command, project_dir, timeout)
+        last_output = _run_project(run_command, project_dir, timeout, run_tests=run_tests)
         log(f"Output preview: {last_output[:150]}")
 
         if not _has_error(last_output, run_command):
@@ -595,6 +770,78 @@ def _build_project(
     if speak: speak(msg)
     return f"{msg}\n\nLast error:\n{last_output[:600]}"
 
+def _project_dir_for(name: str) -> Path | None:
+    clean = re.sub(r"[^A-Za-z0-9_\-]", "_", str(name or "").strip())
+    if not clean:
+        return None
+    root = PROJECTS_DIR.resolve()
+    candidate = (root / clean).resolve()
+    return candidate if candidate != root and root in candidate.parents else None
+
+
+def _list_projects() -> str:
+    try:
+        if not PROJECTS_DIR.exists():
+            return "No Friday projects have been built yet, sir."
+        rows = []
+        for folder in sorted(p for p in PROJECTS_DIR.iterdir() if p.is_dir()):
+            meta = _load_metadata(folder)
+            rows.append(
+                f"{folder.name}: {meta.get('description', '(no description)')}"
+                f" [{meta.get('language', 'python')}, "
+                f"{len(meta.get('files', []))} files]"
+            )
+        return "Friday projects:\n" + "\n".join(rows) if rows else "No Friday projects yet, sir."
+    except Exception as e:
+        return f"Could not list projects: {e}"
+
+
+def _run_existing_project(name: str, timeout: int, run_tests: bool = False) -> str:
+    root = _project_dir_for(name)
+    if root is None or not root.is_dir():
+        return f"Project not found: {name}"
+    meta = _load_metadata(root)
+    if not meta:
+        return f"'{name}' is not a Friday project (missing {METADATA_NAME})."
+    return _run_project(meta.get("run_command", "python main.py"), root,
+                        timeout, run_tests=run_tests)
+
+
+def _fix_existing_project(name: str, timeout: int, run_tests: bool = False) -> str:
+    root = _project_dir_for(name)
+    if root is None or not root.is_dir():
+        return f"Project not found: {name}"
+    meta = _load_metadata(root)
+    if not meta:
+        return f"'{name}' is not a Friday project (missing {METADATA_NAME})."
+    files = meta.get("files", [])
+    codes = {}
+    for info in files:
+        rel = _clean_file_path(info.get("path", ""))
+        target = _safe_project_path(root, rel)
+        if target and target.is_file():
+            codes[rel] = target.read_text(encoding="utf-8", errors="replace")
+    output = _run_project(meta.get("run_command", "python main.py"), root,
+                          timeout, run_tests=run_tests)
+    if not _has_error(output, meta.get("run_command", "")):
+        return f"Project '{root.name}' runs cleanly.\n\n{output}"
+    problems = _syntax_errors(codes, meta.get("language", "python"))
+    if problems:
+        output = _syntax_error_output(problems) + "\n" + output
+    try:
+        updated = _fix_files(
+            error_output=output,
+            project_description=meta.get("description", root.name),
+            all_files=files,
+            file_codes=codes,
+            language=meta.get("language", "python"),
+            project_dir=root,
+            entry_point=meta.get("entry_point", "main.py"),
+        )
+        return f"Fixed {len(updated)} file(s) in '{root.name}'." if updated else f"No fix was applied to '{root.name}'."
+    except Exception as e:
+        return f"Fix failed: {e}"
+
 
 def dev_agent(
     parameters: dict,
@@ -603,14 +850,34 @@ def dev_agent(
     session_memory=None,
     speak=None,
 ) -> str:
-    p            = parameters or {}
-    description  = p.get("description", "").strip()
-    language     = p.get("language", "python").strip()
-    project_name = p.get("project_name", "").strip()
+    p = parameters if isinstance(parameters, dict) else {}
+    action = str(p.get("action", "build") or "build").strip().lower().replace("-", "_")
+    description  = str(p.get("description", "") or "").strip()
+    language     = str(p.get("language", "python") or "python").strip()
+    project_name = str(p.get("project_name", "") or "").strip()
     try:
         timeout = max(1, int(p.get("timeout", 30)))
     except (TypeError, ValueError):
         timeout = 30
+
+    if action in ("list", "list_projects", "projects"):
+        return _list_projects()
+
+    if action in ("run", "run_project"):
+        target = project_name or str(p.get("name", "") or "").strip()
+        if not target:
+            return "Which project should I run, sir?"
+        return _run_existing_project(target, timeout, _as_bool(p.get("run_tests"), False))
+
+    if action in ("fix", "fix_project"):
+        target = project_name or str(p.get("name", "") or "").strip()
+        if not target:
+            return "Which project should I fix, sir?"
+        return _fix_existing_project(target, timeout, _as_bool(p.get("run_tests"), False))
+
+    if action not in ("build", "create", "new"):
+        description = description or action.replace("_", " ")
+        action = "build"
 
     if not description:
         return "Please describe the project you want me to build, sir."
@@ -622,4 +889,6 @@ def dev_agent(
         timeout      = timeout,
         speak        = speak,
         player       = player,
+        open_editor  = _as_bool(p.get("open_editor"), True),
+        run_tests    = _as_bool(p.get("run_tests"), False),
     )

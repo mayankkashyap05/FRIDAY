@@ -159,6 +159,8 @@ _ACTION_RISK = {
         "shutdown": Risk.HIGH,
         "restart": Risk.HIGH,
         "sleep": Risk.HIGH,
+        "sleep_pc": Risk.HIGH,
+        "hibernate": Risk.HIGH,
         "lock": Risk.MEDIUM,
         None: Risk.MEDIUM,
     },
@@ -338,7 +340,8 @@ def describe(name: str, args: dict | None) -> str:
         game = args.get("game_name") or args.get("game") or args.get("action") or ""
         return f"update the game {game}"
 
-    if name == "computer_settings" and action in ("shutdown", "restart", "sleep"):
+    if name == "computer_settings" and action in (
+            "shutdown", "restart", "sleep", "sleep_pc", "hibernate"):
         return f"{action} the computer"
 
     if name == "drive" and action in ("delete", "remove"):

@@ -95,6 +95,8 @@ media_control
 
 daily_briefing
   city: string (optional) — weather defaults to saved memory
+  sections: string (optional) — comma-separated: weather,calendar,email,reminders,tasks,system,memory,news
+  news: boolean (optional, opt-in), detailed: boolean (optional)
 
 wake_word
   action: "start" | "stop" | "status" | "pause" | "resume" | "set_threshold" | "devices" | "diagnostics" | "record" | "train" (required)
@@ -105,12 +107,15 @@ cmd_control
   visible: boolean (optional)
 
 computer_settings
-  action: string (required)
+  action: string (required) — also volume_get, brightness_get, mute, unmute, toggle_mute,
+    dark_mode_on, light_mode_on, list_audio_apps, unmute_app, cancel_shutdown, sleep_pc, hibernate
   description: string — natural language description
-  value: string (optional)
+  value: string (optional), app_name: string (optional)
 
 computer_control
-  action: "type" | "click" | "hotkey" | "press" | "scroll" | "screenshot" | "screen_find" | "screen_click" | "list_windows" | "focus_window" (required)
+  action: "type" | "smart_type" | "click" | "triple_click" | "middle_click" | "hover" | "mouse_pos" |
+          "hotkey" | "press" | "scroll" | "drag" | "screenshot" | "screen_find" |
+          "screen_click" | "list_windows" | "active_window" | "window_action" | "focus_window" (required)
   text: string (for type)
   x, y: int (for click)
   keys: string (for hotkey, e.g. "ctrl+c")
@@ -181,8 +186,10 @@ smart_home_control
   room, color, temperature, hvac_mode, domain, query (optional)
 
 desktop_control
-  action: "wallpaper" | "organize" | "clean" | "list" | "task" (required)
-  path: string (optional)
+  action: "wallpaper" | "wallpaper_url" | "current_wallpaper" | "undo_wallpaper" | "organize" |
+          "clean" | "undo_organize" | "undo_clean" | "list" | "stats" | "task" (required)
+  path: string (optional), url: string (optional), dry_run: boolean (optional)
+  sort_by: name|size|date|type, limit: int (optional)
   task: string (optional)
 
 youtube_video
@@ -208,8 +215,18 @@ code_helper
   file_path: string (optional)
 
 dev_agent
-  description: string (required)
-  language: string (optional)
+  action: "build" | "list_projects" | "run_project" | "fix_project" (default: build)
+  description: string (required for build)
+  language: string (optional), project_name: string (optional)
+  open_editor: boolean (optional), run_tests: boolean (optional)
+
+read_document
+  source: string (required) — path/name/URL
+  action: "preview" | "summary" | "search" | "stats" (optional)
+  query: string (for search), fresh: boolean (optional)
+
+document_qa
+  source: string (required), question: string (required), fresh: boolean (optional)
 EXAMPLES:
 
 Goal: "research mechanical engineering and save it to a notepad file"
