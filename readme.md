@@ -8,10 +8,10 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/mayankkashyap05/friday/actions/workflows/ci.yml"><img src="https://github.com/mayankkashyap05/friday/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
   <a href="https://www.python.org/"><img src="https://img.shields.io/badge/python-3.11%20%7C%203.12%20%7C%203.13%20%7C%203.14-blue.svg" alt="Python Version"></a>
   <a href="https://opensource.org/licenses/MIT"><img src="https://img.shields.io/badge/License-MIT-yellow.svg" alt="License: MIT"></a>
-  <a href="https://www.microsoft.com/windows"><img src="https://img.shields.io/badge/platform-Windows%2010%20%7C%2011-0078D6.svg" alt="Platform: Windows"></a>
+  <a href="https://www.microsoft.com/windows"><img src="https://img.shields.io/badge/platform-Windows%2010%20%7C%2011-0078D6.svg" alt="Windows"></a>
+  <a href="https://www.apple.com/macos/"><img src="https://img.shields.io/badge/platform-macOS-000000.svg" alt="macOS"></a>
   <a href="https://ai.google.dev/"><img src="https://img.shields.io/badge/AI-Google%20Gemini%20Live-8E75C2.svg" alt="Gemini Live"></a>
 </p>
 
