@@ -466,15 +466,20 @@ TOOL_DECLARATIONS = [
         "parameters": {
             "type": "OBJECT",
             "properties": {
-                "action":      {"type": "STRING", "description": "go_to | search | click | type | scroll | fill_form | smart_click | smart_type | get_text | press | close"},
+                "action":      {"type": "STRING", "description": "go_to | search | click | type | fill | snapshot | hover | select | wait_for | extract_links | extract_text | screenshot | back | forward | reload | page_info | new_tab | list_tabs | switch_tab | close_tab | scroll | fill_form | smart_click | smart_type | get_text | press | close"},
                 "url":         {"type": "STRING", "description": "URL for go_to action"},
                 "query":       {"type": "STRING", "description": "Search query for search action"},
-                "selector":    {"type": "STRING", "description": "CSS selector for click/type"},
+                "selector":    {"type": "STRING", "description": "CSS selector or semantic target for click/type"},
+                "value":       {"type": "STRING", "description": "Value for select action"},
+                "index":       {"type": "INTEGER", "description": "1-based tab index"},
                 "text":        {"type": "STRING", "description": "Text to click or type"},
                 "description": {"type": "STRING", "description": "Element description for smart_click/smart_type"},
                 "direction":   {"type": "STRING", "description": "up or down for scroll"},
                 "key":         {"type": "STRING", "description": "Key name for press action"},
                 "incognito":   {"type": "BOOLEAN", "description": "Open in private/incognito mode"},
+                "allow_local": {"type": "BOOLEAN", "description": "Permit explicit localhost/private URLs"},
+                "press_enter": {"type": "BOOLEAN", "description": "Press Enter after type/fill"},
+                "timeout":     {"type": "INTEGER", "description": "wait_for timeout in seconds (1-30)"},
             },
             "required": ["action"]
         }
@@ -518,9 +523,14 @@ TOOL_DECLARATIONS = [
         "parameters": {
             "type": "OBJECT",
             "properties": {
+                "action":  {"type": "STRING", "description": "run | history"},
                 "task":    {"type": "STRING", "description": "Natural language description of what to do"},
                 "visible": {"type": "BOOLEAN", "description": "Open visible CMD window. Default: true"},
                 "command": {"type": "STRING", "description": "Optional: exact command if already known"},
+                "shell":   {"type": "STRING", "description": "cmd | powershell"},
+                "cwd":     {"type": "STRING", "description": "Validated working directory"},
+                "timeout": {"type": "INTEGER", "description": "1-120 seconds (default 30)"},
+                "dry_run": {"type": "BOOLEAN", "description": "Validate and show resolved command without executing"},
             },
             "required": ["task"]
         }
@@ -550,7 +560,7 @@ TOOL_DECLARATIONS = [
         "parameters": {
             "type": "OBJECT",
             "properties": {
-                "action":      {"type": "STRING", "description": "write | edit | explain | run | build | auto (default: auto)"},
+                "action":      {"type": "STRING", "description": "write | edit | explain | run | build | optimize | refactor | undo_edit | review | test | generate_tests | screen_debug | auto"},
                 "description": {"type": "STRING", "description": "What the code should do or what change to make"},
                 "language":    {"type": "STRING", "description": "Programming language (default: python)"},
                 "output_path": {"type": "STRING", "description": "Where to save the file"},
@@ -558,6 +568,10 @@ TOOL_DECLARATIONS = [
                 "code":        {"type": "STRING", "description": "Raw code string for explain"},
                 "args":        {"type": "STRING", "description": "CLI arguments for run/build"},
                 "timeout":     {"type": "INTEGER", "description": "Execution timeout in seconds (default: 30)"},
+                "dry_run":     {"type": "BOOLEAN", "description": "Preview edits as a unified diff without writing"},
+                "instruction": {"type": "STRING", "description": "Instruction for refactor/edit"},
+                "save":        {"type": "BOOLEAN", "description": "Save generated tests"},
+                "run_tests":   {"type": "BOOLEAN", "description": "Run generated tests with pytest -q"},
             },
             "required": ["action"]
         }
@@ -874,8 +888,12 @@ TOOL_DECLARATIONS = [
         "parameters": {
             "type": "OBJECT",
             "properties": {
-                "action": {"type": "STRING", "description": "get | set | paste | clear | history | copy_last"},
-                "text":   {"type": "STRING", "description": "Text for set/copy action"}
+                "action": {"type": "STRING", "description": "get | set | paste | clear | history | copy_last | copy_index | restore | pin | unpin | pinned | search | append | transform | info | stats | formats | get_files | save_image"},
+                "text":   {"type": "STRING", "description": "Text for set/copy/pin/search/append/transform"},
+                "index":  {"type": "INTEGER", "description": "1-based history index"},
+                "limit":  {"type": "INTEGER", "description": "History limit 1-50"},
+                "query":  {"type": "STRING", "description": "Search term"},
+                "transform": {"type": "STRING", "description": "upper | lower | title | strip | trim_lines | clean_whitespace | dedupe_lines | sort_lines | json_pretty | json_minify | url_encode | url_decode | word_count"},
             },
             "required": ["action"]
         }
@@ -1389,13 +1407,24 @@ TOOL_DECLARATIONS = [
         "parameters": {
             "type": "OBJECT",
             "properties": {
-                "action":      {"type": "STRING", "description": "list | add | delete (default: list)"},
+                "action":      {"type": "STRING", "description": "list | today | tomorrow | week | search | add | update | reschedule | delete | free_busy | find_slot | calendars"},
                 "summary":     {"type": "STRING", "description": "Event title (for add/delete)"},
+                "title":       {"type": "STRING", "description": "Alias for summary"},
+                "query":       {"type": "STRING", "description": "Search term or free/busy range query"},
                 "start":       {"type": "STRING", "description": "Start 'YYYY-MM-DD HH:MM' or 'HH:MM' (for add)"},
                 "end":         {"type": "STRING", "description": "End time, same format (for add)"},
                 "description": {"type": "STRING", "description": "Optional details (for add)"},
                 "event_id":    {"type": "STRING", "description": "Event id (for delete)"},
-                "max_results": {"type": "INTEGER", "description": "How many events to list (default 10)"}
+                "max_results": {"type": "INTEGER", "description": "How many events to list (1-50, default 10)"},
+                "duration_minutes": {"type": "INTEGER", "description": "Event/slot duration (5-1440)"},
+                "all_day":     {"type": "BOOLEAN", "description": "Create an all-day event"},
+                "attendees":   {"type": "STRING", "description": "Comma-separated email addresses"},
+                "recurrence":  {"type": "STRING", "description": "daily | weekly | monthly | weekdays"},
+                "conference":  {"type": "BOOLEAN", "description": "Create a Google Meet link"},
+                "reminder_minutes": {"type": "INTEGER", "description": "Popup reminder override"},
+                "allow_overlap": {"type": "BOOLEAN", "description": "Create despite detected conflicts"},
+                "force":       {"type": "BOOLEAN", "description": "Force update/delete/create despite conflicts"},
+                "calendar_id": {"type": "STRING", "description": "Calendar id (default primary)"}
             },
             "required": []
         }

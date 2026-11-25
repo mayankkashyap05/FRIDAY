@@ -51,11 +51,14 @@ game_updater
   shutdown_when_done: boolean (optional) — cancellable with action "cancel_shutdown"
 
 browser_control
-  action: "go_to" | "search" | "click" | "type" | "scroll" | "get_text" | "press" | "close" (required)
-  url: string (for go_to)
-  query: string (for search)
-  text: string (for click/type)
-  direction: "up" | "down" (for scroll)
+  action: "go_to" | "search" | "click" | "type" | "fill" | "snapshot" | "hover" | "select" |
+          "wait_for" | "extract_links" | "extract_text" | "screenshot" | "back" |
+          "forward" | "reload" | "page_info" | "new_tab" | "list_tabs" |
+          "switch_tab" | "close_tab" | "scroll" | "get_text" | "press" | "close" (required)
+  url: string (for go_to/new_tab), allow_local: boolean (explicit localhost only)
+  query: string (for search), selector/text/description: semantic or CSS target
+  value: string (for select), index: 1-based tab index, timeout: 1-30s (wait_for)
+  press_enter: boolean (type/fill), direction: "up" | "down" (for scroll)
 
 file_controller
   action: "write" | "create_file" | "read" | "list" | "delete" | "move" | "copy" | "find" | "disk_usage" | "zip" | "unzip" | "organize" | "undo_organize" | "duplicates" | "search_content" | "recent" (required)
@@ -103,8 +106,10 @@ wake_word
   threshold: 0.1-0.99, cooldown: seconds, device: int, clips: int (all optional)
 
 cmd_control
-  task: string (required) — natural language description of what to do
-  visible: boolean (optional)
+  action: "run" | "history"
+  task: string — natural language description (safe mapped intents only)
+  command: explicit command (still screened), shell: cmd|powershell, cwd: string
+  timeout: 1-120 (default 30), dry_run: boolean, visible: boolean
 
 computer_settings
   action: string (required) — also volume_get, brightness_get, mute, unmute, toggle_mute,
@@ -134,8 +139,10 @@ task_manager
   process/name/pid: target for find_process or kill; sort_by: memory|cpu; all_matches, force
 
 clipboard
-  action: "get" | "set" | "paste" | "clear" | "history" | "copy_last" (required)
-  text: string (for set)
+  action: "get" | "set" | "paste" | "clear" | "history" | "copy_last" | "copy_index" |
+          "restore" | "pin" | "unpin" | "pinned" | "search" | "append" |
+          "transform" | "info" | "stats" | "formats" | "get_files" | "save_image"
+  text/index/limit/query/transform/separator/save_path: optional parameters
 
 translate
   action: "translate" | "detect" | "transliterate" | "explain" | "clipboard" | "batch"
@@ -208,11 +215,15 @@ flight_finder
   non_stop: boolean, max_stops: integer, sort_by: price|duration, save: boolean (all optional)
 
 code_helper
-  action: "write" | "edit" | "run" | "explain" (required)
-  description: string (required)
-  language: string (optional)
-  output_path: string (optional)
-  file_path: string (optional)
+  action: "write" | "edit" | "explain" | "run" | "build" | "optimize" | "refactor" |
+          "undo_edit" | "review" | "audit" | "test" | "generate_tests" | "screen_debug" | "auto"
+  description/instruction: string, language: string, output_path/file_path: string
+  dry_run: boolean (unified diff preview), save/run_tests: boolean, timeout: 1-120
+
+calendar
+  action: list | today | tomorrow | week | search | add | update | reschedule | delete | free_busy | find_slot | calendars
+  title/summary, start, end, duration_minutes, all_day, location, attendees, recurrence,
+  conference, reminder_minutes, allow_overlap, event_id, calendar_id: optional
 
 dev_agent
   action: "build" | "list_projects" | "run_project" | "fix_project" (default: build)

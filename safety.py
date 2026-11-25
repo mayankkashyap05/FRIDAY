@@ -165,9 +165,11 @@ _ACTION_RISK = {
         None: Risk.MEDIUM,
     },
     "calendar": {
-        "delete": Risk.MEDIUM,
-        "remove": Risk.MEDIUM,
-        "cancel": Risk.MEDIUM,
+        "delete": Risk.HIGH,
+        "remove": Risk.HIGH,
+        "cancel": Risk.HIGH,
+        "update": Risk.MEDIUM,
+        "reschedule": Risk.MEDIUM,
         None: Risk.MEDIUM,
     },
     "drive": {
