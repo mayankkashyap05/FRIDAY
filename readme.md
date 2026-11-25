@@ -1,3 +1,35 @@
+<p align="center">
+  <img src="assets/banner.png" alt="Friday Banner" width="100%">
+</p>
+
+<p align="center">
+  <b>Real-Time, Voice-Driven Multimodal AI Companion for Windows</b><br>
+  <i>Sub-second speech-to-speech interaction, desktop vision, autonomous tooling, and hardened local automation.</i>
+</p>
+
+<p align="center">
+  <a href="https://github.com/mayankkashyap05/friday/actions/workflows/ci.yml"><img src="https://github.com/mayankkashyap05/friday/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
+  <a href="https://www.python.org/"><img src="https://img.shields.io/badge/python-3.11%20%7C%203.12%20%7C%203.13%20%7C%203.14-blue.svg" alt="Python Version"></a>
+  <a href="https://opensource.org/licenses/MIT"><img src="https://img.shields.io/badge/License-MIT-yellow.svg" alt="License: MIT"></a>
+  <a href="https://www.microsoft.com/windows"><img src="https://img.shields.io/badge/platform-Windows%2010%20%7C%2011-0078D6.svg" alt="Platform: Windows"></a>
+  <a href="https://ai.google.dev/"><img src="https://img.shields.io/badge/AI-Google%20Gemini%20Live-8E75C2.svg" alt="Gemini Live"></a>
+</p>
+
+<p align="center">
+  <a href="#-project-overview">Overview</a> •
+  <a href="#-system-architecture">Architecture</a> •
+  <a href="#-features--tooling">Features & Tools</a> •
+  <a href="#-quick-start">Quick Start</a> •
+  <a href="#-security--safety-model">Security Model</a> •
+  <a href="#-configuration">Configuration</a> •
+  <a href="#-telegram-remote-control">Telegram Remote</a> •
+  <a href="#-testing--verification">Testing</a> •
+  <a href="#-roadmap">Roadmap</a> •
+  <a href="#-contributing">Contributing</a>
+</p>
+
+---
+
 # FRIDAY
 
 FRIDAY is a real-time, voice-driven desktop AI companion built around Gemini Live, a native PySide6/Qt6 Dynamic Island UI, and a safety-gated automation toolkit. It runs on **Windows, macOS, and Linux**, with platform-native overlay behavior on Windows and macOS.
