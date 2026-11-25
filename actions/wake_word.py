@@ -13,6 +13,7 @@ import functools
 import importlib
 import inspect
 import json
+import os
 import sys
 import threading
 import time
@@ -74,6 +75,15 @@ DETECT_THRESHOLD = 0.6
 DEFAULT_COOLDOWN_S = 2.5
 DEFAULT_PATIENCE = 2
 DEFAULT_MIN_RMS = 120
+DEFAULT_IDLE_TIMEOUT_S = 15.0
+MIN_IDLE_TIMEOUT_S = 5.0
+MAX_IDLE_TIMEOUT_S = 120.0
+
+# Listeners installed by FridayLive. They are module-level so they reach
+# whichever engine ``_pick_engine`` returns (including the custom matcher's
+# private service) and survive setup/reload/start/stop cycles.
+_ON_DETECT = None
+_ON_STATE_CHANGE = None
 
 _OWW_INIT_LOCK = threading.Lock()
 
@@ -215,6 +225,7 @@ class WakeWordService:
         self._running = False
         self._thread = None
         self._on_detect = None
+        self._on_state_change = None
         self._model = None
         self._model_path = None
         self._model_file = model_file
@@ -399,8 +410,17 @@ class WakeWordService:
             print(f"[WakeWord] Load failed: {exc}")
             return False
 
-    def configure(self, on_detect=None):
-        self._on_detect = on_detect
+    def configure(self, on_detect=None, on_state_change=None):
+        """Install callbacks without dropping an already-registered one.
+
+        ``None`` means "keep the current callback": ``setup()``, ``reload()``
+        and the tray hotkey all reconfigure the active engine, and none of
+        them may silently detach the session's wake/standby hooks.
+        """
+        if on_detect is not None:
+            self._on_detect = on_detect
+        if on_state_change is not None:
+            self._on_state_change = on_state_change
 
     # -- lifecycle -----------------------------------------------------------
 
@@ -426,6 +446,7 @@ class WakeWordService:
                 target=self._loop, daemon=True, name="WakeWordThread"
             )
             self._thread.start()
+        self._notify_state(True)
         return (
             f"Wake word active ({self._phrase}). Say '{self._phrase}' to wake me."
         )
@@ -437,7 +458,18 @@ class WakeWordService:
             self._thread = None
         if thread and thread is not threading.current_thread():
             thread.join(timeout=3)
+        self._notify_state(False)
         return "Wake word stopped, sir."
+
+    def _notify_state(self, active: bool) -> None:
+        """Announce an engine on/off transition off the caller's critical path."""
+        callback = self._on_state_change
+        if callback is None:
+            return
+        try:
+            callback(bool(active))
+        except Exception as exc:
+            print(f"[WakeWord] state callback error: {exc}")
 
     def pause(self) -> str:
         with self._lock:
@@ -678,6 +710,7 @@ class WakeWordService:
                 "threshold": self._threshold,
                 "patience": self._patience,
                 "cooldown": self._cooldown_s,
+                "idle_timeout": get_idle_timeout(),
                 "detections": self._detections,
                 "last_score": round(self._last_score, 4),
                 "last_error": self._last_error,
@@ -728,6 +761,9 @@ _ACTION_ALIASES = {
     "list": "list_clips",
     "reset_wake_word": "reset",
     "clear_all": "reset",
+    "go_to_sleep": "sleep",
+    "go_to_standby": "standby",
+    "sleep_mode": "sleep",
     "help": "status",
 }
 
@@ -805,6 +841,89 @@ def _pick_engine():
     return "friday", _service
 
 
+def configure_listeners(on_detect=None, on_state_change=None):
+    """Register session callbacks on the engine that is actually listening.
+
+    ``main.py`` used to configure only ``_service`` while ``_pick_engine()``
+    returned ``actions.friday_wake._matcher`` (which owns a *different*
+    ``WakeWordService``). Registering here, plus re-applying on every
+    ``wake_word()`` lifecycle action, makes detection and mode changes work
+    for either engine and across ``setup()`` / ``reload()`` / ``start()``.
+    """
+    global _ON_DETECT, _ON_STATE_CHANGE
+    if on_detect is not None:
+        _ON_DETECT = on_detect
+    if on_state_change is not None:
+        _ON_STATE_CHANGE = on_state_change
+    # Configure both engines: ``_pick_engine`` may switch between them after a
+    # setup/train cycle, and legacy callers still poke the module service.
+    service_configure = getattr(_service, "configure", None)
+    if callable(service_configure):
+        try:
+            service_configure(on_detect=_ON_DETECT,
+                              on_state_change=_ON_STATE_CHANGE)
+        except TypeError:
+            service_configure(on_detect=_ON_DETECT)
+    _configure_engine(_pick_engine()[1])
+    return _ON_DETECT
+
+
+def _configure_engine(engine) -> None:
+    """Apply the registered callbacks to a duck-typed wake-word engine."""
+    on_detect = getattr(_service, "_on_detect", None) or _ON_DETECT
+    on_state = getattr(_service, "_on_state_change", None) or _ON_STATE_CHANGE
+    configure = getattr(engine, "configure", None)
+    if not callable(configure):
+        return
+    try:
+        configure(on_detect=on_detect, on_state_change=on_state)
+    except TypeError:
+        # Older/third-party engines accept only ``on_detect``.
+        configure(on_detect=on_detect)
+
+
+def get_idle_timeout() -> float:
+    """Idle seconds before an active hands-free session returns to standby."""
+    path = MODELS_DIR / CONFIG_FILE_NAME
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        raw = data.get("idle_timeout", DEFAULT_IDLE_TIMEOUT_S)
+        value = float(raw)
+    except (OSError, ValueError, TypeError, AttributeError):
+        return DEFAULT_IDLE_TIMEOUT_S
+    if not MIN_IDLE_TIMEOUT_S <= value <= MAX_IDLE_TIMEOUT_S:
+        return DEFAULT_IDLE_TIMEOUT_S
+    return value
+
+
+def set_idle_timeout(value) -> str:
+    """Persist a clamped ``idle_timeout`` in ``models/wake_word.json``."""
+    try:
+        seconds = float(value)
+    except (TypeError, ValueError):
+        return (f"Please give an idle timeout in seconds "
+                f"({MIN_IDLE_TIMEOUT_S:g}-{MAX_IDLE_TIMEOUT_S:g}), sir.")
+    seconds = max(MIN_IDLE_TIMEOUT_S, min(MAX_IDLE_TIMEOUT_S, seconds))
+    path = MODELS_DIR / CONFIG_FILE_NAME
+    data = {}
+    try:
+        if path.is_file():
+            loaded = json.loads(path.read_text(encoding="utf-8"))
+            if isinstance(loaded, dict):
+                data = loaded
+    except (OSError, ValueError, TypeError):
+        pass
+    data["idle_timeout"] = seconds
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_name(f".{path.name}.tmp-{os.getpid()}")
+        tmp.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+        os.replace(tmp, path)
+    except OSError as exc:
+        return f"Could not save the idle timeout: {exc}"
+    return f"Returning to standby after {seconds:.1f} seconds of inactivity, sir."
+
+
 def _int_param(params: dict, keys, default: int, low: int, high: int) -> int:
     """Read the first present integer param, clamped to [low, high]."""
     for key in keys:
@@ -869,7 +988,7 @@ def wake_word(
                     "which could not be imported, sir.")
         if phrase:
             _set_phrase(phrase)
-        return helper.run_setup(
+        result = helper.run_setup(
             phrase=phrase or _helper_phrase(),
             positives=_int_param(params, ("positives", "samples", "clips", "count"),
                                  5, 1, 30),
@@ -882,6 +1001,10 @@ def wake_word(
             engine=matcher,
             activate=True,
         )
+        # run_setup() reloads/restarts the engine; re-apply the session hooks
+        # so the fresh service can never lose them.
+        _configure_engine(_pick_engine()[1])
+        return result
 
     if action in ("record", "record_wake_word"):
         if matcher is None:
@@ -930,6 +1053,16 @@ def wake_word(
         return helper.reset(delete_model=_bool_param(params, ("delete_model",),
                                                      default=True))
 
+    if action in ("sleep", "standby", "go_to_sleep", "go_to_standby"):
+        # FridayLive turns this into a deferred standby transition so any
+        # spoken acknowledgement is never cut off mid-sentence.
+        return "Going to standby. Say 'Hey Friday' to wake me, sir."
+
+    if action in ("set_idle_timeout", "idle_timeout"):
+        raw = params.get("idle_timeout", params.get("seconds",
+                         params.get("value")))
+        return set_idle_timeout(raw)
+
     engine_name, engine = _pick_engine()
 
     def target():
@@ -941,10 +1074,7 @@ def wake_word(
                 _service._device = int(params["device"])
             except (TypeError, ValueError):
                 pass
-        if matcher is not None and engine is matcher \
-                and not getattr(engine, "_on_detect", None) \
-                and _service._on_detect:
-            engine.configure(on_detect=_service._on_detect)
+        _configure_engine(engine)
         return engine.start()
     if action == "stop":
         return engine.stop()
@@ -955,7 +1085,7 @@ def wake_word(
         return (
             f"Wake word is {state} ({detail['phrase']}, model {trained}). "
             f"Threshold {detail['threshold']:.2f}, cooldown {detail['cooldown']:.1f}s, "
-            f"backend {detail['backend']}."
+            f"idle {get_idle_timeout():.1f}s, backend {detail['backend']}."
         )
     if action == "pause":
         return target().pause()
@@ -973,8 +1103,8 @@ def wake_word(
 
     return (
         f"Unknown wake word action: {action}, sir. Use status | setup | start | stop | "
-        "record | train | test | list_clips | reset | pause | resume | set_threshold | "
-        "devices | diagnostics."
+        "sleep | standby | set_idle_timeout | record | train | test | list_clips | "
+        "reset | pause | resume | set_threshold | devices | diagnostics."
     )
 
 

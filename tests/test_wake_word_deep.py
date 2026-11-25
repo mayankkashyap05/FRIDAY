@@ -8,11 +8,22 @@ from __future__ import annotations
 import threading
 import time
 from types import SimpleNamespace
+from unittest.mock import MagicMock
 
 import numpy as np
 import pytest
 
+from actions import friday_wake as fw
 from actions import wake_word as ww
+
+
+@pytest.fixture(autouse=True)
+def isolated_wake_config(tmp_path, monkeypatch):
+    """Keep config/model probes off the developer's real models/ directory."""
+    monkeypatch.setattr(ww, "MODELS_DIR", tmp_path)
+    monkeypatch.setattr(fw, "MODELS_DIR", tmp_path)
+    monkeypatch.setattr(fw, "MODEL_PATH", tmp_path / fw.MODEL_FILE)
+    monkeypatch.setattr(fw, "CONFIG_FILE", tmp_path / "wake_word.json")
 
 
 class _Model:
@@ -420,3 +431,22 @@ def test_quiet_frames_advance_preprocessor_without_scoring():
     assert pre_calls == [ww.CHUNK, ww.CHUNK]
     assert pred_calls == []
 
+
+
+def test_service_state_and_detect_callbacks_survive_reconfiguration(monkeypatch):
+    service = ww.WakeWordService()
+    wakes, states = [], []
+    service.configure(on_detect=lambda: wakes.append(1),
+                      on_state_change=lambda active: states.append(active))
+    service.configure()  # a later setup/reload must not detach either hook
+    assert service._on_detect is not None and service._on_state_change is not None
+    service._notify_state(True)
+    service._notify_state(False)
+    assert states == [True, False]
+
+    monkeypatch.setattr(ww, "_get_oww", lambda: MagicMock())
+    monkeypatch.setattr(service, "load", lambda: True)
+    monkeypatch.setattr(service, "_loop", lambda: None)
+    service.start()
+    service.stop()
+    assert states[-2:] == [True, False]

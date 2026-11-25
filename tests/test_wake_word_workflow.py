@@ -21,7 +21,9 @@ from __future__ import annotations
 
 import ast
 import asyncio
+import json
 import threading
+import time
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock
@@ -43,6 +45,7 @@ def isolated_models(tmp_path, monkeypatch):
     models = tmp_path / "models"
     models.mkdir()
     monkeypatch.setattr(fw, "MODELS_DIR", models)
+    monkeypatch.setattr(ww, "MODELS_DIR", models)
     monkeypatch.setattr(fw, "TRAIN_DIR", models / "training")
     monkeypatch.setattr(fw, "_sd", lambda: None)
     monkeypatch.setattr(fw, "MODEL_PATH", models / fw.MODEL_FILE)
@@ -1307,3 +1310,431 @@ def test_receive_audio_schedules_long_running_wake_word_as_asyncio_task():
     assert sent_responses == ["wake setup finished"]
     assert len(live._background_tasks) == 0
 
+
+
+# ── 9. hands-free standby / auto-sleep lifecycle ───────────────────────────
+
+class StandbyEngine:
+    """Duck-typed engine mirroring the real WakeWordService lifecycle."""
+
+    def __init__(self, available=True):
+        self.available = available
+        self._running = False
+        self._on_detect = None
+        self._on_state_change = None
+        self.starts = self.stops = self.pauses = self.resumes = 0
+
+    def configure(self, on_detect=None, on_state_change=None):
+        if on_detect is not None:
+            self._on_detect = on_detect
+        if on_state_change is not None:
+            self._on_state_change = on_state_change
+
+    def _notify(self, active):
+        if self._on_state_change:
+            self._on_state_change(active)
+
+    def start(self):
+        self._running = True
+        self.starts += 1
+        self._notify(True)
+        return "Wake word active (Hey Friday)."
+
+    def stop(self):
+        self._running = False
+        self.stops += 1
+        self._notify(False)
+        return "Wake word stopped, sir."
+
+    def pause(self):
+        self.pauses += 1
+        return "paused"
+
+    def resume(self):
+        self.resumes += 1
+        return "resumed"
+
+    def stats(self):
+        return {"phrase": "Hey Friday", "threshold": 0.6, "cooldown": 2.5,
+                "backend": "none"}
+
+
+class CapturedInputStream:
+    """Captures the PortAudio callback without opening a device."""
+
+    def __init__(self, **kwargs):
+        self.callback = kwargs["callback"]
+        self.opened = True
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_args):
+        self.opened = False
+
+
+@pytest.fixture
+def standby_live(monkeypatch):
+    import main
+
+    engine = StandbyEngine()
+    amplitudes, streams = [], []
+
+    class FakeSD:
+        @staticmethod
+        def InputStream(**kwargs):
+            stream = CapturedInputStream(**kwargs)
+            streams.append(stream)
+            return stream
+
+    ui = MagicMock()
+    ui.muted = False
+    ui.silent_mode = False
+    ui._dispatch.side_effect = lambda fn, *args, **kwargs: fn(*args, **kwargs)
+    ui.bridge.setAmplitude.side_effect = amplitudes.append
+
+    monkeypatch.setattr(main, "sd", FakeSD)
+    monkeypatch.setattr(main, "_wake_recording_active", lambda: False)
+    monkeypatch.setattr(ww, "_pick_engine", lambda: ("friday", engine))
+    monkeypatch.setattr(ww, "_ON_DETECT", None)
+    monkeypatch.setattr(ww, "_ON_STATE_CHANGE", None)
+    monkeypatch.setattr(ww._service, "_on_detect", None)
+    monkeypatch.setattr(ww._service, "_on_state_change", None)
+
+    live = main.FridayLive(ui)
+    live._loop = live.session = live._send_lock = object()
+    live._ready = True
+    live.audio_in_queue = asyncio.Queue()
+    live.out_queue = asyncio.Queue(maxsize=64)
+    return SimpleNamespace(live=live, ui=ui, engine=engine,
+                           amplitudes=amplitudes, streams=streams)
+
+
+def test_auto_standby_wires_the_selected_engine_and_keeps_the_dock_dormant(standby_live):
+    live, ui, engine = (standby_live.live, standby_live.ui, standby_live.engine)
+    live._maybe_autostart_wake_word()
+
+    assert engine.starts == 1 and engine._running
+    assert live._wake_mode_active is True and live._awake is False
+    assert engine._on_detect == live._on_wake_detect
+    assert engine._on_state_change == live._on_wake_engine_state
+    ui.set_standby.assert_called_with(True)
+    ui.invoke.assert_not_called()
+    assert all(call.args[0] != "LISTENING" for call in ui.set_state.call_args_list)
+
+    # run() must own the boot path, the reconnect path and the watchdog task.
+    source = _main_source()
+    run_block = source.split("    async def run(self):")[1]
+    assert "_maybe_autostart_wake_word()" in run_block
+    assert "_sync_ui_state()" in run_block
+    assert "tg.create_task(self._watch_wake_idle())" in run_block
+
+
+def test_no_trained_model_keeps_the_original_manual_startup(monkeypatch, standby_live):
+    standby_live.engine.available = False
+    live, ui, engine = (standby_live.live, standby_live.ui, standby_live.engine)
+    live._maybe_autostart_wake_word()
+    assert engine.starts == 0 and live._wake_mode_active is False and live._awake is True
+    live._sync_ui_state()
+    ui.set_standby.assert_called_with(False)
+    ui.set_state.assert_called_with("LISTENING")
+
+
+def test_standby_forwards_no_mic_audio_and_no_orb_amplitude(standby_live):
+    import main
+
+    live, engine = standby_live.live, standby_live.engine
+    live._maybe_autostart_wake_word()
+
+    async def scenario():
+        task = asyncio.create_task(live._listen_audio())
+        for _ in range(100):
+            if standby_live.streams:
+                break
+            await asyncio.sleep(0.001)
+        stream = standby_live.streams[0]
+        loud = np.full(main.CHUNK_SIZE, 12000, dtype=np.int16)
+
+        stream.callback(loud, main.CHUNK_SIZE, None, None)
+        await asyncio.sleep(0)
+        assert live.out_queue.qsize() == 0
+        assert standby_live.amplitudes[-1] == 0.0
+
+        # Detection fires on the engine's own callback thread.
+        live._last_mic_amp_ts = 0.0
+        engine._on_detect()
+        assert live._awake is True and engine.pauses == 1
+        stream.callback(loud, main.CHUNK_SIZE, None, None)
+        await asyncio.sleep(0)
+        assert live.out_queue.qsize() == 1
+        assert standby_live.amplitudes[-1] > 0.0
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+
+    asyncio.run(scenario())
+
+
+def test_reconnect_while_asleep_never_switches_the_ui_to_listening(standby_live):
+    live, ui = standby_live.live, standby_live.ui
+    live._maybe_autostart_wake_word()
+    ui.set_state.reset_mock()
+
+    live._sync_ui_state()  # the call run() makes on every (re)connect
+    ui.set_standby.assert_called_with(True)
+    assert all(call.args[0] != "LISTENING" for call in ui.set_state.call_args_list)
+
+    # A manual wake reconnects as a normal active session.
+    live._wake_up("manual")
+    live._sync_ui_state()
+    ui.set_state.assert_called_with("LISTENING")
+
+    run_block = _main_source().split("    async def run(self):")[1] \
+                    .split("tg.create_task(self._send_realtime())")[0]
+    assert 'self.ui.set_state("LISTENING")' not in run_block
+
+
+@pytest.mark.parametrize("blocker", [
+    "speaking", "audio-queue", "thinking", "tool", "card", "recording",
+])
+def test_activity_signals_prevent_premature_sleep(monkeypatch, standby_live, blocker):
+    import main
+
+    live, engine = standby_live.live, standby_live.engine
+    live._wake_mode_active = True
+    live._awake = True
+    live._last_activity_ts = time.monotonic() - 500
+    monkeypatch.setattr(main, "_wake_recording_active",
+                        lambda: blocker == "recording")
+
+    if blocker == "speaking":
+        live._is_speaking = True
+    elif blocker == "audio-queue":
+        live.audio_in_queue.put_nowait(b"pcm")
+    elif blocker == "thinking":
+        live._phase = main.PHASE_THINKING
+    elif blocker == "tool":
+        live._background_tasks.add(object())
+    elif blocker == "card":
+        live._pending_card_token = "token"
+
+    try:
+        live._watch_wake_idle_once()
+        assert live._awake is True
+        assert engine.resumes == 0
+    finally:
+        live._is_speaking = False
+        live._background_tasks.clear()
+        live._pending_card_token = None
+        live._phase = main.PHASE_IDLE
+        while not live.audio_in_queue.empty():
+            live.audio_in_queue.get_nowait()
+
+
+def test_idle_timeout_sleeps_flushes_mic_and_rearms_the_detector(monkeypatch, standby_live):
+    import main
+
+    live, ui, engine = (standby_live.live, standby_live.ui, standby_live.engine)
+    live._wake_mode_active = True
+    live._awake = True
+    live._wake_idle_timeout_s = 0.2
+    live.out_queue.put_nowait({"data": b"stale", "mime_type": "audio/pcm"})
+    live._last_activity_ts = time.monotonic() - 1.0
+    monkeypatch.setattr(main, "WAKE_IDLE_TICK_S", 0.01)
+
+    async def scenario():
+        task = asyncio.create_task(live._watch_wake_idle())
+        for _ in range(200):
+            if not live._awake:
+                break
+            await asyncio.sleep(0.001)
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+
+    asyncio.run(scenario())
+    assert live._awake is False
+    assert live.out_queue.qsize() == 0
+    assert engine.resumes >= 1
+    ui.set_standby.assert_called_with(True)
+    assert standby_live.amplitudes[-1] == 0.0
+    assert any("Returning to standby" in str(c.args[0])
+               for c in ui.write_log.call_args_list)
+
+
+def test_wake_resets_activity_on_user_speech_text_and_manual_clicks(standby_live):
+    live, engine = standby_live.live, standby_live.engine
+    live._wake_mode_active = True
+    live._awake = False
+    live._last_activity_ts = 0.0
+    live._send_text = lambda text: None
+
+    live._on_text_command("what time is it")
+    assert live._awake is True and engine.pauses == 1
+    assert live._last_activity_ts > 0
+
+    live._enter_standby("test")
+    live._on_manual_wake_request("orb")
+    assert live._awake is True and engine.pauses == 2
+
+    live._enter_standby("test")
+    live.ui.muted = False
+    live._on_manual_wake_request("unmute")
+    assert live._awake is True and engine.pauses == 3
+
+
+def test_start_wake_word_defers_standby_until_the_spoken_confirmation_ends(
+        monkeypatch, standby_live):
+    import main
+
+    live, engine = standby_live.live, standby_live.engine
+    live._is_speaking = True
+    live.audio_in_queue.put_nowait(b"tts")
+    monkeypatch.setattr(main, "WAKE_STANDBY_GRACE_S", 0.0)
+
+    handler = live._tool_handlers["wake_word"][0]
+    assert "Wake word active" in handler({"action": "start"})
+    assert live._wake_mode_active is True and live._awake is True
+    assert live._standby_pending == "wake-enabled"
+
+    while not live.audio_in_queue.empty():
+        live.audio_in_queue.get_nowait()
+    live.set_speaking(False)
+    live._watch_wake_idle_once()
+    assert live._awake is False
+    assert engine.resumes >= 1
+
+
+def test_stop_sleep_and_idle_timeout_voice_actions(monkeypatch, standby_live, tmp_path):
+    import main
+
+    live, ui = standby_live.live, standby_live.ui
+    handler = live._tool_handlers["wake_word"][0]
+    monkeypatch.setattr(ww, "MODELS_DIR", tmp_path)
+    monkeypatch.setattr(main, "WAKE_STANDBY_GRACE_S", 0.0)
+
+    handler({"action": "start"})
+    assert live._wake_mode_active and not live._awake
+    handler({"action": "stop"})
+    assert live._wake_mode_active is False and live._awake is True
+    ui.set_standby.assert_called_with(False)
+
+    handler({"action": "start"})
+    assert "9.0 seconds" in handler({"action": "set_idle_timeout", "idle_timeout": 9}).lower()
+    assert live._wake_idle_timeout_s == 9.0
+    assert json.loads((tmp_path / "wake_word.json").read_text())["idle_timeout"] == 9.0
+    assert ww.get_idle_timeout() == 9.0
+
+    monkeypatch.setattr(main, "WAKE_STANDBY_GRACE_S", 0.0)
+    handler({"action": "sleep"})
+    live._watch_wake_idle_once()
+    assert live._awake is False
+
+
+def test_engine_callbacks_survive_real_reload_and_reconfigure(monkeypatch, tmp_path):
+    engine = fw._FridayEngine()
+    monkeypatch.setattr(fw, "MODEL_PATH", tmp_path / "model.onnx")
+    (tmp_path / "model.onnx").write_bytes(b"model")
+    monkeypatch.setattr(fw, "CONFIG_FILE", tmp_path / "wake_word.json")
+    monkeypatch.setattr(ww, "MODELS_DIR", tmp_path)
+    monkeypatch.setattr(ww, "_pick_engine", lambda: ("friday", engine))
+    monkeypatch.setattr(ww._service, "_on_detect", None)
+    monkeypatch.setattr(ww._service, "_on_state_change", None)
+
+    seen = []
+    ww.configure_listeners(on_detect=lambda: seen.append("wake"),
+                           on_state_change=lambda _a: None)
+    assert engine._on_detect is not None
+    engine.reload(start=False)
+    assert engine._on_detect is not None
+    engine.configure(on_detect=lambda: seen.append("wake2"))
+    assert engine._on_detect is not None
+    assert engine._svc._on_detect is engine._on_detect
+
+
+def test_ui_standby_facade_and_mac_parity():
+    from ui import FridayUI
+    import ui_mac
+
+    stub = SimpleNamespace(standby=True, _lock=threading.Lock(),
+                           bridge=MagicMock(), _dispatch=MagicMock(),
+                           status_text="")
+    FridayUI.set_state(stub, "LISTENING")
+    assert stub.status_text == "IDLE"
+    stub.bridge.set_state.assert_called_with("IDLE")
+
+    stub.standby = False
+    FridayUI.set_state(stub, "LISTENING")
+    assert stub.status_text == "LISTENING"
+    assert callable(getattr(ui_mac.FridayUI, "set_standby", None))
+
+
+def test_transcription_and_mic_speech_refresh_idle_deadline(standby_live):
+    import main
+
+    live = standby_live.live
+    live._wake_mode_active = True
+    live._awake = True
+    live._last_activity_ts = 0.0
+
+    class Transcription:
+        def __init__(self, text):
+            self.text = text
+
+    class Content:
+        def __init__(self, *, input_text=None, output_text=None, complete=False):
+            self.input_transcription = Transcription(input_text) if input_text else None
+            self.output_transcription = Transcription(output_text) if output_text else None
+            self.turn_complete = complete
+
+    async def scenario():
+        class Session:
+            def __init__(self):
+                self.count = 0
+
+            async def receive(self):
+                responses = [
+                    SimpleNamespace(data=None, server_content=Content(input_text="hello"), tool_call=None),
+                    SimpleNamespace(data=None, server_content=Content(output_text="hi"), tool_call=None),
+                    SimpleNamespace(data=None, server_content=Content(complete=True), tool_call=None),
+                ]
+                for response in responses:
+                    yield response
+                    self.count += 1
+                raise asyncio.CancelledError()
+
+        live.session = Session()
+        with pytest.raises(asyncio.CancelledError):
+            await live._receive_audio()
+        assert live.session.count == 3
+        assert live._last_activity_ts > 0
+        task = asyncio.create_task(live._listen_audio())
+        for _ in range(100):
+            if standby_live.streams:
+                break
+            await asyncio.sleep(0.001)
+        stream = standby_live.streams[0]
+        live._last_activity_ts = 0.0
+        stream.callback(np.full(main.CHUNK_SIZE, 12000, dtype=np.int16),
+                        main.CHUNK_SIZE, None, None)
+        assert live._last_activity_ts > 0
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+
+
+def test_idle_timeout_is_clamped_and_aliases_are_accepted(monkeypatch, tmp_path):
+    monkeypatch.setattr(ww, "MODELS_DIR", tmp_path)
+    assert "5.0 seconds" in ww.set_idle_timeout(1)
+    assert ww.get_idle_timeout() == 5.0
+    assert "120.0 seconds" in ww.wake_word(
+        {"action": "set_idle_timeout", "value": 999})
+    assert ww.get_idle_timeout() == 120.0
+    sleep_reply = ww.wake_word({"action": "sleep"}).lower()
+    assert "standby" in sleep_reply and "hey friday" in sleep_reply
