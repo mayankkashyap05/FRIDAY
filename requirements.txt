@@ -8,7 +8,7 @@
 # ----------------------------
 sounddevice>=0.5.0,<=0.6.0
 google-genai>=1.0.0,<2.0.0
-google-generativeai>=0.8.0,<1.0.0
+# google-generativeai>=0.8.0,<1.0.0  # optional / legacy
 requests>=2.30.0,<3.0.0
 websockets>=13.0,<17.0
 
@@ -36,7 +36,7 @@ pyflakes
 # Document & Web Operations (ORIGINAL — UNCHANGED)
 # ----------------------------
 beautifulsoup4>=4.12.0
-duckduckgo-search>=7.0.0
+# duckduckgo-search>=7.0.0  # optional / legacy
 ddgs>=7.0.0
 playwright>=1.40.0
 python-pptx>=1.0.0
@@ -89,5 +89,5 @@ pyobjc-framework-ApplicationServices>=10.0; sys_platform == "darwin"
 # ----------------------------
 onnxruntime>=1.17.0
 torch>=2.0.0
-face_recognition>=1.3.0
-pyaudio>=0.2.14
+# face_recognition>=1.3.0  # optional / legacy
+# pyaudio>=0.2.14  # optional / legacy
