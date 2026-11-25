@@ -1474,7 +1474,7 @@ TOOL_DECLARATIONS = [
 for _decl in TOOL_DECLARATIONS:
     _name = _decl.get("name", "")
     if _name in {
-        "cmd_control", "desktop_control", "file_controller", "gmail",
+        "cmd_control", "open_app", "desktop_control", "file_controller", "gmail",
         "task_manager", "code_helper", "game_updater",
         "computer_settings", "computer_control", "calendar", "drive",
         "smart_home_control", "browser_control", "send_message", "autostart",
@@ -2003,16 +2003,16 @@ class FridayLive:
             needs_confirmation, describe, CONFIRM_MESSAGE, classify, Risk,
             CONFIRM_PARAM, CONFIRM_TOKEN_PARAM, issue_confirmation_token, sanitize,
         )
-        blocked = self.loop_guard.check(name, args)
-        if blocked:
-            print(f"[FRIDAY] 🛑 {name} blocked by loop guard")
-            return ToolResult(ok=False, content=blocked, error_kind="loop")
-
         confirm = bool(args.pop(CONFIRM_PARAM, False))
         confirm_token = str(args.pop(CONFIRM_TOKEN_PARAM, ""))
         face_verify = bool(args.pop("face_verify", False))
 
-        if confirm and classify(name, args) == Risk.HIGH and not self._has_human_confirmation(confirm_token):
+        high_risk = classify(name, args) == Risk.HIGH
+        if confirm and high_risk and not self._has_human_confirmation(confirm_token):
+            reason = "no matching human approval (or missing confirmation token)"
+            print(f"[FRIDAY] ⛔ {name} confirmation rejected: {reason}")
+            self.ui.write_log(f"SECURITY: {name} confirmation rejected: {reason}")
+            log_tool(name, sanitize(name, args), error=reason)
             return ToolResult(
                 ok=True,
                 content="Action blocked: human user has not verbally approved this yet.",
@@ -2020,29 +2020,36 @@ class FridayLive:
             )
         if needs_confirmation(name, args, confirm=confirm, confirm_token=confirm_token):
             token = issue_confirmation_token(name, args) if not confirm else ""
-            print(f"[FRIDAY] ⛔ {name} blocked — confirmation required")
-            self.ui.write_log(f"SECURITY: '{describe(name, args)}' requires your approval.")
+            if confirm:
+                reason = "token invalid, expired, or arguments differ"
+                print(f"[FRIDAY] ⛔ {name} confirmation rejected: {reason}")
+                self.ui.write_log(f"SECURITY: {name} confirmation rejected: {reason}")
+            else:
+                self.ui.write_log(f"SECURITY: '{describe(name, args)}' requires your approval.")
+                print(f"[FRIDAY] ⛔ {name} blocked — confirmation required")
             if token:
                 self._request_card_confirmation(
                     f"{describe(name, args)}\n\n{json.dumps(sanitize(name, args), ensure_ascii=False, indent=2, default=str)}",
                     token,
                 )
-            log_tool(name, args, error="confirmation required")
+            log_tool(name, sanitize(name, args), error="confirmation required")
             return ToolResult(
                 ok=True,
-                content=CONFIRM_MESSAGE.format(desc=describe(name, args), param=CONFIRM_PARAM)
-                + (f"\n[token: {token}]" if token else ""),
+                content=("Confirmation rejected: token invalid, expired, or arguments differ. "
+                         "Request a new confirmation for the exact action." if confirm else
+                         CONFIRM_MESSAGE.format(desc=describe(name, args), param=CONFIRM_PARAM)
+                         + f"\n[token: {token}]"),
                 error_kind="confirmation",
             )
-        if not self._consume_human_confirmation(confirm, confirm_token):
-            print(f"[FRIDAY] ⛔ {name} rejected — no human consent detected.")
+        if high_risk and confirm and not self._consume_human_confirmation(confirm, confirm_token):
+            print(f"[FRIDAY] ⛔ {name} confirmation rejected: human approval changed before redemption")
             self.ui.write_log(f"SECURITY: '{name}' blocked — no verbal consent.")
             return ToolResult(
                 ok=True,
                 content="Action blocked: human user has not verbally approved this yet. Ask the user for permission first.",
                 error_kind="confirmation",
             )
-        if confirm:
+        if high_risk and confirm:
             self.ui.write_log(f"SECURITY: '{name}' approved by user.")
         if face_verify:
             from actions.vision_gesture import vision_gesture
@@ -2058,6 +2065,14 @@ class FridayLive:
                     content="Face identity verification failed. The requested action was not executed.",
                     error_kind="identity",
                 )
+        # Only calls that have passed the gate count as executions. A freshly
+        # approved action starts a new sequence even after earlier executions.
+        if high_risk and confirm:
+            self.loop_guard.reset()
+        blocked = self.loop_guard.check(name, args)
+        if blocked:
+            print(f"[FRIDAY] 🛑 {name} blocked by loop guard")
+            return ToolResult(ok=False, content=blocked, error_kind="loop")
         return None
 
     async def _dispatch_tool(self, name: str, args: dict) -> ToolResult:
@@ -2474,6 +2489,7 @@ class FridayLive:
     async def _receive_audio(self):
         print("[FRIDAY] 👂 Recv started")
         out_buf, in_buf = [], []
+        input_approval_handled = False
 
         try:
             while True:
@@ -2505,9 +2521,10 @@ class FridayLive:
                             full_in = " ".join(in_buf).strip()
                             if full_in:
                                 self.ui.write_log(f"You: {full_in}")
-                                if self._is_explicit_approval(full_in):
+                                if not input_approval_handled and self._is_explicit_approval(full_in):
                                     self._mark_human_confirmed()
                             in_buf = []
+                            input_approval_handled = False
 
                             full_out = " ".join(out_buf).strip()
                             if full_out:
@@ -2533,6 +2550,11 @@ class FridayLive:
                                 self._persist_rolling_summary()
 
                     if response.tool_call:
+                        # Live can emit a tool call before turn_complete. Arm an
+                        # exact spoken affirmation before dispatch, not afterward.
+                        if not input_approval_handled and self._is_explicit_approval(" ".join(in_buf)):
+                            self._mark_human_confirmed()
+                            input_approval_handled = True
                         fn_responses = []
                         for fc in response.tool_call.function_calls:
                             print(f"[FRIDAY] 📞 {fc.name}")

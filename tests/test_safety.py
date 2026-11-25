@@ -5,7 +5,6 @@ Run: python -m unittest tests.test_safety -v
 
 import os
 import sys
-import tempfile
 import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -169,3 +168,25 @@ class SanitizeTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+def test_open_app_shells_require_approval():
+    for app in ('cmd', 'cmd.exe', 'powershell', 'powershell.exe', 'pwsh', 'pwsh.exe',
+                'wt', 'wt.exe', 'windows terminal', 'bash', 'wsl', 'wsl.exe',
+                r'C:\Windows\System32\CMD.EXE'):
+        assert safety.classify('open_app', {'app_name': app}) == safety.Risk.HIGH
+    for app in ('notepad', 'chrome', 'calculator', 'spotify'):
+        assert safety.classify('open_app', {'app_name': app}) == safety.Risk.MEDIUM
+
+
+def test_sanitize_key_is_not_automatically_secret():
+    assert safety.sanitize('computer_control', {'action': 'press', 'key': 'enter'})['key'] == 'enter'
+    assert safety.sanitize('save_memory', {'key': 'language'})['key'] == 'language'
+    assert safety.sanitize('x', {'api_key': 'AIza...', 'confirm_token': 'abc'}) == {
+        'api_key': '***', 'confirm_token': '***'}
+    assert safety.sanitize('x', {'items': ['sk-abcdefghijklmnop', {'key': 'ghp_abcdefghijklmnop'}]}) == {
+        'items': ['***', {'key': '***'}]}
+
+
+def test_confirmation_fingerprint_binds_redacted_fields():
+    token = safety.issue_confirmation_token('cmd_control', {'command': 'one', 'api_key': 'secret1'})
+    assert not safety.redeem_confirmation_token('cmd_control', {'command': 'one', 'api_key': 'secret2'}, token)
