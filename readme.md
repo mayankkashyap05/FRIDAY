@@ -99,7 +99,7 @@ cd FRIDAY
 py -3.13 -m venv .venv
 .\.venv\Scripts\Activate.ps1
 python -m pip install --upgrade pip
-pip install -r requirements.txt
+python setup.py
 ```
 
 **macOS / Linux (Bash/Zsh):**
@@ -110,10 +110,12 @@ cd FRIDAY
 python3.13 -m venv .venv
 source .venv/bin/activate
 python -m pip install --upgrade pip
-pip install -r requirements.txt
+python setup.py
 ```
 
-> `requirements.txt` uses PEP 508 environment markers, so the same file installs Windows-only and macOS-only dependencies where appropriate.
+`python setup.py` installs dependencies from `requirements.txt`, attempts to install Playwright Chromium, and creates default config files from `config/*.example.json` when missing.
+
+> If you prefer manual installation, you can run `pip install -r requirements.txt` instead. `requirements.txt` uses PEP 508 environment markers, so the same file installs Windows-only and macOS-only dependencies where appropriate.
 
 ### 2. Configure Gemini API keys
 
