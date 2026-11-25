@@ -9,10 +9,14 @@ cooldown expires (daily quota resets), so old keys keep working again later.
 import hashlib
 import json
 import os
+import random
+import re
 import sys
 import threading
 import time
 from pathlib import Path
+
+from config.models import MODEL_FLASH, MODEL_FLASH_LITE
 
 
 def get_base_dir() -> Path:
@@ -117,8 +121,37 @@ def next_key() -> str:
 
 
 def _is_quota_error(e) -> bool:
-    msg = str(e)
-    return ("429" in msg) or ("RESOURCE_EXHAUSTED" in msg)
+    msg = str(e).lower()
+    return "429" in msg or "resource_exhausted" in msg
+
+
+def _is_transient_error(e) -> bool:
+    if _is_quota_error(e):
+        return False
+    msg = str(e).lower()
+    code = getattr(e, "code", None)
+    if code in (400, 403) or re.search(r"\b(?:400|403)\b", msg):
+        return False
+    return (isinstance(e, TimeoutError) or "timeout" in type(e).__name__.lower() or
+            any(term in msg for term in ("503", "unavailable", "overloaded",
+                                         "deadline_exceeded", "timed out", "timeout")))
+
+
+def _http_options(api_version, timeout_ms):
+    from google.genai import types
+
+    if timeout_ms is None:
+        timeout_ms = int(os.environ.get("FRIDAY_GEMINI_TIMEOUT_MS", "30000"))
+    if isinstance(timeout_ms, bool) or not isinstance(timeout_ms, int) or timeout_ms <= 0:
+        raise ValueError("Gemini timeout_ms must be a positive integer")
+    # Disable SDK-level retries so our quota rotation and bounded retry control them.
+    kwargs = {"timeout": timeout_ms}
+    # Older google-genai releases have no SDK retry support or retry options.
+    if hasattr(types, "HttpRetryOptions"):
+        kwargs["retry_options"] = types.HttpRetryOptions(attempts=1)
+    if api_version:
+        kwargs["api_version"] = api_version
+    return types.HttpOptions(**kwargs)
 
 
 def add_key(key: str) -> int:
@@ -144,18 +177,16 @@ def add_key(key: str) -> int:
     return len(keys)
 
 
-async def aio_generate(model, contents, config=None, api_version=None):
+async def aio_generate(model, contents, config=None, api_version=None, timeout_ms=None):
     """Generate content, automatically retrying across all keys on 429."""
     from google import genai
 
+    options = _http_options(api_version, timeout_ms)
     keys = get_all_keys()
     last_err = None
     for k in keys:
         try:
-            kwargs = {}
-            if api_version:
-                kwargs["http_options"] = {"api_version": api_version}
-            client = genai.Client(api_key=k, **kwargs)
+            client = genai.Client(api_key=k, http_options=options)
             resp = await client.aio.models.generate_content(
                 model=model, contents=contents, config=config)
             return resp
@@ -170,27 +201,44 @@ async def aio_generate(model, contents, config=None, api_version=None):
     raise last_err
 
 
-def generate_with_retry(model, contents, config=None, api_version=None):
-    """Sync version of aio_generate (for synchronous action modules)."""
+def generate_with_retry(model, contents, config=None, api_version=None,
+                        timeout_ms=None, fallback_model=MODEL_FLASH_LITE):
+    """Rotate keys on quota errors; retry overload once then optionally fail over.
+
+    The HTTP timeout is per request, not a deadline for the entire operation.
+    Fallback applies only to MODEL_FLASH and does not recurse.
+    """
     from google import genai
 
+    options = _http_options(api_version, timeout_ms)
     keys = get_all_keys()
+    if not keys:
+        raise KeyError("No Gemini API keys configured — add one in config/api_keys.json")
+
+    current_model = model
+    transient_retries = 0
+    key_index = 0
     last_err = None
-    for k in keys:
+    while key_index < len(keys):
+        key = keys[key_index]
         try:
-            kwargs = {}
-            if api_version:
-                kwargs["http_options"] = {"api_version": api_version}
-            client = genai.Client(api_key=k, **kwargs)
-            resp = client.models.generate_content(
-                model=model, contents=contents, config=config)
-            return resp
+            client = genai.Client(api_key=key, http_options=options)
+            return client.models.generate_content(
+                model=current_model, contents=contents, config=config)
         except Exception as e:
             if _is_quota_error(e):
-                mark_exhausted(k)
+                mark_exhausted(key)
                 last_err = e
+                key_index += 1
+                continue
+            if not _is_transient_error(e):
+                raise
+            if transient_retries == 0:
+                transient_retries += 1
+                time.sleep(random.uniform(0.25, 1.0))
+                continue
+            if current_model == MODEL_FLASH and fallback_model and fallback_model != model:
+                current_model = fallback_model
                 continue
             raise
-    if last_err is None:
-        raise KeyError("No Gemini API keys configured — add one in config/api_keys.json")
     raise last_err
