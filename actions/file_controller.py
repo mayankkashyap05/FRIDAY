@@ -61,7 +61,48 @@ def _as_bool(value) -> bool:
 
 
 def _is_system_path(path: Path) -> bool:
-    return any(part.lower() in _SYSTEM_DIRS for part in path.parts)
+    """Strict system-folder guard with a narrow exception for temp workspaces.
+
+    Blocked: drive roots, Windows/Program Files/ProgramData/AppData (including
+    AppData\\Local and AppData\\Roaming themselves), the user's home directory and
+    the usual cache/VCS directories. Folders *inside* tempfile.gettempdir() are
+    allowed so Windows %TEMP% (which lives under AppData\\Local\\Temp) works.
+    """
+    try:
+        resolved = Path(path).expanduser().resolve()
+    except Exception:
+        resolved = Path(os.path.abspath(str(path)))
+
+    # Windows drive root (checked textually too, so it works on any host OS).
+    raw = str(path).strip().replace("/", "\\").lower()
+    if len(raw) == 3 and raw[0].isalpha() and raw[1:] == ":\\":
+        return True
+    try:
+        anchor = Path(resolved.anchor) if resolved.anchor else Path(os.path.abspath(os.sep))
+        if resolved == anchor:
+            return True
+    except Exception:
+        pass
+    try:
+        if resolved == Path.home().resolve():
+            return True
+    except Exception:
+        pass
+
+    parts = {part.lower() for part in resolved.parts}
+    try:
+        temp_root = Path(tempfile.gettempdir()).resolve()
+        if resolved == temp_root or temp_root in resolved.parents:
+            temp_parts = {part.lower() for part in temp_root.parts}
+            extra_parts = parts - temp_parts
+            # Only the temp workspace itself is exempt; nested system/cache
+            # folders (e.g. a temp/.git checkout) remain protected.
+            if not (extra_parts & _SYSTEM_DIRS):
+                return False
+    except Exception:
+        pass
+
+    return bool(parts & _SYSTEM_DIRS)
 
 
 def _iter_files(root: Path, recursive: bool = True):

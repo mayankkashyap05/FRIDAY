@@ -121,6 +121,9 @@ def test_get_desktop_uses_onedrive_redirect(monkeypatch, tmp_path):
 def test_wallpaper_conversion_history_and_undo(monkeypatch, tmp_path):
     from PIL import Image
 
+    # Force the Linux gsettings branch: this test must never touch a real
+    # Windows wallpaper or registry, even when run on Windows.
+    monkeypatch.setattr(desktop.sys, "platform", "linux")
     monkeypatch.setattr(desktop, "BASE_DIR", tmp_path)
     (tmp_path / "old.png").write_bytes(b"old")
     monkeypatch.setattr(desktop, "get_current_wallpaper", lambda: f"Current wallpaper: {tmp_path / 'old.png'}")
@@ -138,6 +141,74 @@ def test_wallpaper_conversion_history_and_undo(monkeypatch, tmp_path):
     restored = []
     monkeypatch.setattr(desktop, "set_wallpaper", lambda path: restored.append(path) or "restored")
     assert "restored" == desktop.undo_wallpaper()
+    assert restored == [str(tmp_path / "old.png")]
+
+
+def test_wallpaper_windows_registry_types_conversion_and_undo(monkeypatch, tmp_path):
+    """Fully mocked Windows path: no real registry, wallpaper or shell writes."""
+    from types import ModuleType, SimpleNamespace
+    from PIL import Image
+
+    monkeypatch.setattr(desktop.sys, "platform", "win32")
+    monkeypatch.setattr(desktop, "BASE_DIR", tmp_path)
+    (tmp_path / "old.png").write_bytes(b"old")
+    monkeypatch.setattr(
+        desktop, "get_current_wallpaper",
+        lambda: f"Current wallpaper: {tmp_path / 'old.png'}")
+
+    image_path = tmp_path / "photo.webp"
+    Image.new("RGB", (8, 8), "blue").save(image_path, format="WEBP")
+
+    def _no_subprocess(*args, **kwargs):
+        raise AssertionError("Windows wallpaper test must not spawn subprocesses")
+
+    monkeypatch.setattr(desktop.subprocess, "run", _no_subprocess)
+
+    registry_writes = []
+    fake_winreg = ModuleType("winreg")
+    fake_winreg.HKEY_CURRENT_USER = object()
+    fake_winreg.KEY_SET_VALUE = 2
+    fake_winreg.REG_SZ = 1
+
+    def _open_key(root, subkey, reserved=0, access=0):
+        assert root is fake_winreg.HKEY_CURRENT_USER
+        assert subkey == r"Control Panel\Desktop"
+        return object()
+
+    def _set_value(key, name, reserved, value_type, value):
+        assert value_type == fake_winreg.REG_SZ
+        assert isinstance(value, str), f"{name} must be str, got {type(value)}"
+        registry_writes.append((name, value))
+
+    fake_winreg.OpenKey = _open_key
+    fake_winreg.SetValueEx = _set_value
+    fake_winreg.CloseKey = lambda key: None
+    monkeypatch.setitem(sys.modules, "winreg", fake_winreg)
+
+    spi_calls = []
+    fake_user32 = SimpleNamespace(
+        SystemParametersInfoW=lambda *args: spi_calls.append(args) or 1)
+    monkeypatch.setattr(
+        desktop.ctypes, "windll",
+        SimpleNamespace(user32=fake_user32), raising=False)
+
+    result = desktop.set_wallpaper(str(image_path))
+    assert "Wallpaper set" in result
+    assert ("WallpaperStyle", "10") in registry_writes
+    assert ("TileWallpaper", "0") in registry_writes
+    assert len(spi_calls) == 1
+    applied = Path(spi_calls[0][2])
+    assert applied.suffix.lower() == ".png" and applied.exists()
+    assert applied == tmp_path / "data" / "wallpapers" / "photo.png"
+
+    history = json.loads((tmp_path / "data" / "wallpapers" / "history.json").read_text())
+    assert history["entries"][-1]["path"] == str(tmp_path / "old.png")
+
+    restored = []
+    monkeypatch.setattr(
+        desktop, "set_wallpaper",
+        lambda path: restored.append(path) or "restored")
+    assert desktop.undo_wallpaper() == "restored"
     assert restored == [str(tmp_path / "old.png")]
 
 
